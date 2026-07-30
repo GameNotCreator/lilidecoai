@@ -1,0 +1,30 @@
+{
+  "name": "project-visualizer",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "npm@11.17.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n web,api -c cyan,magenta \"npm:dev:web\" \"npm:dev:api\"",
+    "dev:web": "npm run dev --workspace @visualizer/web",
+    "dev:api": "python -m uvicorn app.main:app --reload --app-dir services/api --host 127.0.0.1 --port 8000",
+    "build": "npm run build --workspace @visualizer/web",
+    "lint": "npm run lint --workspaces --if-present && python -m ruff check services/api services/worker",
+    "typecheck": "npm run typecheck --workspaces --if-present && python -m mypy services/api/app services/worker/worker.py",
+    "test": "npm run test:unit && npm run test:api",
+    "test:unit": "npm run test --workspace @lili/geometry && npm run test --workspace @lili/ai-router",
+    "test:api": "python -m pytest services/api/tests -q",
+    "test:e2e": "playwright test",
+    "format": "prettier --write .",
+    "db:migrate": "python -m alembic -c services/api/alembic.ini upgrade head",
+    "db:seed": "python services/api/scripts/seed.py"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "concurrently": "^9.2.1",
+    "prettier": "^3.6.2"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "@lili/analytics",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@lili/types": "*"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3"
+  }
+}

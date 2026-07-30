@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: npm ci
+      - run: python -m pip install -r services/api/requirements.txt
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+        env:
+          DEMO_MODE: "true"
+          OPENAI_API_KEY: ""
+      - run: npm run build
+        env:
+          NEXT_PUBLIC_API_URL: http://127.0.0.1:8000
+      - run: npx playwright install --with-deps chromium webkit
+      - run: npm run test:e2e
+        env:
+          DEMO_MODE: "true"
+          OPENAI_API_KEY: ""
+          NEXT_PUBLIC_API_URL: http://127.0.0.1:8000
