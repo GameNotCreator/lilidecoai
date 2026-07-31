@@ -277,7 +277,8 @@ async function openAIPlacement(
     body: JSON.stringify({
       model: serverConfig.openaiVisionModel,
       store: false,
-      max_output_tokens: 500,
+      reasoning: { effort: "none" },
+      max_output_tokens: 1_000,
       input: [
         {
           role: "user",
@@ -302,6 +303,7 @@ async function openAIPlacement(
         },
       ],
       text: {
+        verbosity: "low",
         format: {
           type: "json_schema",
           name: "placement_recommendation",
