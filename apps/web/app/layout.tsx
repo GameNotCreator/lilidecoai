@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Cormorant_Garamond, Manrope } from "next/font/google";
 import Link from "next/link";
 import { ArrowUpRight, Menu } from "lucide-react";
+import { serverConfig } from "@/lib/server/config";
 import "./globals.css";
 
 const sans = Manrope({
@@ -30,11 +31,13 @@ export default function RootLayout({
   return (
     <html lang="fr">
       <body className={`${sans.variable} ${serif.variable}`}>
-        <div className="demo-banner">
-          <span>Mode démonstration</span>
-          <span aria-hidden="true">•</span>
-          <span>Aucune génération OpenAI sans clé serveur</span>
-        </div>
+        {serverConfig.demoMode && (
+          <div className="demo-banner">
+            <span>Mode démonstration</span>
+            <span aria-hidden="true">•</span>
+            <span>Aucune génération OpenAI sans clé serveur</span>
+          </div>
+        )}
         <header className="site-header">
           <div className="container site-header-inner">
             <Link className="brand" href="/">
@@ -77,4 +80,3 @@ export default function RootLayout({
     </html>
   );
 }
-

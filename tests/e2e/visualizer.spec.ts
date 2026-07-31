@@ -87,6 +87,17 @@ test("landing and merchant dashboard expose the core promise", async ({
   await expect(page.getByText("Vase Sable")).toBeVisible();
 });
 
+test("public demo establishes a restricted viewer session", async ({ page }) => {
+  await page.goto("/demo");
+  await expect(
+    page.getByRole("heading", { name: /Voyez l’objet/i }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /Vase Sable/i }),
+  ).toBeVisible();
+  await expect(page.locator(".studio-error")).toHaveCount(0);
+});
+
 test("required customer journey reaches a successful mock render", async ({
   page,
 }) => {

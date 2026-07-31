@@ -4,7 +4,13 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
-export function AuthForm({ mode }: { mode: "login" | "signup" }) {
+export function AuthForm({
+  mode,
+  returnTo = "/app",
+}: {
+  mode: "login" | "signup";
+  returnTo?: string;
+}) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -37,7 +43,7 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
         const payload = (await response.json()) as { detail?: string };
         throw new Error(payload.detail ?? "Connexion impossible");
       }
-      router.push("/app");
+      router.push(returnTo);
       router.refresh();
     } catch (reason) {
       setError(

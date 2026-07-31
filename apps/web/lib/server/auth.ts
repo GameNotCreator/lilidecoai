@@ -35,26 +35,8 @@ export async function tenantForRequest(request: Request): Promise<Tenant> {
     readCookie(request, cookieName) ??
     readCookie(request, publicCookieName);
   if (token) {
-    try {
-      const { payload } = await jwtVerify(token, secret(), {
-        issuer: "lilidecoai",
-        audience: "lilidecoai-web",
-      });
-      const tenant: Tenant = {
-        organizationId: String(payload.organizationId),
-        userId: String(payload.sub),
-        role: String(payload.role) as Tenant["role"],
-      };
-      if (typeof payload.publicProductId === "string") {
-        tenant.publicProductId = payload.publicProductId;
-      }
-      if (typeof payload.publicSessionId === "string") {
-        tenant.publicSessionId = payload.publicSessionId;
-      }
-      return tenant;
-    } catch {
-      // Invalid sessions fall through to demo mode or a 401.
-    }
+    const tenant = await verifySessionToken(token);
+    if (tenant) return tenant;
   }
   if (serverConfig.demoMode) {
     return {
@@ -67,6 +49,38 @@ export async function tenantForRequest(request: Request): Promise<Tenant> {
     };
   }
   throw new AuthError("Authentification requise", 401);
+}
+
+export async function verifySessionToken(
+  token: string,
+): Promise<Tenant | null> {
+  try {
+    const { payload } = await jwtVerify(token, secret(), {
+      issuer: "lilidecoai",
+      audience: "lilidecoai-web",
+    });
+    if (
+      typeof payload.sub !== "string" ||
+      typeof payload.organizationId !== "string" ||
+      typeof payload.role !== "string"
+    ) {
+      return null;
+    }
+    const tenant: Tenant = {
+      organizationId: payload.organizationId,
+      userId: payload.sub,
+      role: payload.role as Tenant["role"],
+    };
+    if (typeof payload.publicProductId === "string") {
+      tenant.publicProductId = payload.publicProductId;
+    }
+    if (typeof payload.publicSessionId === "string") {
+      tenant.publicSessionId = payload.publicSessionId;
+    }
+    return tenant;
+  } catch {
+    return null;
+  }
 }
 
 export async function createSession(

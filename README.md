@@ -2,7 +2,7 @@
 
 SaaS Next.js de visualisation d’objets décoratifs dans une photo d’intérieur.
 Le frontend et toutes les API sont hébergés ensemble sur Vercel. MongoDB est
-l’unique base de données et Vercel Blob conserve les images privées.
+l’unique base de données et Cloudinary conserve les images privées.
 
 ## Démarrage local
 
@@ -24,7 +24,7 @@ Ouvrir :
 
 Avec `DEMO_MODE=true`, un vase et un portefeuille de 12 crédits sont créés
 automatiquement dans MongoDB. Sans clé OpenAI, le pipeline de rendu local reste
-entièrement utilisable. Sans token Vercel Blob en local, les images sont
+entièrement utilisable. Sans configuration Cloudinary en local, les images sont
 stockées en binaire dans MongoDB.
 
 ## Architecture
@@ -72,11 +72,10 @@ npm.cmd run test:e2e
 1. Importer `GameNotCreator/lilidecoai` dans Vercel.
 2. Choisir `apps/web` comme Root Directory et autoriser les fichiers du monorepo
    situés hors de ce dossier.
-3. Connecter un store Vercel Blob privé ; Vercel fournit automatiquement
-   l’authentification OIDC.
-4. Ajouter `MONGODB_URI`, `MONGODB_DB`, `APP_SESSION_SECRET` et `CRON_SECRET`.
-5. Ajouter `OPENAI_API_KEY` uniquement pour activer le rendu IA.
-6. Déployer, puis vérifier `/v1/health`.
+3. Ajouter `MONGODB_URI`, `MONGODB_DB`, `APP_SESSION_SECRET`, `CRON_SECRET` et
+   la variable `CLOUDINARY_URL` copiée depuis Cloudinary.
+4. Ajouter `OPENAI_API_KEY` uniquement pour activer le rendu IA.
+5. Déployer, puis vérifier `/v1/health`.
 
 Les détails sont dans [docs/deployment.md](docs/deployment.md).
 

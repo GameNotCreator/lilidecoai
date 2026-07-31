@@ -8,7 +8,7 @@ LiliDecoAI est une application full-stack Next.js :
   `apps/web` ;
 - les Route Handlers Next.js s’exécutent comme fonctions Node.js sur Vercel ;
 - MongoDB est l’unique base de données ;
-- Vercel Blob privé conserve les images en production ;
+- Cloudinary conserve les images avec le type `authenticated` en production ;
 - Sharp assure normalisation, composition, masque et rendu local ;
 - OpenAI GPT Image 2 est un enrichissement serveur optionnel.
 
@@ -20,7 +20,7 @@ Il n’existe aucun processus Python, worker ou serveur API séparé.
 flowchart LR
     A["Photo produit"] --> B["Route Handler Next.js"]
     B --> C["Sharp : normalisation et cutout"]
-    C --> D["Vercel Blob privé"]
+    C --> D["Cloudinary authenticated"]
     E["Photo de pièce + consentement"] --> B
     B --> F["MongoDB : scène et géométrie"]
     F --> G["Placement Konva"]
@@ -30,7 +30,7 @@ flowchart LR
     I -->|Oui| K["GPT Image 2 edits"]
     J --> L["Overlay catalogue"]
     K --> L
-    L --> M["Blob + MongoDB"]
+    L --> M["Cloudinary + MongoDB"]
     M --> N["Débit atomique d’un crédit"]
 ```
 
@@ -52,7 +52,7 @@ Collections principales :
 - `analytics_events`, `audit_logs`.
 
 Toutes les requêtes métier incluent `organizationId`. Les photos temporaires ont
-une date d’expiration ; le cron Vercel supprime le binaire Blob avant ses
+une date d’expiration ; le cron Vercel supprime l’objet Cloudinary avant ses
 métadonnées MongoDB.
 
 Le widget démarre par `/v1/visualizer/:merchantSlug/:productId`. Cette route

@@ -5,9 +5,13 @@ import type { Db } from "mongodb";
 
 import { storeAsset } from "./assets";
 import { collections } from "./mongodb";
-import { DEMO_ORGANIZATION_ID, type ProductDocument } from "./types";
+import {
+  DEMO_MERCHANT_SLUG,
+  DEMO_ORGANIZATION_ID,
+  DEMO_PRODUCT_ID,
+  type ProductDocument,
+} from "./types";
 
-const DEMO_PRODUCT_ID = "11111111-1111-4111-8111-111111111111";
 const DEMO_PRODUCT_ASSET_ID = "11111111-1111-4111-8111-111111111112";
 const DEMO_CUTOUT_ASSET_ID = "11111111-1111-4111-8111-111111111113";
 
@@ -33,7 +37,7 @@ async function seed(db: Db): Promise<void> {
       $setOnInsert: {
         id: DEMO_ORGANIZATION_ID,
         name: "Atelier Lili",
-        slug: "atelier-lili",
+        slug: DEMO_MERCHANT_SLUG,
         createdAt: new Date(),
       },
     },
@@ -50,6 +54,10 @@ async function seed(db: Db): Promise<void> {
       },
     },
     { upsert: true },
+  );
+  await c.wallets.updateOne(
+    { organizationId: DEMO_ORGANIZATION_ID, balance: { $lt: 1 } },
+    { $set: { balance: 12, updatedAt: new Date() } },
   );
 
   const existing = await c.products.findOne({ id: DEMO_PRODUCT_ID });

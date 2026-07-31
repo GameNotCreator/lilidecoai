@@ -23,8 +23,13 @@ export const serverConfig = {
   openaiBaseUrl:
     clean(process.env.OPENAI_BASE_URL) ?? "https://api.openai.com/v1",
   openaiMaxCostUsd: Number(clean(process.env.OPENAI_MAX_COST_USD) ?? "0.25"),
+  cloudinaryUrl: clean(process.env.CLOUDINARY_URL),
+  cloudinaryCloudName: clean(process.env.CLOUDINARY_CLOUD_NAME),
+  cloudinaryApiKey: clean(process.env.CLOUDINARY_API_KEY),
+  cloudinaryApiSecret: clean(process.env.CLOUDINARY_API_SECRET),
+  cloudinaryUploadFolder:
+    clean(process.env.CLOUDINARY_UPLOAD_FOLDER) ?? "lilidecoai",
   sessionSecret: clean(process.env.APP_SESSION_SECRET),
-  blobToken: clean(process.env.BLOB_READ_WRITE_TOKEN),
   cronSecret: clean(process.env.CRON_SECRET),
   maxUploadBytes: Math.min(
     Number(clean(process.env.MAX_UPLOAD_BYTES) ?? "4000000"),
@@ -41,9 +46,13 @@ export function assertProductionConfig(): void {
   if (!serverConfig.sessionSecret || serverConfig.sessionSecret.length < 32) {
     throw new Error("APP_SESSION_SECRET must contain at least 32 characters");
   }
-  if (!serverConfig.blobToken && !process.env.VERCEL) {
-    throw new Error(
-      "Vercel Blob OIDC or BLOB_READ_WRITE_TOKEN is required in production",
-    );
-  }
+}
+
+export function cloudinaryStorageConfigured(): boolean {
+  return Boolean(
+    serverConfig.cloudinaryUrl ||
+      (serverConfig.cloudinaryCloudName &&
+        serverConfig.cloudinaryApiKey &&
+        serverConfig.cloudinaryApiSecret),
+  );
 }

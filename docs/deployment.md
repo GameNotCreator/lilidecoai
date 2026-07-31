@@ -25,13 +25,12 @@ Importer le dépôt GitHub `GameNotCreator/lilidecoai`, puis configurer :
 
 `apps/web/vercel.json` déclare le cron de purge et la configuration Next.js.
 
-## 3. Vercel Blob
+## 3. Cloudinary
 
-Dans Storage, créer ou connecter un Blob store privé au projet. Les nouveaux
-projets utilisent automatiquement l’authentification OIDC à durée courte. Le
-code reste compatible avec `BLOB_READ_WRITE_TOKEN` pour un ancien store ou un
-outil local. Les blobs sont servis via `/api/assets/:id` après les contrôles
-d’accès.
+Dans Cloudinary, ouvrir **Settings → API Keys** et copier l’API environment
+variable complète dans `CLOUDINARY_URL`. Les images sont téléversées avec le
+type `authenticated` et restent servies par `/api/assets/:id` après les
+contrôles d’accès de l’application.
 
 ## 4. Variables Vercel
 
@@ -43,6 +42,7 @@ MONGODB_DB
 APP_SESSION_SECRET
 CRON_SECRET
 DEMO_MODE=false
+CLOUDINARY_URL
 ```
 
 Optionnelles :
@@ -52,7 +52,7 @@ OPENAI_API_KEY
 OPENAI_MODEL=gpt-image-2
 OPENAI_QUALITY=medium
 OPENAI_MAX_COST_USD=0.25
-BLOB_READ_WRITE_TOKEN
+CLOUDINARY_UPLOAD_FOLDER=lilidecoai
 ```
 
 `APP_SESSION_SECRET` et `CRON_SECRET` doivent être deux valeurs aléatoires
@@ -71,9 +71,10 @@ npm.cmd run test:e2e
 
 Smoke tests :
 
-1. ouvrir `/v1/health` et confirmer `database: mongodb` ;
+1. ouvrir `/v1/health` et confirmer `database: mongodb` et
+   `storage: cloudinary` ;
 2. créer un compte et se reconnecter ;
-3. créer et préparer un produit ;
+3. créer et préparer un produit, puis confirmer sa présence dans Cloudinary ;
 4. envoyer une pièce puis produire un rendu local ;
 5. rejouer la même clé d’idempotence et vérifier l’absence de double débit ;
 6. activer OpenAI sur Preview avant Production ;

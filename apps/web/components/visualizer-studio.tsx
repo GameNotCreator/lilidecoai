@@ -76,7 +76,7 @@ export function VisualizerStudio({
 
   useEffect(() => {
     async function load() {
-      if (embedded && merchantSlug && initialProductId) {
+      if (merchantSlug && initialProductId) {
         await establishPublicSession(merchantSlug, initialProductId);
       }
       const [availableProducts, wallet] = await Promise.all([
@@ -256,7 +256,7 @@ export function VisualizerStudio({
 
       {error && (
         <div className="studio-error" role="alert">
-          {error}. Vérifiez la connexion MongoDB et les variables Vercel.
+          {error}
         </div>
       )}
 

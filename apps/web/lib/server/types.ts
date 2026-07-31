@@ -2,6 +2,8 @@ import type { Binary } from "mongodb";
 
 export const DEMO_ORGANIZATION_ID = "00000000-0000-4000-8000-000000000001";
 export const DEMO_USER_ID = "00000000-0000-4000-8000-000000000002";
+export const DEMO_PRODUCT_ID = "11111111-1111-4111-8111-111111111111";
+export const DEMO_MERCHANT_SLUG = "atelier-lili";
 
 export interface OrganizationDocument {
   id: string;
@@ -16,7 +18,9 @@ export interface AssetDocument {
   kind: "product" | "cutout" | "scene" | "render" | "mask";
   contentType: string;
   bytes?: Binary;
-  blobPath?: string;
+  cloudinaryPublicId?: string;
+  cloudinaryFormat?: string;
+  cloudinaryVersion?: number;
   size: number;
   createdAt: Date;
   expiresAt?: Date;

@@ -1,22 +1,19 @@
 import "server-only";
 
-import { del, get, put } from "@vercel/blob";
+import { v2 as cloudinary, type UploadApiResponse } from "cloudinary";
 import { Binary, type Db } from "mongodb";
 import sharp from "sharp";
 
-import { serverConfig } from "./config";
+import {
+  cloudinaryStorageConfigured,
+  serverConfig,
+} from "./config";
 import { collections } from "./mongodb";
 import type { AssetDocument } from "./types";
 
 const allowedTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
 
-function usesBlobStorage(): boolean {
-  return Boolean(serverConfig.blobToken || process.env.VERCEL);
-}
-
-function blobTokenOption(): { token: string } | Record<string, never> {
-  return serverConfig.blobToken ? { token: serverConfig.blobToken } : {};
-}
+let cloudinaryReady = false;
 
 export interface ImageAssetInput {
   organizationId: string;
@@ -121,18 +118,14 @@ export async function storeAsset(
     ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
   };
 
-  if (usesBlobStorage()) {
-    const blob = await put(
-      `${input.organizationId}/${input.kind}/${id}`,
+  if (cloudinaryStorageConfigured()) {
+    const uploaded = await uploadCloudinary(
       input.buffer,
-      {
-        access: "private",
-        addRandomSuffix: true,
-        contentType: input.contentType,
-        ...blobTokenOption(),
-      },
+      `${serverConfig.cloudinaryUploadFolder}/${input.organizationId}/${input.kind}/${id}`,
     );
-    base.blobPath = blob.pathname;
+    base.cloudinaryPublicId = uploaded.public_id;
+    base.cloudinaryFormat = uploaded.format;
+    base.cloudinaryVersion = uploaded.version;
   } else {
     base.bytes = new Binary(input.buffer);
   }
@@ -157,25 +150,97 @@ export async function readAsset(
       buffer: Buffer.from(asset.bytes.buffer),
     };
   }
-  if (!asset.blobPath) return null;
-  const result = await get(asset.blobPath, {
-    access: "private",
-    ...blobTokenOption(),
+  if (!asset.cloudinaryPublicId || !asset.cloudinaryFormat) return null;
+  const client = cloudinaryClient();
+  const url = client.utils.private_download_url(
+    asset.cloudinaryPublicId,
+    asset.cloudinaryFormat,
+    {
+      resource_type: "image",
+      type: "authenticated",
+      expires_at: Math.floor(Date.now() / 1000) + 300,
+      attachment: false,
+    },
+  );
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(30_000),
   });
-  if (!result || result.statusCode !== 200 || !result.stream) return null;
-  const buffer = Buffer.from(await new Response(result.stream).arrayBuffer());
+  if (!response.ok) return null;
+  const buffer = Buffer.from(await response.arrayBuffer());
   return { asset, buffer };
 }
 
 export async function deleteAsset(db: Db, assetId: string): Promise<void> {
-  const asset = await collections(db).assets.findOneAndDelete({ id: assetId });
-  if (asset?.blobPath && usesBlobStorage()) {
-    await del(asset.blobPath, blobTokenOption());
+  const assets = collections(db).assets;
+  const asset = await assets.findOne({ id: assetId });
+  if (!asset) return;
+  if (asset.cloudinaryPublicId) {
+    await cloudinaryClient().uploader.destroy(asset.cloudinaryPublicId, {
+      resource_type: "image",
+      type: "authenticated",
+      invalidate: true,
+    });
   }
+  await assets.deleteOne({ id: assetId });
 }
 
 export function assetUrl(assetId: string | undefined): string | null {
   return assetId ? `/api/assets/${assetId}` : null;
+}
+
+function cloudinaryClient(): typeof cloudinary {
+  if (cloudinaryReady) return cloudinary;
+  if (!cloudinaryStorageConfigured()) {
+    throw new Error("Cloudinary n’est pas configuré");
+  }
+
+  if (serverConfig.cloudinaryUrl) {
+    const url = new URL(serverConfig.cloudinaryUrl);
+    if (url.protocol !== "cloudinary:") {
+      throw new Error("CLOUDINARY_URL doit commencer par cloudinary://");
+    }
+    cloudinary.config({
+      cloud_name: decodeURIComponent(url.hostname),
+      api_key: decodeURIComponent(url.username),
+      api_secret: decodeURIComponent(url.password),
+      secure: true,
+      hide_sensitive: true,
+    });
+  } else {
+    cloudinary.config({
+      cloud_name: serverConfig.cloudinaryCloudName,
+      api_key: serverConfig.cloudinaryApiKey,
+      api_secret: serverConfig.cloudinaryApiSecret,
+      secure: true,
+      hide_sensitive: true,
+    });
+  }
+  cloudinaryReady = true;
+  return cloudinary;
+}
+
+function uploadCloudinary(
+  buffer: Buffer,
+  publicId: string,
+): Promise<UploadApiResponse> {
+  const client = cloudinaryClient();
+  return new Promise((resolve, reject) => {
+    const upload = client.uploader.upload_stream(
+      {
+        public_id: publicId,
+        resource_type: "image",
+        type: "authenticated",
+        overwrite: true,
+        invalidate: true,
+      },
+      (error, result) => {
+        if (error) return reject(error);
+        if (!result) return reject(new Error("Réponse Cloudinary vide"));
+        resolve(result);
+      },
+    );
+    upload.end(buffer);
+  });
 }
 
 export class ApiInputError extends Error {}

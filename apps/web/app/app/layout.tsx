@@ -9,6 +9,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { WorkspaceIdentity } from "@/components/app-data-pages";
+import { requireMerchantPage } from "@/lib/server/page-auth";
 
 const links = [
   { href: "/app", label: "Dashboard", icon: Gauge },
@@ -20,7 +21,12 @@ const links = [
   { href: "/app/settings", label: "Paramètres", icon: Settings },
 ];
 
-export default function AppLayout({ children }: { children: React.ReactNode }) {
+export default async function AppLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  await requireMerchantPage("/app");
   return (
     <main className="app-surface">
       <aside className="app-sidebar">

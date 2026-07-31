@@ -24,7 +24,7 @@ import {
   tenantForRequest,
   type Tenant,
 } from "./auth";
-import { serverConfig } from "./config";
+import { cloudinaryStorageConfigured, serverConfig } from "./config";
 import { CreditError, getCredits } from "./credits";
 import { collections, database, pingMongo } from "./mongodb";
 import { createRender, RenderError } from "./rendering";
@@ -35,6 +35,7 @@ import type {
   ProductDocument,
   SceneDocument,
 } from "./types";
+import { DEMO_MERCHANT_SLUG, DEMO_PRODUCT_ID } from "./types";
 
 const productCreateSchema = z.object({
   name: z.string().trim().min(2).max(120),
@@ -65,6 +66,10 @@ export async function dispatchApi(
       return Response.json({
         status: "ok",
         database: (await pingMongo()) ? "mongodb" : "unavailable",
+        storage: cloudinaryStorageConfigured()
+          ? "cloudinary"
+          : "mongodb-fallback",
+        authentication: serverConfig.demoMode ? "demo" : "required",
         runtime: "nextjs-vercel",
       });
     }
@@ -82,6 +87,12 @@ export async function dispatchApi(
       path.length === 3 &&
       request.method === "GET"
     ) {
+      if (
+        path[1] === DEMO_MERCHANT_SLUG &&
+        path[2] === DEMO_PRODUCT_ID
+      ) {
+        await ensureDemoSeed(db);
+      }
       return await publicVisualizer(db, path[1] as string, path[2] as string);
     }
 
