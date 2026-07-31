@@ -4,14 +4,12 @@ import { v2 as cloudinary, type UploadApiResponse } from "cloudinary";
 import { Binary, type Db } from "mongodb";
 import sharp from "sharp";
 
-import {
-  cloudinaryStorageConfigured,
-  serverConfig,
-} from "./config";
+import { cloudinaryStorageConfigured, serverConfig } from "./config";
 import { collections } from "./mongodb";
 import type { AssetDocument } from "./types";
 
 const allowedTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
+const cloudinaryDeliveryType = "private" as const;
 
 let cloudinaryReady = false;
 
@@ -119,13 +117,19 @@ export async function storeAsset(
   };
 
   if (cloudinaryStorageConfigured()) {
-    const uploaded = await uploadCloudinary(
-      input.buffer,
-      `${serverConfig.cloudinaryUploadFolder}/${input.organizationId}/${input.kind}/${id}`,
-    );
-    base.cloudinaryPublicId = uploaded.public_id;
-    base.cloudinaryFormat = uploaded.format;
-    base.cloudinaryVersion = uploaded.version;
+    try {
+      const uploaded = await uploadCloudinary(
+        input.buffer,
+        `${serverConfig.cloudinaryUploadFolder}/${input.organizationId}/${input.kind}/${id}`,
+      );
+      base.cloudinaryPublicId = uploaded.public_id;
+      base.cloudinaryFormat = uploaded.format;
+      base.cloudinaryVersion = uploaded.version;
+      base.cloudinaryDeliveryType = cloudinaryDeliveryType;
+    } catch (reason) {
+      console.error("Cloudinary upload failed; using MongoDB fallback", reason);
+      base.bytes = new Binary(input.buffer);
+    }
   } else {
     base.bytes = new Binary(input.buffer);
   }
@@ -152,12 +156,13 @@ export async function readAsset(
   }
   if (!asset.cloudinaryPublicId || !asset.cloudinaryFormat) return null;
   const client = cloudinaryClient();
+  const deliveryType = asset.cloudinaryDeliveryType ?? "authenticated";
   const url = client.utils.private_download_url(
     asset.cloudinaryPublicId,
     asset.cloudinaryFormat,
     {
       resource_type: "image",
-      type: "authenticated",
+      type: deliveryType,
       expires_at: Math.floor(Date.now() / 1000) + 300,
       attachment: false,
     },
@@ -175,9 +180,10 @@ export async function deleteAsset(db: Db, assetId: string): Promise<void> {
   const asset = await assets.findOne({ id: assetId });
   if (!asset) return;
   if (asset.cloudinaryPublicId) {
+    const deliveryType = asset.cloudinaryDeliveryType ?? "authenticated";
     await cloudinaryClient().uploader.destroy(asset.cloudinaryPublicId, {
       resource_type: "image",
-      type: "authenticated",
+      type: deliveryType,
       invalidate: true,
     });
   }
@@ -229,7 +235,7 @@ function uploadCloudinary(
       {
         public_id: publicId,
         resource_type: "image",
-        type: "authenticated",
+        type: cloudinaryDeliveryType,
         overwrite: true,
         invalidate: true,
       },

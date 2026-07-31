@@ -29,8 +29,9 @@ Importer le dépôt GitHub `GameNotCreator/lilidecoai`, puis configurer :
 
 Dans Cloudinary, ouvrir **Settings → API Keys** et copier l’API environment
 variable complète dans `CLOUDINARY_URL`. Les images sont téléversées avec le
-type `authenticated` et restent servies par `/api/assets/:id` après les
-contrôles d’accès de l’application.
+type `private` et restent servies par `/api/assets/:id` après les contrôles
+d’accès de l’application. En cas d’indisponibilité Cloudinary, l’envoi est
+conservé temporairement dans MongoDB afin de ne pas bloquer le parcours.
 
 ## 4. Variables Vercel
 
@@ -53,7 +54,14 @@ OPENAI_MODEL=gpt-image-2
 OPENAI_QUALITY=medium
 OPENAI_MAX_COST_USD=0.25
 CLOUDINARY_UPLOAD_FOLDER=lilidecoai
+MAX_UPLOAD_BYTES=4000000
 ```
+
+Vercel limite les requêtes de Functions à 4,5 Mo. L’interface accepte des
+photos source jusqu’à 20 Mo, les redimensionne à 2 048 px maximum et les
+compresse sous 3,5 Mo avant l’envoi. Ne pas augmenter `MAX_UPLOAD_BYTES` au-delà
+de 4 000 000 : la surcharge multipart doit également rester sous la limite
+Vercel.
 
 `APP_SESSION_SECRET` et `CRON_SECRET` doivent être deux valeurs aléatoires
 différentes. Ne jamais préfixer une clé secrète par `NEXT_PUBLIC_`.

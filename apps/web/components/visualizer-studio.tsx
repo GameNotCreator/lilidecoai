@@ -18,6 +18,7 @@ import {
 import type { Product, Render } from "@lili/types";
 import { Badge, Button } from "@lili/ui";
 import { api, establishPublicSession, getProducts } from "@/lib/api";
+import { prepareImageForUpload } from "@/lib/client-image";
 import { PlacementCanvas, type PlacementState } from "./placement-canvas";
 
 interface Scene {
@@ -67,6 +68,7 @@ export function VisualizerStudio({
   const [beforePercent, setBeforePercent] = useState(48);
   const [credits, setCredits] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState("Choisir une photo");
   const [error, setError] = useState("");
 
   const product = useMemo(
@@ -101,8 +103,11 @@ export function VisualizerStudio({
     setBusy(true);
     setError("");
     try {
+      setUploadStatus("Optimisation…");
+      const preparedFile = await prepareImageForUpload(file);
+      setUploadStatus("Envoi et analyse…");
       const form = new FormData();
-      form.set("file", file);
+      form.set("file", preparedFile);
       form.set("consent", "true");
       const created = await api<Scene>("/v1/scenes", {
         method: "POST",
@@ -120,6 +125,7 @@ export function VisualizerStudio({
       );
     } finally {
       setBusy(false);
+      setUploadStatus("Choisir une photo");
     }
   }
 
@@ -300,9 +306,11 @@ export function VisualizerStudio({
             <label className="upload-zone">
               <Upload size={32} />
               <strong>Ajoutez une photo de votre pièce</strong>
-              <span>JPEG, PNG ou WebP · 4 Mo max · min. 320 px</span>
+              <span>
+                JPEG, PNG ou WebP · jusqu’à 20 Mo · optimisation automatique
+              </span>
               <span className="button">
-                {busy ? "Analyse…" : "Choisir une photo"}
+                {busy ? uploadStatus : "Choisir une photo"}
               </span>
               <input
                 type="file"

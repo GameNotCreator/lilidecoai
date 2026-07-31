@@ -12,6 +12,12 @@ function clean(value: string | undefined): string | undefined {
   return trimmed;
 }
 
+function uploadLimit(): number {
+  const requested = Number(clean(process.env.MAX_UPLOAD_BYTES) ?? "4000000");
+  if (!Number.isFinite(requested) || requested <= 0) return 4_000_000;
+  return Math.min(requested, 4_000_000);
+}
+
 export const serverConfig = {
   mongodbUri:
     clean(process.env.MONGODB_URI) ?? "mongodb://127.0.0.1:27017/lilidecoai",
@@ -31,10 +37,7 @@ export const serverConfig = {
     clean(process.env.CLOUDINARY_UPLOAD_FOLDER) ?? "lilidecoai",
   sessionSecret: clean(process.env.APP_SESSION_SECRET),
   cronSecret: clean(process.env.CRON_SECRET),
-  maxUploadBytes: Math.min(
-    Number(clean(process.env.MAX_UPLOAD_BYTES) ?? "4000000"),
-    4_000_000,
-  ),
+  maxUploadBytes: uploadLimit(),
   roomRetentionHours: Number(clean(process.env.ROOM_RETENTION_HOURS) ?? "24"),
 };
 
@@ -51,8 +54,8 @@ export function assertProductionConfig(): void {
 export function cloudinaryStorageConfigured(): boolean {
   return Boolean(
     serverConfig.cloudinaryUrl ||
-      (serverConfig.cloudinaryCloudName &&
-        serverConfig.cloudinaryApiKey &&
-        serverConfig.cloudinaryApiSecret),
+    (serverConfig.cloudinaryCloudName &&
+      serverConfig.cloudinaryApiKey &&
+      serverConfig.cloudinaryApiSecret),
   );
 }

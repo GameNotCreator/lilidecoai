@@ -21,6 +21,7 @@ export interface AssetDocument {
   cloudinaryPublicId?: string;
   cloudinaryFormat?: string;
   cloudinaryVersion?: number;
+  cloudinaryDeliveryType?: "private" | "authenticated";
   size: number;
   createdAt: Date;
   expiresAt?: Date;

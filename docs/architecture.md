@@ -8,7 +8,7 @@ LiliDecoAI est une application full-stack Next.js :
   `apps/web` ;
 - les Route Handlers Next.js s’exécutent comme fonctions Node.js sur Vercel ;
 - MongoDB est l’unique base de données ;
-- Cloudinary conserve les images avec le type `authenticated` en production ;
+- Cloudinary conserve les images avec le type `private` en production ;
 - Sharp assure normalisation, composition, masque et rendu local ;
 - OpenAI GPT Image 2 est un enrichissement serveur optionnel.
 
@@ -20,7 +20,7 @@ Il n’existe aucun processus Python, worker ou serveur API séparé.
 flowchart LR
     A["Photo produit"] --> B["Route Handler Next.js"]
     B --> C["Sharp : normalisation et cutout"]
-    C --> D["Cloudinary authenticated"]
+    C --> D["Cloudinary private"]
     E["Photo de pièce + consentement"] --> B
     B --> F["MongoDB : scène et géométrie"]
     F --> G["Placement Konva"]
@@ -62,7 +62,8 @@ que depuis cette même session.
 
 ## Limites assumées du MVP
 
-- une image envoyée à une fonction Vercel est limitée à 4 Mo ;
+- une photo source peut peser jusqu’à 20 Mo ; le navigateur la réduit à 2 048 px
+  et sous 3,5 Mo avant de l’envoyer à la fonction Vercel ;
 - un seul objet est placé par rendu ;
 - le rendu OpenAI est synchrone et borné par la durée maximale de la fonction ;
 - la segmentation locale retire surtout les fonds clairs et neutres ;

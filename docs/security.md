@@ -9,9 +9,10 @@
   rendus ;
 - mots de passe hachés avec bcrypt ;
 - séparation des requêtes par `organizationId` ;
-- JPEG, PNG et WebP uniquement, résolution minimale et limite de 4 Mo ;
+- JPEG, PNG et WebP uniquement, résolution minimale, source limitée à 20 Mo et
+  charge serveur limitée à 4 Mo après optimisation locale ;
 - réencodage Sharp qui supprime les métadonnées EXIF ;
-- assets Cloudinary `authenticated` en production ;
+- originaux Cloudinary `private` en production et servis via l’API applicative ;
 - consentement requis avant l’envoi d’une photo de pièce ;
 - expiration des scènes et purge des assets temporaires ;
 - clés d’idempotence uniques pour rendus et crédits ;

@@ -24,6 +24,22 @@ async function roomFixture(): Promise<Buffer> {
   return sharp(svg).png().toBuffer();
 }
 
+async function largeRoomFixture(): Promise<Buffer> {
+  const width = 1600;
+  const height = 1600;
+  const pixels = Buffer.allocUnsafe(width * height * 3);
+  let state = 0x12345678;
+  for (let index = 0; index < pixels.length; index += 1) {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    pixels[index] = state >>> 24;
+  }
+  return sharp(pixels, {
+    raw: { width, height, channels: 3 },
+  })
+    .png({ compressionLevel: 0 })
+    .toBuffer();
+}
+
 test("MongoDB signup, logout and login keep a signed session", async ({
   request,
 }) => {
@@ -87,14 +103,31 @@ test("landing and merchant dashboard expose the core promise", async ({
   await expect(page.getByText("Vase Sable")).toBeVisible();
 });
 
-test("public demo establishes a restricted viewer session", async ({ page }) => {
+test("public demo establishes a restricted viewer session", async ({
+  page,
+}) => {
   await page.goto("/demo");
   await expect(
     page.getByRole("heading", { name: /Voyez l’objet/i }),
   ).toBeVisible();
+  await expect(page.getByRole("button", { name: /Vase Sable/i })).toBeVisible();
+  await expect(page.locator(".studio-error")).toHaveCount(0);
+});
+
+test("a source photo over 4 MB is optimized before upload", async ({
+  page,
+}) => {
+  await page.goto("/demo");
+  const largePhoto = await largeRoomFixture();
+  expect(largePhoto.length).toBeGreaterThan(4_500_000);
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "piece-telephone.png",
+    mimeType: "image/png",
+    buffer: largePhoto,
+  });
   await expect(
-    page.getByRole("button", { name: /Vase Sable/i }),
-  ).toBeVisible();
+    page.getByRole("heading", { name: "Surface & échelle" }),
+  ).toBeVisible({ timeout: 30_000 });
   await expect(page.locator(".studio-error")).toHaveCount(0);
 });
 
