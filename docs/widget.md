@@ -22,8 +22,7 @@ configuration publique est lue via
 Pour WooCommerce, injecter le fragment via un hook de fiche produit et utiliser
 l’ID produit mappé dans la métadonnée du catalogue. Pour Shopify, un app block
 Liquid pourra produire les mêmes attributs. Ces adaptateurs ne doivent jamais
-embarquer la clé OpenAI, Konnect ou Supabase service-role.
+embarquer les clés OpenAI, Konnect, MongoDB ou Vercel Blob.
 
 En production, remplir `allowedOrigins` pour chaque widget et appliquer la même
 liste dans la CSP/`frame-ancestors` du déploiement.
-

@@ -9,6 +9,7 @@ import {
   Settings,
   Sparkles,
 } from "lucide-react";
+import { WorkspaceIdentity } from "@/components/app-data-pages";
 
 const links = [
   { href: "/app", label: "Dashboard", icon: Gauge },
@@ -25,19 +26,19 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <main className="app-surface">
       <aside className="app-sidebar">
-        <div className="workspace-chip">
-          <span>AL</span>
-          <div><strong>Atelier Lili</strong><small>Organisation démo</small></div>
-        </div>
+        <WorkspaceIdentity />
         <nav>
           {links.map(({ href, label, icon: Icon }) => (
-            <Link href={href} key={href}><Icon size={17} /> {label}</Link>
+            <Link href={href} key={href}>
+              <Icon size={17} /> {label}
+            </Link>
           ))}
         </nav>
-        <Link className="admin-link" href="/admin">Administration →</Link>
+        <Link className="admin-link" href="/admin">
+          Administration →
+        </Link>
       </aside>
       <div className="app-content">{children}</div>
     </main>
   );
 }
-

@@ -1,62 +1,72 @@
 # Architecture
 
-## Décisions du MVP
+## Décision
 
-Le monorepo sépare les surfaces qui changent pour des raisons différentes, sans
-multiplier les processus locaux :
+LiliDecoAI est une application full-stack Next.js :
 
-- Next.js contient les pages publiques, marchand, client et administration.
-- FastAPI possède l’autorité sur le tenant, les assets, crédits, paiements,
-  rendus, tentatives et audits.
-- Le worker importe le même pipeline idempotent que l’API. En démo, le job est
-  exécuté immédiatement ; avec Redis, il est consommé depuis `renders`.
-- SQLite et le disque sont les adaptateurs locaux. PostgreSQL, Redis et MinIO
-  sont disponibles dans Compose.
+- les pages React, l’authentification et les API `/v1/*` vivent dans
+  `apps/web` ;
+- les Route Handlers Next.js s’exécutent comme fonctions Node.js sur Vercel ;
+- MongoDB est l’unique base de données ;
+- Vercel Blob privé conserve les images en production ;
+- Sharp assure normalisation, composition, masque et rendu local ;
+- OpenAI GPT Image 2 est un enrichissement serveur optionnel ;
+- Konnect est le provider de paiement optionnel.
 
-## Tranche verticale
+Il n’existe aucun processus Python, worker ou serveur API séparé.
+
+## Flux de rendu
 
 ```mermaid
 flowchart LR
-    A["Photo produit + dimensions"] --> B["Nettoyage EXIF"]
-    B --> C["Cutout et masque"]
-    D["Photo pièce + consentement"] --> E["Surface et calibration"]
-    C --> F["Placement Konva"]
-    E --> F
-    F --> G["Composition déterministe"]
-    G --> H{"Provider"}
-    H -->|Sans clé| I["Mock local"]
-    H -->|Production| J["GPT Image 2 edits"]
-    I --> K["Overlay catalogue"]
-    J --> K
-    K --> L["Contrôle qualité"]
-    L -->|Accepté| M["Capture 1 crédit"]
-    L -->|Échec final| N["Libération automatique"]
+    A["Photo produit"] --> B["Route Handler Next.js"]
+    B --> C["Sharp : normalisation et cutout"]
+    C --> D["Vercel Blob privé"]
+    E["Photo de pièce + consentement"] --> B
+    B --> F["MongoDB : scène et géométrie"]
+    F --> G["Placement Konva"]
+    G --> H["Sharp : composition et masque"]
+    H --> I{"OPENAI_API_KEY ?"}
+    I -->|Non ou mode démo| J["Rendu local déterministe"]
+    I -->|Oui| K["GPT Image 2 edits"]
+    J --> L["Overlay catalogue"]
+    K --> L
+    L --> M["Blob + MongoDB"]
+    M --> N["Débit atomique d’un crédit"]
 ```
 
-L’échelle et le placement ne sont jamais délégués à la génération. Pour un mur,
-un segment connu fournit `pixels/cm`. Pour une surface rectangulaire, quatre
-coins et les dimensions réelles produisent une homographie 3×3.
+L’échelle et le placement restent déterministes. L’IA ne choisit pas la taille
+du produit : elle harmonise uniquement l’éclairage, l’ombre, le contact et les
+contours dans le masque autorisé.
 
-## Données
+## Données MongoDB
 
-La migration initiale crée les tables demandées : utilisateurs, organisations,
-memberships, produits, assets, ancres, scènes, surfaces, calibrations,
-placements, rendus, tentatives, portefeuilles, transactions, abonnements,
-widgets, événements analytics et audits. `payments` complète l’idempotence
-Konnect.
+Le client MongoDB est partagé entre invocations chaudes et utilise un pool
+borné. Des index uniques protègent les identifiants, les utilisateurs, les
+portefeuilles et les clés d’idempotence.
 
-Toutes les entités métier portent l’organisation. Les accès applicatifs
-rejouent cette contrainte dans chaque requête. Les portefeuilles imposent
-`balance >= 0`, les clés d’idempotence sont uniques par organisation, et une
-tentative est unique par numéro dans un rendu.
+Collections principales :
 
-## Limites explicites
+- `organizations`, `users`, `products`, `assets`, `scenes`, `calibrations` ;
+- `renders`, `render_attempts` ;
+- `wallets`, `credit_transactions`, `payments` ;
+- `analytics_events`, `audit_logs`.
 
-- La segmentation locale retire un fond proche du blanc. L’UI expose le contrat
-  du futur éditeur pinceau/SAM, mais le moteur GPU n’est pas livré dans le MVP.
-- L’analyse de profondeur/surfaces est une suggestion déterministe en local.
-- Un seul objet est placé par rendu.
-- Les catégories réfléchissantes, transparentes ou déformables restent exclues.
-- L’adaptateur R2/S3 doit être activé et testé avec un compte réel avant une
-  production multi-instance ; Compose utilise actuellement un volume local.
+Toutes les requêtes métier incluent `organizationId`. Les photos temporaires ont
+une date d’expiration ; le cron Vercel supprime le binaire Blob avant ses
+métadonnées MongoDB.
 
+Le widget démarre par `/v1/visualizer/:merchantSlug/:productId`. Cette route
+émet une session anonyme signée limitée à ce produit et à un identifiant de
+session. Les scènes et rendus créés par un visiteur ne sont ensuite accessibles
+que depuis cette même session.
+
+## Limites assumées du MVP
+
+- une image envoyée à une fonction Vercel est limitée à 4 Mo ;
+- un seul objet est placé par rendu ;
+- le rendu OpenAI est synchrone et borné par la durée maximale de la fonction ;
+- la segmentation locale retire surtout les fonds clairs et neutres ;
+- les objets transparents, réfléchissants ou déformables restent hors périmètre ;
+- le cron fourni est quotidien ; un plan Vercel permettant une fréquence plus
+  élevée peut réduire la fenêtre réelle de suppression.

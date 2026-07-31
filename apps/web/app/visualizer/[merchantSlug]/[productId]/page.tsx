@@ -5,11 +5,14 @@ export default async function EmbeddedVisualizerPage({
 }: {
   params: Promise<{ merchantSlug: string; productId: string }>;
 }) {
-  const { productId } = await params;
+  const { merchantSlug, productId } = await params;
   return (
     <main className="embedded-page">
-      <VisualizerStudio embedded initialProductId={productId} />
+      <VisualizerStudio
+        embedded
+        initialProductId={productId}
+        merchantSlug={merchantSlug}
+      />
     </main>
   );
 }
-

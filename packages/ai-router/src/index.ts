@@ -2,10 +2,10 @@ export type ImageQuality = "low" | "medium" | "high";
 export type ImageSize = "1024x1024" | "1536x1024" | "1024x1536";
 
 export interface ImageGenerationRequest {
-  scenePath: string;
-  productCutoutPath: string;
-  compositionPath: string;
-  protectionMaskPath: string;
+  scene: Uint8Array;
+  productCutout: Uint8Array;
+  composition: Uint8Array;
+  protectionMask: Uint8Array;
   prompt: string;
   quality: ImageQuality;
   size: ImageSize;
@@ -22,7 +22,7 @@ export interface ImageGenerationResult {
   provider: string;
   model: string;
   status: "succeeded" | "failed";
-  outputPath?: string;
+  output?: Uint8Array;
   durationMs: number;
   estimatedCostUsd: number;
   usage?: Record<string, unknown>;
@@ -42,4 +42,3 @@ export function selectProvider(
 ): ImageGenerationProvider {
   return production.isAvailable() ? production : mock;
 }
-

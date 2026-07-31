@@ -10,30 +10,37 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    services:
+      mongodb:
+        image: mongo:7.0
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.runCommand({ ping: 1 })'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-          cache: pip
       - run: npm ci
-      - run: python -m pip install -r services/api/requirements.txt
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
         env:
           DEMO_MODE: "true"
           OPENAI_API_KEY: ""
+          MONGODB_URI: mongodb://127.0.0.1:27017/lilidecoai_ci
       - run: npm run build
         env:
-          NEXT_PUBLIC_API_URL: http://127.0.0.1:8000
-      - run: npx playwright install --with-deps chromium webkit
+          MONGODB_URI: mongodb://127.0.0.1:27017/lilidecoai_ci
+          APP_SESSION_SECRET: ci-only-session-secret-with-32-characters
+      - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
         env:
           DEMO_MODE: "true"
           OPENAI_API_KEY: ""
-          NEXT_PUBLIC_API_URL: http://127.0.0.1:8000
+          MONGODB_URI: mongodb://127.0.0.1:27017/lilidecoai_ci

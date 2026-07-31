@@ -1,49 +1,63 @@
-# Project Visualizer
+# LiliDecoAI
 
-SaaS de visualisation d’objets décoratifs dans une photo d’intérieur. Le produit
-est placé par une couche géométrique déterministe ; l’IA ne travaille que
-l’ombre, le contact, les contours et la lumière. Le mode démonstration couvre le
-parcours complet sans clé, GPU, Docker ou service payant.
+SaaS Next.js de visualisation d’objets décoratifs dans une photo d’intérieur.
+Le frontend et toutes les API sont hébergés ensemble sur Vercel. MongoDB est
+l’unique base de données et Vercel Blob conserve les images privées.
 
-## Démarrage en quatre commandes
+## Démarrage local
 
-Prérequis : Node.js 24+, npm 11+, Python 3.12+.
+Prérequis : Node.js 24+, npm 11+ et MongoDB local ou un cluster Atlas.
 
 ```powershell
 Copy-Item .env.example .env
 npm.cmd install
-python -m pip install -r services/api/requirements.txt
 npm.cmd run dev
 ```
 
 Ouvrir :
 
-- web : <http://localhost:3000>
+- site : <http://localhost:3000>
 - studio : <http://localhost:3000/demo>
-- marchand : <http://localhost:3000/app>
+- espace marchand : <http://localhost:3000/app>
 - administration : <http://localhost:3000/admin>
-- API OpenAPI : <http://127.0.0.1:8000/docs>
+- santé API : <http://localhost:3000/v1/health>
 
-Au premier démarrage, SQLite et les seeds de démonstration sont créés
-automatiquement. Le compte démo contient un vase prêt à placer et 12 crédits.
-L’absence de `OPENAI_API_KEY` ne bloque jamais le démarrage.
+Avec `DEMO_MODE=true`, un vase et un portefeuille de 12 crédits sont créés
+automatiquement dans MongoDB. Sans clé OpenAI, le pipeline de rendu local reste
+entièrement utilisable. Sans token Vercel Blob en local, les images sont
+stockées en binaire dans MongoDB.
 
-## Parcours MVP vérifié
+## Architecture
 
-1. Le marchand crée un produit, téléverse sa photo, renseigne ses dimensions,
-   le prépare et confirme l’ancrage.
-2. Le client téléverse une pièce avec consentement.
-3. Il choisit une surface et le mode `estimé` ou `calibré`.
-4. Il déplace et redimensionne le cutout dans l’éditeur Konva.
-5. L’API compose l’image, l’ombre et le masque de protection.
-6. `MockImageProvider` produit le rendu local ou `OpenAIImageProvider` appelle
-   GPT Image 2 côté serveur.
-7. Le cutout catalogue est reposé sur le résultat, puis le contrôle qualité
-   accepte, retente ou rejette la sortie.
-8. Un crédit est capturé uniquement après succès ; un échec final libère la
-   réservation.
+```text
+apps/web                 Next.js : pages, Route Handlers, auth et rendu
+packages/geometry        calibrations, homographie et projections
+packages/ai-router       contrat TypeScript des providers d’image
+packages/types           schémas Zod et types métier
+packages/ui              composants UI partagés
+packages/analytics       événements métier sans photo
+docs                     architecture, sécurité, providers et déploiement
+tests/e2e                parcours Playwright desktop et mobile
+```
 
-## Commandes utiles
+Il n’y a ni FastAPI, ni Supabase, ni serveur API séparé. Le navigateur appelle
+les routes Next.js de même origine sous `/v1/*`. Les collections MongoDB
+contiennent produits, scènes, rendus, utilisateurs, crédits, transactions,
+tentatives de rendu, paiements, analytics et audits.
+
+## Parcours MVP
+
+1. Le marchand crée un produit, téléverse sa photo et ses dimensions.
+2. Le serveur produit un cutout normalisé.
+3. Le client téléverse sa pièce avec consentement.
+4. Il choisit une surface et ajuste le produit dans l’éditeur Konva.
+5. Next.js crée la composition et le masque avec Sharp.
+6. Le mode local finalise le rendu sans coût, ou GPT Image 2 harmonise lumière,
+   ombre et contact.
+7. Le cutout catalogue est reposé sur la sortie pour préserver le produit.
+8. Un crédit est débité uniquement après un rendu réussi.
+
+## Vérification
 
 ```powershell
 npm.cmd run lint
@@ -51,50 +65,27 @@ npm.cmd run typecheck
 npm.cmd test
 npm.cmd run build
 npm.cmd run test:e2e
-npm.cmd run db:migrate
-npm.cmd run db:seed
-python services/api/scripts/purge.py
 ```
 
-Docker Compose est optionnel et démarre PostgreSQL, Redis, MinIO, l’API et le
-web :
+## Déploiement Vercel
 
-```powershell
-docker compose up --build
-```
+1. Importer `GameNotCreator/lilidecoai` dans Vercel.
+2. Choisir `apps/web` comme Root Directory et autoriser les fichiers du monorepo
+   situés hors de ce dossier.
+3. Connecter un store Vercel Blob privé ; Vercel fournit automatiquement
+   l’authentification OIDC.
+4. Ajouter `MONGODB_URI`, `MONGODB_DB`, `APP_SESSION_SECRET`, `CRON_SECRET` et
+   `NEXT_PUBLIC_APP_URL`.
+5. Ajouter `OPENAI_API_KEY` et les variables Konnect uniquement pour activer ces
+   services.
+6. Déployer, puis vérifier `/v1/health`.
 
-Docker n’était pas installé sur la machine de développement lors de la création
-du MVP ; le chemin local SQLite a donc été validé directement.
-
-## Arborescence
-
-```text
-apps/web                 Next.js : public, marchand, client, admin, widget
-services/api             FastAPI, SQLAlchemy, paiement, rendu et sécurité
-services/worker          frontière Redis du traitement asynchrone
-packages/geometry        calibrations, homographie, projections et tests
-packages/ai-router       contrat ImageGenerationProvider partagé
-packages/types           schémas Zod et types métier
-packages/ui              composants UI partagés
-packages/analytics       événements métier sans photo
-infra/docker             images de déploiement
-docs                     architecture, sécurité, providers, widget, déploiement
-tests/e2e                parcours Playwright
-```
+Les détails sont dans [docs/deployment.md](docs/deployment.md).
 
 ## Documentation
 
 - [Architecture](docs/architecture.md)
-- [Provider OpenAI et ajout d’un provider](docs/providers.md)
+- [Provider OpenAI](docs/providers.md)
 - [Installation du widget](docs/widget.md)
 - [Sécurité et confidentialité](docs/security.md)
 - [Déploiement](docs/deployment.md)
-
-## État des connexions externes
-
-Le connecteur OpenAI est implémenté mais n’a volontairement pas été appelé
-sans credential. Supabase, R2, Konnect, PostHog et Sentry sont préparés par
-contrats/configuration mais demandent des comptes réels et une validation de
-staging avant activation. En local, leurs équivalents sont SQLite, stockage
-disque, paiement mock et analytics SQL.
-

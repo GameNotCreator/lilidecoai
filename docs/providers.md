@@ -1,62 +1,50 @@
-# Providers d’image
+# Provider d’image
 
-## Contrat
+## Pipeline
 
-`ImageGenerationProvider` reçoit :
+Le pipeline TypeScript dans `apps/web/lib/server/rendering.ts` reçoit :
 
-- la photo nettoyée de la pièce ;
-- le cutout PNG du produit ;
-- la composition géométrique ;
+- la photo normalisée de la pièce ;
+- le cutout du produit ;
+- la transformation géométrique ;
+- la composition déterministe ;
 - le masque de modification ;
-- un prompt structuré ;
-- qualité, résolution et clé d’idempotence.
+- une clé d’idempotence.
 
-Il renvoie provider, modèle, statut, durée, usage, coût estimé et erreur sûre.
-Chaque tentative est persistée dans `render_attempts`.
+Chaque tentative est persistée dans `render_attempts` avec provider, modèle,
+durée, statut, score qualité et erreur sûre.
 
 ## OpenAI GPT Image 2
 
-`OpenAIImageProvider` utilise exclusivement :
+L’appel serveur utilise :
 
-- `POST /v1/images/edits`
-- modèle `gpt-image-2`
-- qualité `medium` par défaut
-- arrière-plan `opaque`
-- sortie `webp`, compression `90`
-- `1024x1024`, `1536x1024` ou `1024x1536` selon le ratio de la pièce
+- `POST /v1/images/edits` ;
+- le modèle `gpt-image-2` par défaut ;
+- les images `room`, `product`, `composition` et le masque ;
+- un format de sortie WebP ;
+- une taille adaptée au ratio de la pièce ;
+- la qualité `medium` par défaut.
 
-`input_fidelity` est volontairement omis : GPT Image 2 traite ses entrées en
-haute fidélité automatiquement. Le provider envoie trois images (`room`,
-`product`, `composition`) et le masque. Le cutout original est reposé après la
-génération pour préserver les pixels catalogue.
-
-Références officielles consultées :
-
-- <https://developers.openai.com/api/docs/models/gpt-image-2>
-- <https://developers.openai.com/api/docs/guides/image-generation>
-
-Le connecteur n’a pas été exécuté sans clé. L’organisation OpenAI peut exiger
-une vérification avant l’accès au modèle.
+Le cutout original est replacé après la génération pour préserver les pixels du
+catalogue. En `DEMO_MODE=true` ou sans `OPENAI_API_KEY`, aucun appel OpenAI
+n’est effectué : le rendu local Sharp est utilisé.
 
 ## Garde-fous
 
 - clé uniquement côté serveur ;
-- timeout configurable ;
-- une nouvelle tentative ;
-- clé d’idempotence par tentative ;
-- plafond `OPENAI_MAX_COST_USD` ;
-- coût estimé avant appel et usage réel enregistré après ;
-- aucun test automatique ne peut sélectionner OpenAI en `DEMO_MODE=true` ;
-- fallback automatique sur `MockImageProvider` sans clé.
+- plafond `OPENAI_MAX_COST_USD` avant appel ;
+- coût et durée enregistrés par tentative ;
+- débit d’un crédit uniquement après succès ;
+- messages d’erreur nettoyés ;
+- contrôle qualité et overlay indépendants du provider.
 
 ## Ajouter un provider
 
-1. Implémenter `is_available()` et `generate()` selon le protocole Python dans
-   `services/api/app/rendering/providers.py`.
-2. Ne renvoyer aucune erreur contenant un token, prompt privé ou corps complet.
-3. Ajouter les variables serveur à `.env.example`.
-4. Étendre `choose_provider` avec une règle explicite de qualité/coût.
-5. Ajouter un test qui intercepte le réseau et prouve qu’aucun appel réel ne
-   survient.
-6. Garder l’overlay catalogue et le contrôle qualité indépendants du provider.
-
+1. Ajouter son implémentation TypeScript au pipeline serveur.
+2. Accepter des buffers, jamais des chemins de disque persistants.
+3. Ne renvoyer aucun secret, prompt privé ou corps complet d’erreur.
+4. Ajouter uniquement des variables serveur dans `.env.example`.
+5. Intercepter le réseau dans les tests pour garantir qu’aucun appel réel ne
+   survient en mode démo.
+6. Conserver la composition, l’overlay et le débit de crédit indépendants du
+   fournisseur.

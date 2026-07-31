@@ -1,54 +1,85 @@
-# Déploiement
+# Déploiement Vercel + MongoDB
 
-## Environnements
+## 1. MongoDB Atlas
 
-### Développement sans Docker
+Créer un cluster Atlas, un utilisateur de base et récupérer la chaîne
+`mongodb+srv://...`. Autoriser les connexions nécessaires au projet Vercel et
+utiliser un mot de passe dédié à l’application.
 
-SQLite, disque, provider image mock et paiement mock. C’est le chemin couvert
-par les tests locaux.
+Variables :
 
-### Staging
+```text
+MONGODB_URI=mongodb+srv://...
+MONGODB_DB=lilidecoai
+```
 
-PostgreSQL, Redis, bucket S3/R2 privé, Supabase Auth et clés de test Konnect.
-Garder `DEMO_MODE=true` tant qu’aucun appel OpenAI n’est souhaité, puis le
-désactiver pour un smoke test manuel plafonné.
+## 2. Projet Vercel
 
-### Production
+Importer le dépôt GitHub `GameNotCreator/lilidecoai`, puis configurer :
 
-- `DEMO_MODE=false`
-- PostgreSQL managé avec sauvegardes
-- Redis partagé pour rate limit et jobs
-- R2 privé, lifecycle de suppression et URLs signées
-- worker séparé
-- web et API sur origines explicitement autorisées
-- secrets dans le gestionnaire de la plateforme
+- Framework Preset : Next.js ;
+- Root Directory : `apps/web` ;
+- accès aux fichiers situés hors de la Root Directory, car les packages
+  partagés sont dans `packages/*` ;
+- commandes d’installation et de build automatiques.
 
-## Procédure
+`apps/web/vercel.json` déclare le cron de purge et la configuration Next.js.
+
+## 3. Vercel Blob
+
+Dans Storage, créer ou connecter un Blob store privé au projet. Les nouveaux
+projets utilisent automatiquement l’authentification OIDC à durée courte. Le
+code reste compatible avec `BLOB_READ_WRITE_TOKEN` pour un ancien store ou un
+outil local. Les blobs sont servis via `/api/assets/:id` après les contrôles
+d’accès.
+
+## 4. Variables Vercel
+
+Obligatoires en production :
+
+```text
+MONGODB_URI
+MONGODB_DB
+NEXT_PUBLIC_APP_URL
+APP_SESSION_SECRET
+CRON_SECRET
+DEMO_MODE=false
+```
+
+Optionnelles :
+
+```text
+OPENAI_API_KEY
+OPENAI_MODEL=gpt-image-2
+OPENAI_QUALITY=medium
+OPENAI_MAX_COST_USD=0.25
+BLOB_READ_WRITE_TOKEN
+KONNECT_API_KEY
+KONNECT_WALLET_ID
+KONNECT_BASE_URL=https://api.konnect.network/api/v2
+```
+
+`APP_SESSION_SECRET` et `CRON_SECRET` doivent être deux valeurs aléatoires
+différentes. Ne jamais préfixer une clé secrète par `NEXT_PUBLIC_`.
+
+## 5. Vérification avant et après déploiement
 
 ```powershell
 npm.cmd ci
-python -m pip install -r services/api/requirements.txt
 npm.cmd run lint
 npm.cmd run typecheck
 npm.cmd test
 npm.cmd run build
-npm.cmd run db:migrate
+npm.cmd run test:e2e
 ```
 
-Déployer l’API avant le web, vérifier `/health`, puis injecter
-`NEXT_PUBLIC_API_URL` au build. Démarrer ensuite le worker avec
-`PYTHONPATH=services/api python services/worker/worker.py`.
+Smoke tests :
 
-## Smoke tests
-
-1. Créer un produit dans une organisation de staging.
-2. Vérifier le cutout et l’ancrage.
-3. Créer une scène et confirmer l’URL privée.
-4. Produire un rendu mock.
-5. Avec un plafond faible, produire exactement un rendu OpenAI manuel.
-6. Vérifier `render_attempts`, score qualité, coût, durée et débit unique.
-7. Rejouer le même idempotency key.
-8. Simuler un échec final et confirmer le solde inchangé.
-9. Tester un webhook Konnect deux fois.
-10. Exécuter et contrôler la purge.
-
+1. ouvrir `/v1/health` et confirmer `database: mongodb` ;
+2. créer un compte et se reconnecter ;
+3. créer et préparer un produit ;
+4. envoyer une pièce puis produire un rendu local ;
+5. rejouer la même clé d’idempotence et vérifier l’absence de double débit ;
+6. activer OpenAI sur Preview avant Production ;
+7. tester un paiement Konnect et rejouer son webhook ;
+8. appeler `/api/cron/purge` avec `Authorization: Bearer $CRON_SECRET`.

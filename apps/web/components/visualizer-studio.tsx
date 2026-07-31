@@ -17,11 +17,8 @@ import {
 } from "lucide-react";
 import type { Product, Render } from "@lili/types";
 import { Badge, Button } from "@lili/ui";
-import { api, getProducts } from "@/lib/api";
-import {
-  PlacementCanvas,
-  type PlacementState,
-} from "./placement-canvas";
+import { api, establishPublicSession, getProducts } from "@/lib/api";
+import { PlacementCanvas, type PlacementState } from "./placement-canvas";
 
 interface Scene {
   id: string;
@@ -48,9 +45,11 @@ const initialPlacement: PlacementState = {
 export function VisualizerStudio({
   embedded = false,
   initialProductId,
+  merchantSlug,
 }: {
   embedded?: boolean;
   initialProductId?: string;
+  merchantSlug?: string;
 }) {
   const [step, setStep] = useState(1);
   const [products, setProducts] = useState<Product[]>([]);
@@ -76,11 +75,19 @@ export function VisualizerStudio({
   );
 
   useEffect(() => {
-    Promise.all([
-      getProducts(),
-      api<{ balance: number }>("/v1/credits"),
-    ])
-      .then(([availableProducts, wallet]) => {
+    async function load() {
+      if (embedded && merchantSlug && initialProductId) {
+        await establishPublicSession(merchantSlug, initialProductId);
+      }
+      const [availableProducts, wallet] = await Promise.all([
+        getProducts(),
+        api<{ balance: number }>("/v1/credits"),
+      ]);
+      return { availableProducts, wallet };
+    }
+
+    void load()
+      .then(({ availableProducts, wallet }) => {
         setProducts(availableProducts);
         setProductId((current) => current || availableProducts[0]?.id || "");
         setCredits(wallet.balance);
@@ -88,7 +95,7 @@ export function VisualizerStudio({
       .catch((reason: unknown) =>
         setError(reason instanceof Error ? reason.message : "API indisponible"),
       );
-  }, []);
+  }, [embedded, initialProductId, merchantSlug]);
 
   async function uploadRoom(file: File) {
     setBusy(true);
@@ -108,7 +115,9 @@ export function VisualizerStudio({
       setStep(2);
       await recordEvent("room_uploaded");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Téléversement impossible");
+      setError(
+        reason instanceof Error ? reason.message : "Téléversement impossible",
+      );
     } finally {
       setBusy(false);
     }
@@ -138,18 +147,17 @@ export function VisualizerStudio({
                 depthCm: Math.max(30, Math.round(referenceCm * 0.6)),
               }
             : {};
-      const value = await api<Calibration>(
-        `/v1/scenes/${scene.id}/calibrate`,
-        {
-          method: "POST",
-          body: JSON.stringify({ mode: calibrationMode, parameters }),
-        },
-      );
+      const value = await api<Calibration>(`/v1/scenes/${scene.id}/calibrate`, {
+        method: "POST",
+        body: JSON.stringify({ mode: calibrationMode, parameters }),
+      });
       setCalibration(value);
       setStep(3);
       await recordEvent("calibration_completed");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Calibration impossible");
+      setError(
+        reason instanceof Error ? reason.message : "Calibration impossible",
+      );
     } finally {
       setBusy(false);
     }
@@ -185,9 +193,13 @@ export function VisualizerStudio({
         body: JSON.stringify(payload),
       });
       setRender(result);
-      setCredits((value) => (value === null ? value : value - (result.creditCharged ? 1 : 0)));
+      setCredits((value) =>
+        value === null ? value : value - (result.creditCharged ? 1 : 0),
+      );
       setStep(4);
-      await recordEvent(result.status === "succeeded" ? "render_succeeded" : "render_failed");
+      await recordEvent(
+        result.status === "succeeded" ? "render_succeeded" : "render_failed",
+      );
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Rendu impossible");
     } finally {
@@ -218,9 +230,11 @@ export function VisualizerStudio({
           <Badge tone={calibration?.mode === "quick" ? "warning" : "positive"}>
             {calibration?.label ?? "Échelle estimée"}
           </Badge>
-          <span className="credit-pill">
-            <Sparkles size={14} /> {credits ?? "—"} crédits
-          </span>
+          {!embedded && (
+            <span className="credit-pill">
+              <Sparkles size={14} /> {credits ?? "—"} crédits
+            </span>
+          )}
         </div>
       </header>
 
@@ -228,7 +242,9 @@ export function VisualizerStudio({
         {["Pièce", "Surface", "Placement", "Résultat"].map((label, index) => (
           <button
             key={label}
-            className={step === index + 1 ? "active" : step > index + 1 ? "done" : ""}
+            className={
+              step === index + 1 ? "active" : step > index + 1 ? "done" : ""
+            }
             onClick={() => step > index + 1 && setStep(index + 1)}
             disabled={step < index + 1}
           >
@@ -240,7 +256,7 @@ export function VisualizerStudio({
 
       {error && (
         <div className="studio-error" role="alert">
-          {error}. Vérifiez que l’API FastAPI tourne sur le port 8000.
+          {error}. Vérifiez la connexion MongoDB et les variables Vercel.
         </div>
       )}
 
@@ -250,12 +266,18 @@ export function VisualizerStudio({
             <div className="studio-panel">
               <span className="panel-index">01</span>
               <h2>Choisissez l’objet</h2>
-              <p className="muted">Le produit catalogue reste protégé pendant l’intégration.</p>
+              <p className="muted">
+                Le produit catalogue reste protégé pendant l’intégration.
+              </p>
               <div className="product-options">
                 {products.map((item) => (
                   <button
                     key={item.id}
-                    className={item.id === productId ? "product-option selected" : "product-option"}
+                    className={
+                      item.id === productId
+                        ? "product-option selected"
+                        : "product-option"
+                    }
                     onClick={() => setProductId(item.id)}
                   >
                     {item.cutoutUrl ? (
@@ -278,8 +300,10 @@ export function VisualizerStudio({
             <label className="upload-zone">
               <Upload size={32} />
               <strong>Ajoutez une photo de votre pièce</strong>
-              <span>JPEG, PNG ou WebP · 12 Mo max · min. 320 px</span>
-              <span className="button">{busy ? "Analyse…" : "Choisir une photo"}</span>
+              <span>JPEG, PNG ou WebP · 4 Mo max · min. 320 px</span>
+              <span className="button">
+                {busy ? "Analyse…" : "Choisir une photo"}
+              </span>
               <input
                 type="file"
                 accept="image/jpeg,image/png,image/webp"
@@ -290,7 +314,8 @@ export function VisualizerStudio({
                 }}
               />
               <small>
-                En continuant, vous consentez au traitement. Suppression automatique sous 24 h.
+                En continuant, vous consentez au traitement. Suppression
+                automatique sous 24 h.
               </small>
             </label>
           </div>
@@ -302,7 +327,9 @@ export function VisualizerStudio({
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={scene.imageUrl} alt="Pièce téléversée" />
               <div className="surface-guide" data-surface={surface}>
-                <span>{surface === "wall" ? "Zone murale" : "Surface de pose"}</span>
+                <span>
+                  {surface === "wall" ? "Zone murale" : "Surface de pose"}
+                </span>
               </div>
             </div>
             <div className="studio-panel">
@@ -331,7 +358,11 @@ export function VisualizerStudio({
               <div className="divider" />
               <div className="mode-cards">
                 <button
-                  className={calibrationMode === "quick" ? "mode-card active" : "mode-card"}
+                  className={
+                    calibrationMode === "quick"
+                      ? "mode-card active"
+                      : "mode-card"
+                  }
                   onClick={() => setCalibrationMode("quick")}
                 >
                   <Move size={19} />
@@ -341,7 +372,11 @@ export function VisualizerStudio({
                   </span>
                 </button>
                 <button
-                  className={calibrationMode === "wall" ? "mode-card active" : "mode-card"}
+                  className={
+                    calibrationMode === "wall"
+                      ? "mode-card active"
+                      : "mode-card"
+                  }
                   onClick={() => setCalibrationMode("wall")}
                 >
                   <Ruler size={19} />
@@ -351,7 +386,11 @@ export function VisualizerStudio({
                   </span>
                 </button>
                 <button
-                  className={calibrationMode === "surface" ? "mode-card active" : "mode-card"}
+                  className={
+                    calibrationMode === "surface"
+                      ? "mode-card active"
+                      : "mode-card"
+                  }
                   onClick={() => setCalibrationMode("surface")}
                 >
                   <Ruler size={19} />
@@ -363,7 +402,9 @@ export function VisualizerStudio({
               </div>
               {calibrationMode !== "quick" && (
                 <div className="field">
-                  <label htmlFor="reference">Longueur réelle de référence</label>
+                  <label htmlFor="reference">
+                    Longueur réelle de référence
+                  </label>
                   <div className="unit-input">
                     <input
                       id="reference"
@@ -371,7 +412,9 @@ export function VisualizerStudio({
                       min={10}
                       max={1000}
                       value={referenceCm}
-                      onChange={(event) => setReferenceCm(Number(event.target.value))}
+                      onChange={(event) =>
+                        setReferenceCm(Number(event.target.value))
+                      }
                     />
                     <span>cm</span>
                   </div>
@@ -400,7 +443,8 @@ export function VisualizerStudio({
               <span className="panel-index">03</span>
               <h2>Ajustez le placement</h2>
               <p className="muted">
-                Glissez l’objet. Utilisez les poignées pour l’échelle et la rotation.
+                Glissez l’objet. Utilisez les poignées pour l’échelle et la
+                rotation.
               </p>
               <div className="measure-card">
                 <div>
@@ -409,7 +453,9 @@ export function VisualizerStudio({
                     {product.widthCm} × {product.heightCm} cm
                   </strong>
                 </div>
-                <Badge tone={calibrationMode === "quick" ? "warning" : "positive"}>
+                <Badge
+                  tone={calibrationMode === "quick" ? "warning" : "positive"}
+                >
                   {calibrationMode === "quick" ? "estimée" : "calibrée"}
                 </Badge>
               </div>
@@ -423,7 +469,10 @@ export function VisualizerStudio({
                   step="0.01"
                   value={placement.scale}
                   onChange={(event) =>
-                    setPlacement({ ...placement, scale: Number(event.target.value) })
+                    setPlacement({
+                      ...placement,
+                      scale: Number(event.target.value),
+                    })
                   }
                 />
               </div>
@@ -440,8 +489,15 @@ export function VisualizerStudio({
                   <option value="dramatic">Contraste marqué</option>
                 </select>
               </div>
-              <Button onClick={() => void generate()} disabled={busy || !credits}>
-                {busy ? <LoaderCircle className="spin" size={17} /> : <Sparkles size={17} />}
+              <Button
+                onClick={() => void generate()}
+                disabled={busy || !credits}
+              >
+                {busy ? (
+                  <LoaderCircle className="spin" size={17} />
+                ) : (
+                  <Sparkles size={17} />
+                )}
                 {busy ? "Intégration en cours…" : "Générer l’aperçu · 1 crédit"}
               </Button>
               <button className="back-link" onClick={() => setStep(2)}>
@@ -474,19 +530,24 @@ export function VisualizerStudio({
                 min="0"
                 max="100"
                 value={beforePercent}
-                onChange={(event) => setBeforePercent(Number(event.target.value))}
+                onChange={(event) =>
+                  setBeforePercent(Number(event.target.value))
+                }
               />
             </div>
             <div className="result-summary card">
               <Badge tone="positive">Rendu accepté</Badge>
               <h2>Il trouve sa place.</h2>
               <p className="muted">
-                Produit protégé, échelle {calibrationMode === "quick" ? "estimée" : "calibrée"} et
+                Produit protégé, échelle{" "}
+                {calibrationMode === "quick" ? "estimée" : "calibrée"} et
                 intégration lumineuse contrôlée.
               </p>
               <div className="score-row">
                 <span>Score de fidélité</span>
-                <strong>{Math.round(Number(render.qualityScore ?? 0) * 100)}%</strong>
+                <strong>
+                  {Math.round(Number(render.qualityScore ?? 0) * 100)}%
+                </strong>
               </div>
               <div className="result-actions">
                 <a
