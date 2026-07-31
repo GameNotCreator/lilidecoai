@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Cormorant_Garamond, Manrope } from "next/font/google";
 import Link from "next/link";
-import { ArrowUpRight, Menu } from "lucide-react";
+import { ArrowUpRight, UserRound } from "lucide-react";
 import { serverConfig } from "@/lib/server/config";
 import "./globals.css";
 
@@ -29,7 +29,7 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="fr">
+    <html lang="fr" data-scroll-behavior="smooth">
       <body className={`${sans.variable} ${serif.variable}`}>
         {serverConfig.demoMode && (
           <div className="demo-banner">
@@ -50,12 +50,17 @@ export default function RootLayout({
               <Link href="/demo">Démo</Link>
               <Link href="/app">Espace marchand</Link>
             </nav>
-            <Link className="button" href="/demo">
+            <Link className="button header-cta" href="/demo">
               Essayer maintenant <ArrowUpRight size={16} />
             </Link>
-            <button className="button secondary mobile-nav" aria-label="Ouvrir le menu">
-              <Menu size={18} />
-            </button>
+            <Link
+              className="button secondary mobile-nav"
+              href="/app"
+              aria-label="Espace marchand"
+            >
+              <UserRound size={18} />
+              <span>Compte</span>
+            </Link>
           </div>
         </header>
         {children}

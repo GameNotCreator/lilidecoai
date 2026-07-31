@@ -181,7 +181,10 @@ export function VisualizerStudio({
   }
 
   return (
-    <section className={`studio-shell ${embedded ? "embedded" : ""}`}>
+    <section
+      className={`studio-shell ${embedded ? "embedded" : ""}`}
+      data-step={step}
+    >
       <header className="studio-head">
         <div>
           <span className="eyebrow">Studio de visualisation</span>
@@ -287,6 +290,9 @@ export function VisualizerStudio({
 
         {step === 2 && scene && (
           <div className="studio-grid settings-grid">
+            <p className="mobile-placement-hint">
+              Touchez la photo pour poser le point rouge.
+            </p>
             <button
               type="button"
               className="room-preview marker-placement"

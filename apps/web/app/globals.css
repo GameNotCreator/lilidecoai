@@ -23,6 +23,7 @@ html {
 
 body {
   margin: 0;
+  overflow-x: hidden;
   color: var(--ink);
   background:
     radial-gradient(
@@ -520,6 +521,10 @@ button {
     display: inline-flex;
   }
 
+  .header-cta {
+    display: none;
+  }
+
   .hero {
     padding-top: 55px;
   }
@@ -837,6 +842,7 @@ button {
   padding: 0;
   background: #171815;
   cursor: crosshair;
+  touch-action: manipulation;
 }
 
 .room-preview.marker-placement img {
@@ -863,6 +869,10 @@ button {
 .choice-label {
   margin-bottom: -9px;
   font-size: 0.78rem;
+}
+
+.mobile-placement-hint {
+  display: none;
 }
 
 .surface-guide {
@@ -938,6 +948,14 @@ button {
   padding: 15px;
   color: var(--moss-dark);
   background: #f3f6ed;
+}
+
+.settings-grid .studio-panel > .button {
+  order: 1;
+}
+
+.settings-grid .auto-placement-note {
+  order: 2;
 }
 
 .auto-placement-note span {
@@ -1166,6 +1184,11 @@ button {
     padding: 26px 22px;
   }
 
+  .studio-shell[data-step="2"] .studio-head,
+  .studio-shell[data-step="3"] .studio-head {
+    display: none;
+  }
+
   .studio-meta {
     justify-content: start;
   }
@@ -1175,12 +1198,8 @@ button {
   }
 
   .studio-steps button {
-    gap: 5px;
-    font-size: 0;
-  }
-
-  .studio-steps button span {
-    font-size: 0.75rem;
+    gap: 6px;
+    font-size: 0.72rem;
   }
 
   .intro-grid,
@@ -1197,6 +1216,216 @@ button {
   .room-preview,
   .compare-frame {
     min-height: 430px;
+  }
+}
+
+@media (max-width: 600px) {
+  .container {
+    width: min(100% - 20px, 1180px);
+  }
+
+  .demo-banner {
+    min-height: 28px;
+    padding: 4px 10px;
+    font-size: 0.64rem;
+  }
+
+  .site-header-inner {
+    min-height: 58px;
+    gap: 10px;
+  }
+
+  .brand {
+    gap: 8px;
+    font-size: 0.88rem;
+  }
+
+  .brand-mark {
+    width: 30px;
+    height: 30px;
+  }
+
+  .mobile-nav {
+    min-height: 38px;
+    gap: 6px;
+    padding: 0 12px;
+    font-size: 0.76rem;
+  }
+
+  .demo-page {
+    padding: 12px 0 42px;
+  }
+
+  .studio-shell {
+    border-radius: 20px;
+    box-shadow: 0 16px 42px rgba(45, 48, 39, 0.1);
+  }
+
+  .studio-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: 12px;
+    padding: 20px 16px 16px;
+  }
+
+  .studio-head h1 {
+    margin-top: 7px;
+    font-size: clamp(1.75rem, 9vw, 2.3rem);
+  }
+
+  .studio-head .eyebrow {
+    font-size: 0.59rem;
+    letter-spacing: 0.11em;
+  }
+
+  .studio-head .eyebrow::before {
+    width: 15px;
+  }
+
+  .studio-meta {
+    align-self: start;
+    justify-content: end;
+  }
+
+  .studio-meta .badge {
+    padding: 5px 8px;
+    font-size: 0.58rem;
+  }
+
+  .credit-pill {
+    display: none;
+  }
+
+  .studio-steps button {
+    min-height: 50px;
+    gap: 5px;
+    padding: 0 4px;
+    font-size: 0.65rem;
+  }
+
+  .studio-steps button span {
+    width: 22px;
+    height: 22px;
+    font-size: 0.68rem;
+  }
+
+  .studio-body {
+    min-height: 0;
+    padding: 12px 10px 18px;
+  }
+
+  .studio-grid,
+  .result-layout {
+    gap: 13px;
+  }
+
+  .studio-panel {
+    gap: 14px;
+    border-radius: 18px;
+    padding: 18px 16px;
+  }
+
+  .studio-panel h2 {
+    font-size: 1.72rem;
+  }
+
+  .studio-panel p {
+    font-size: 0.82rem;
+    line-height: 1.5;
+  }
+
+  .product-option {
+    grid-template-columns: 56px 1fr;
+    border-radius: 14px;
+    padding: 8px;
+  }
+
+  .product-option img,
+  .product-option > svg {
+    width: 56px;
+    height: 56px;
+  }
+
+  .upload-zone {
+    min-height: 235px;
+    border-radius: 18px;
+    padding: 24px 18px;
+  }
+
+  .mobile-placement-hint {
+    display: block;
+    margin: 0;
+    border-radius: 13px;
+    padding: 10px 12px;
+    color: var(--moss-dark);
+    background: #edf2e7;
+    font-size: 0.78rem;
+    font-weight: 800;
+    text-align: center;
+  }
+
+  .room-preview.marker-placement {
+    width: 100%;
+    border-radius: 18px;
+  }
+
+  .red-placement-dot {
+    width: 22px;
+    height: 22px;
+    box-shadow:
+      0 0 0 6px rgba(228, 61, 48, 0.25),
+      0 3px 12px rgba(0, 0, 0, 0.42);
+  }
+
+  .choice-grid {
+    gap: 7px;
+  }
+
+  .choice {
+    min-height: 48px;
+    padding: 6px;
+  }
+
+  .auto-placement-note {
+    grid-template-columns: 24px 1fr;
+    padding: 13px;
+  }
+
+  .studio-panel > .button,
+  .result-actions .button {
+    min-height: 52px;
+  }
+
+  .compare-frame {
+    min-height: 0;
+    aspect-ratio: 4 / 3;
+    border-radius: 18px;
+  }
+
+  .compare-range {
+    inset: auto 5% 10px;
+    min-height: 34px;
+  }
+
+  .result-summary {
+    gap: 16px;
+    padding: 20px 17px;
+  }
+
+  .result-summary h2 {
+    font-size: 2rem;
+  }
+
+  .site-footer {
+    padding: 36px 0;
+  }
+}
+
+@media (hover: none) {
+  .button:hover {
+    transform: none;
+    box-shadow: none;
   }
 }
 
