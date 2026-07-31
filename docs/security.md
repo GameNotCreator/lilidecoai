@@ -2,7 +2,7 @@
 
 ## Mesures présentes
 
-- secrets MongoDB, OpenAI, Blob et Konnect accessibles uniquement côté serveur ;
+- secrets MongoDB, OpenAI et Blob accessibles uniquement côté serveur ;
 - session signée dans un cookie `HttpOnly`, `SameSite=Lax` et `Secure` en
   production ;
 - session widget partitionnée, limitée à un produit et à ses propres scènes et
@@ -14,10 +14,10 @@
 - Vercel Blob privé en production ;
 - consentement requis avant l’envoi d’une photo de pièce ;
 - expiration des scènes et purge des assets temporaires ;
-- clés d’idempotence uniques pour rendus, crédits et paiements ;
+- clés d’idempotence uniques pour rendus et crédits ;
 - débit atomique empêchant un solde négatif ;
 - analytics sans contenu d’image ;
-- clés OpenAI et Konnect jamais exposées au navigateur.
+- clé OpenAI jamais exposée au navigateur.
 
 Le mode `DEMO_MODE=true` utilise une organisation partagée et ne doit jamais
 être activé sur un site public réel.

@@ -23,11 +23,6 @@ export const serverConfig = {
   openaiBaseUrl:
     clean(process.env.OPENAI_BASE_URL) ?? "https://api.openai.com/v1",
   openaiMaxCostUsd: Number(clean(process.env.OPENAI_MAX_COST_USD) ?? "0.25"),
-  konnectApiKey: clean(process.env.KONNECT_API_KEY),
-  konnectWalletId: clean(process.env.KONNECT_WALLET_ID),
-  konnectBaseUrl:
-    clean(process.env.KONNECT_BASE_URL) ?? "https://api.konnect.network/api/v2",
-  appUrl: clean(process.env.NEXT_PUBLIC_APP_URL) ?? "http://localhost:3000",
   sessionSecret: clean(process.env.APP_SESSION_SECRET),
   blobToken: clean(process.env.BLOB_READ_WRITE_TOKEN),
   cronSecret: clean(process.env.CRON_SECRET),

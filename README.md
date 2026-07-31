@@ -43,7 +43,7 @@ tests/e2e                parcours Playwright desktop et mobile
 Il n’y a ni FastAPI, ni Supabase, ni serveur API séparé. Le navigateur appelle
 les routes Next.js de même origine sous `/v1/*`. Les collections MongoDB
 contiennent produits, scènes, rendus, utilisateurs, crédits, transactions,
-tentatives de rendu, paiements, analytics et audits.
+tentatives de rendu, analytics et audits.
 
 ## Parcours MVP
 
@@ -74,10 +74,8 @@ npm.cmd run test:e2e
    situés hors de ce dossier.
 3. Connecter un store Vercel Blob privé ; Vercel fournit automatiquement
    l’authentification OIDC.
-4. Ajouter `MONGODB_URI`, `MONGODB_DB`, `APP_SESSION_SECRET`, `CRON_SECRET` et
-   `NEXT_PUBLIC_APP_URL`.
-5. Ajouter `OPENAI_API_KEY` et les variables Konnect uniquement pour activer ces
-   services.
+4. Ajouter `MONGODB_URI`, `MONGODB_DB`, `APP_SESSION_SECRET` et `CRON_SECRET`.
+5. Ajouter `OPENAI_API_KEY` uniquement pour activer le rendu IA.
 6. Déployer, puis vérifier `/v1/health`.
 
 Les détails sont dans [docs/deployment.md](docs/deployment.md).

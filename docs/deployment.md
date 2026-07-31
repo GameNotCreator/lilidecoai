@@ -40,7 +40,6 @@ Obligatoires en production :
 ```text
 MONGODB_URI
 MONGODB_DB
-NEXT_PUBLIC_APP_URL
 APP_SESSION_SECRET
 CRON_SECRET
 DEMO_MODE=false
@@ -54,9 +53,6 @@ OPENAI_MODEL=gpt-image-2
 OPENAI_QUALITY=medium
 OPENAI_MAX_COST_USD=0.25
 BLOB_READ_WRITE_TOKEN
-KONNECT_API_KEY
-KONNECT_WALLET_ID
-KONNECT_BASE_URL=https://api.konnect.network/api/v2
 ```
 
 `APP_SESSION_SECRET` et `CRON_SECRET` doivent être deux valeurs aléatoires
@@ -81,5 +77,4 @@ Smoke tests :
 4. envoyer une pièce puis produire un rendu local ;
 5. rejouer la même clé d’idempotence et vérifier l’absence de double débit ;
 6. activer OpenAI sur Preview avant Production ;
-7. tester un paiement Konnect et rejouer son webhook ;
-8. appeler `/api/cron/purge` avec `Authorization: Bearer $CRON_SECRET`.
+7. appeler `/api/cron/purge` avec `Authorization: Bearer $CRON_SECRET`.

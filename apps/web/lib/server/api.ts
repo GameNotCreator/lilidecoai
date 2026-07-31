@@ -25,7 +25,7 @@ import {
   type Tenant,
 } from "./auth";
 import { serverConfig } from "./config";
-import { addCredits, CreditError, getCredits } from "./credits";
+import { CreditError, getCredits } from "./credits";
 import { collections, database, pingMongo } from "./mongodb";
 import { createRender, RenderError } from "./rendering";
 import { productResponse, renderResponse, sceneResponse } from "./serializers";
@@ -56,12 +56,6 @@ const productCreateSchema = z.object({
   buyUrl: z.url().nullable().optional(),
 });
 
-const packs = {
-  starter: { credits: 20, amount: 2900 },
-  studio: { credits: 75, amount: 7900 },
-  scale: { credits: 220, amount: 17900 },
-} as const;
-
 export async function dispatchApi(
   request: Request,
   path: string[],
@@ -82,13 +76,6 @@ export async function dispatchApi(
 
     if (path[0] === "auth") {
       return await handleAuth(db, request, path.slice(1));
-    }
-    if (
-      path[0] === "webhooks" &&
-      path[1] === "konnect" &&
-      request.method === "GET"
-    ) {
-      return await handleKonnectWebhook(db, request);
     }
     if (
       path[0] === "visualizer" &&
@@ -115,18 +102,6 @@ export async function dispatchApi(
           ? { balance: credits.balance > 0 ? 1 : 0, transactions: [] }
           : credits,
       );
-    }
-    if (path[0] === "checkout" && request.method === "POST") {
-      requireMerchant(tenant);
-      return await handleCheckout(db, tenant, request);
-    }
-    if (path[0] === "subscription" && request.method === "GET") {
-      requireMerchant(tenant);
-      return Response.json({
-        plan: "free",
-        status: "inactive",
-        renewsAt: null,
-      });
     }
     if (path[0] === "analytics" && request.method === "POST") {
       return await handleAnalytics(db, tenant, request);
@@ -605,128 +580,6 @@ async function handleRenders(
     return Response.json(result, { status: 201 });
   }
   return error("Route rendu introuvable", 404);
-}
-
-async function handleCheckout(
-  db: Db,
-  tenant: Tenant,
-  request: Request,
-): Promise<Response> {
-  const body = z
-    .object({
-      pack: z.enum(["starter", "studio", "scale"]),
-      idempotencyKey: z.string().min(8).max(160),
-    })
-    .parse(await request.json());
-  const pack = packs[body.pack];
-  if (serverConfig.demoMode) {
-    const credited = await addCredits(
-      db,
-      tenant.organizationId,
-      pack.credits,
-      `checkout:${body.idempotencyKey}`,
-    );
-    return Response.json({ provider: "mock", credited });
-  }
-  if (!serverConfig.konnectApiKey || !serverConfig.konnectWalletId) {
-    return error("Konnect n’est pas configuré", 503);
-  }
-  const response = await fetch(
-    `${serverConfig.konnectBaseUrl}/payments/init-payment`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": serverConfig.konnectApiKey,
-      },
-      body: JSON.stringify({
-        receiverWalletId: serverConfig.konnectWalletId,
-        token: "TND",
-        amount: pack.amount,
-        type: "immediate",
-        description: `Pack ${body.pack} — ${pack.credits} crédits`,
-        acceptedPaymentMethods: ["wallet", "bank_card", "e-DINAR"],
-        lifespan: 15,
-        checkoutForm: true,
-        orderId: body.idempotencyKey,
-        webhook: `${serverConfig.appUrl}/v1/webhooks/konnect`,
-      }),
-    },
-  );
-  if (!response.ok) {
-    throw new Error(`Konnect ${response.status}`);
-  }
-  const payload = (await response.json()) as {
-    paymentRef: string;
-    payUrl: string;
-  };
-  await collections(db).payments.updateOne(
-    { externalId: payload.paymentRef },
-    {
-      $setOnInsert: {
-        id: crypto.randomUUID(),
-        externalId: payload.paymentRef,
-        organizationId: tenant.organizationId,
-        pack: body.pack,
-        credits: pack.credits,
-        amount: pack.amount,
-        status: "pending",
-        creditedAt: null,
-        createdAt: new Date(),
-      },
-    },
-    { upsert: true },
-  );
-  return Response.json({
-    provider: "konnect",
-    checkoutUrl: payload.payUrl,
-    credited: false,
-  });
-}
-
-async function handleKonnectWebhook(
-  db: Db,
-  request: Request,
-): Promise<Response> {
-  const paymentRef = new URL(request.url).searchParams.get("payment_ref");
-  if (!paymentRef || !serverConfig.konnectApiKey) {
-    return error("Référence ou configuration manquante", 400);
-  }
-  const c = collections(db);
-  const payment = await c.payments.findOne({ externalId: paymentRef });
-  if (!payment) return error("Paiement inconnu", 404);
-  const response = await fetch(
-    `${serverConfig.konnectBaseUrl}/payments/${paymentRef}`,
-    { headers: { "x-api-key": serverConfig.konnectApiKey } },
-  );
-  if (!response.ok) return error("Vérification Konnect impossible", 502);
-  const payload = (await response.json()) as {
-    payment?: { status?: string; reachedAmount?: number; amount?: number };
-  };
-  const details = payload.payment;
-  const paidAmount = Number(details?.reachedAmount ?? details?.amount ?? 0);
-  if (details?.status !== "completed" || paidAmount < Number(payment.amount)) {
-    return Response.json({ received: true, credited: false });
-  }
-  const credited = await addCredits(
-    db,
-    String(payment.organizationId),
-    Number(payment.credits),
-    `konnect:${paymentRef}`,
-  );
-  if (credited) {
-    await c.payments.updateOne(
-      { externalId: paymentRef, creditedAt: null },
-      {
-        $set: {
-          status: "completed",
-          creditedAt: new Date(),
-          rawPayload: payload,
-        },
-      },
-    );
-  }
-  return Response.json({ received: true, credited });
 }
 
 async function handleAnalytics(

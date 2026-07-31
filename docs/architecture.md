@@ -10,8 +10,7 @@ LiliDecoAI est une application full-stack Next.js :
 - MongoDB est l’unique base de données ;
 - Vercel Blob privé conserve les images en production ;
 - Sharp assure normalisation, composition, masque et rendu local ;
-- OpenAI GPT Image 2 est un enrichissement serveur optionnel ;
-- Konnect est le provider de paiement optionnel.
+- OpenAI GPT Image 2 est un enrichissement serveur optionnel.
 
 Il n’existe aucun processus Python, worker ou serveur API séparé.
 
@@ -49,7 +48,7 @@ Collections principales :
 
 - `organizations`, `users`, `products`, `assets`, `scenes`, `calibrations` ;
 - `renders`, `render_attempts` ;
-- `wallets`, `credit_transactions`, `payments` ;
+- `wallets`, `credit_transactions` ;
 - `analytics_events`, `audit_logs`.
 
 Toutes les requêtes métier incluent `organizationId`. Les photos temporaires ont

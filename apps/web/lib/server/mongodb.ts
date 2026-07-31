@@ -75,7 +75,6 @@ export function collections(db: Db) {
     ),
     users: db.collection<UserDocument>("users"),
     analytics: db.collection("analytics_events"),
-    payments: db.collection("payments"),
     auditLogs: db.collection("audit_logs"),
   };
 }
@@ -120,7 +119,6 @@ async function createIndexes(db: Db): Promise<void> {
     ),
     c.users.createIndex({ email: 1 }, { unique: true }),
     c.analytics.createIndex({ organizationId: 1, createdAt: -1 }),
-    c.payments.createIndex({ externalId: 1 }, { unique: true, sparse: true }),
   ]);
 }
 

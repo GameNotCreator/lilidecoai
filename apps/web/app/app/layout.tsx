@@ -2,7 +2,6 @@ import Link from "next/link";
 import {
   BarChart3,
   Boxes,
-  CreditCard,
   Gauge,
   History,
   LayoutTemplate,
@@ -18,7 +17,6 @@ const links = [
   { href: "/app/widget", label: "Widget", icon: LayoutTemplate },
   { href: "/app/analytics", label: "Statistiques", icon: BarChart3 },
   { href: "/app/credits", label: "Crédits", icon: Sparkles },
-  { href: "/app/billing", label: "Facturation", icon: CreditCard },
   { href: "/app/settings", label: "Paramètres", icon: Settings },
 ];
 

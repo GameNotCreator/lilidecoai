@@ -248,24 +248,8 @@ export function CreditsPage() {
     balance: 0,
     transactions: [],
   });
-  const [message, setMessage] = useState("");
   const refresh = () => void api<CreditData>("/v1/credits").then(setData);
   useEffect(refresh, []);
-  async function buy(pack: "starter" | "studio" | "scale") {
-    const result = await api<{ credited: boolean }>("/v1/checkout", {
-      method: "POST",
-      body: JSON.stringify({
-        pack,
-        idempotencyKey: `checkout-${crypto.randomUUID()}`,
-      }),
-    });
-    setMessage(
-      result.credited
-        ? "Pack crédité en mode démonstration."
-        : "Checkout créé.",
-    );
-    refresh();
-  }
   return (
     <>
       <AppHead
@@ -273,28 +257,6 @@ export function CreditsPage() {
         title={`${data.balance} crédits disponibles.`}
         text="Une réservation n’altère pas le solde. Le débit n’est capturé qu’après un rendu accepté."
       />
-      {message && <div className="success-note">{message}</div>}
-      <div className="credit-pack-grid">
-        <CreditPack
-          name="Starter"
-          credits={20}
-          price="29 TND"
-          onClick={() => void buy("starter")}
-        />
-        <CreditPack
-          name="Studio"
-          credits={75}
-          price="79 TND"
-          featured
-          onClick={() => void buy("studio")}
-        />
-        <CreditPack
-          name="Scale"
-          credits={220}
-          price="179 TND"
-          onClick={() => void buy("scale")}
-        />
-      </div>
       <div className="app-card transaction-card">
         <div className="app-card-title">
           <div>
@@ -468,33 +430,6 @@ function AppHead({
 
 function Empty({ text }: { text: string }) {
   return <div className="empty-state">{text}</div>;
-}
-
-function CreditPack({
-  name,
-  credits,
-  price,
-  featured = false,
-  onClick,
-}: {
-  name: string;
-  credits: number;
-  price: string;
-  featured?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <article className={`credit-pack ${featured ? "featured" : ""}`}>
-      {featured && <span className="badge badge-positive">Le plus choisi</span>}
-      <h2>{name}</h2>
-      <strong>{credits}</strong>
-      <span>rendus</span>
-      <p>{price}</p>
-      <Button className={featured ? "" : "secondary"} onClick={onClick}>
-        Choisir
-      </Button>
-    </article>
-  );
 }
 
 function AdminMetric({
