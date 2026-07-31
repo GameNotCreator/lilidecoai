@@ -829,6 +829,42 @@ button {
   object-fit: cover;
 }
 
+.room-preview.marker-placement {
+  display: block;
+  align-self: start;
+  min-height: 0;
+  border: 0;
+  padding: 0;
+  background: #171815;
+  cursor: crosshair;
+}
+
+.room-preview.marker-placement img {
+  display: block;
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+}
+
+.red-placement-dot {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  transform: translate(-50%, -50%);
+  border: 3px solid white;
+  border-radius: 50%;
+  background: #e43d30;
+  box-shadow:
+    0 0 0 5px rgba(228, 61, 48, 0.25),
+    0 3px 12px rgba(0, 0, 0, 0.42);
+  pointer-events: none;
+}
+
+.choice-label {
+  margin-bottom: -9px;
+  font-size: 0.78rem;
+}
+
 .surface-guide {
   position: absolute;
   inset: 58% 12% 12%;

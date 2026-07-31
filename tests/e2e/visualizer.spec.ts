@@ -126,7 +126,7 @@ test("a source photo over 4 MB is optimized before upload", async ({
     buffer: largePhoto,
   });
   await expect(
-    page.getByRole("heading", { name: "Choisissez le support" }),
+    page.getByRole("heading", { name: "Placez le point rouge" }),
   ).toBeVisible({ timeout: 30_000 });
   await expect(page.locator(".studio-error")).toHaveCount(0);
 });
@@ -202,12 +202,15 @@ test("required customer journey reaches a successful mock render", async ({
     buffer: await roomFixture(),
   });
   await expect(
-    page.getByRole("heading", { name: "Choisissez le support" }),
+    page.getByRole("heading", { name: "Placez le point rouge" }),
   ).toBeVisible();
+  const roomPlacement = page.getByRole("button", {
+    name: "Placer le point rouge sur la pièce",
+  });
+  await roomPlacement.click({ position: { x: 100, y: 100 } });
+  await expect(page.getByTestId("placement-dot")).toBeVisible();
   await page.getByRole("button", { name: "Table", exact: true }).click();
-  await page
-    .getByRole("button", { name: /Choisir le placement et générer/i })
-    .click();
+  await page.getByRole("button", { name: /Générer à cet endroit/i }).click();
   await expect(page.getByText("Rendu accepté")).toBeVisible({
     timeout: 30_000,
   });

@@ -268,6 +268,14 @@ async function openAIPlacement(
 ): Promise<ResolvedPlacement> {
   const sceneAsset = await readAsset(db, scene.assetId);
   if (!sceneAsset) throw new RenderError("Photo de pièce introuvable", 404);
+  const userAnchor =
+    typeof input.xNormalized === "number" &&
+    typeof input.yNormalized === "number"
+      ? { x: input.xNormalized, y: input.yNormalized }
+      : null;
+  const anchorInstruction = userAnchor
+    ? `The user selected the exact product contact point at x=${userAnchor.x.toFixed(4)}, y=${userAnchor.y.toFixed(4)}. Keep these exact normalized coordinates in the response and analyze only the realistic scale, rotation and lighting around that point.`
+    : "Choose the most realistic free contact point on the requested support.";
   const response = await fetch(`${serverConfig.openaiBaseUrl}/responses`, {
     method: "POST",
     headers: {
@@ -288,6 +296,7 @@ async function openAIPlacement(
               text: [
                 "Choose the most realistic and visually balanced placement for this catalog product in the supplied room photo.",
                 `Required support type: ${surfaceType}.`,
+                anchorInstruction,
                 `Product: ${product.name}; ${product.description}; material ${product.material}; real dimensions ${product.widthCm} x ${product.heightCm} x ${product.depthCm} cm.`,
                 "Return normalized coordinates relative to the full image: xNormalized is the horizontal center of the product, yNormalized is its bottom contact point, and scale is the product width divided by room image width.",
                 "Prefer a clear, physically plausible support area, preserve walkways and existing objects, respect perspective, and avoid image edges.",
@@ -373,10 +382,14 @@ async function openAIPlacement(
   };
   return {
     ...input,
-    mode: "auto",
+    mode: userAnchor ? "guided" : "auto",
     surfaceType,
-    xNormalized: clamp(Number(result.xNormalized), 0.04, 0.96),
-    yNormalized: clamp(Number(result.yNormalized), 0.08, 0.98),
+    xNormalized: userAnchor
+      ? clamp(userAnchor.x, 0.02, 0.98)
+      : clamp(Number(result.xNormalized), 0.04, 0.96),
+    yNormalized: userAnchor
+      ? clamp(userAnchor.y, 0.02, 0.98)
+      : clamp(Number(result.yNormalized), 0.08, 0.98),
     scale: clamp(Number(result.scale), 0.06, 0.55),
     rotationDegrees: clamp(Number(result.rotationDegrees), -20, 20),
     lighting: {
@@ -412,12 +425,17 @@ function fallbackPlacement(
   const scaleAdjustment = clamp((widthToHeight - 0.5) * 0.025, -0.02, 0.04);
   const light = scene.analysis.light as
     { direction?: string; temperature?: string } | undefined;
+  const userAnchor =
+    typeof input.xNormalized === "number" &&
+    typeof input.yNormalized === "number"
+      ? { x: input.xNormalized, y: input.yNormalized }
+      : null;
   return {
     ...input,
-    mode: "auto",
+    mode: userAnchor ? "guided" : "auto",
     surfaceType,
-    xNormalized: selected.x,
-    yNormalized: selected.y,
+    xNormalized: userAnchor ? clamp(userAnchor.x, 0.02, 0.98) : selected.x,
+    yNormalized: userAnchor ? clamp(userAnchor.y, 0.02, 0.98) : selected.y,
     scale: clamp(selected.scale + scaleAdjustment, 0.06, 0.55),
     rotationDegrees: selected.rotation,
     lighting: {
@@ -426,8 +444,9 @@ function fallbackPlacement(
       hardness: "soft",
     },
     confidence: serverConfig.openaiApiKey ? 0.58 : 0.46,
-    rationale:
-      "Placement automatique basé sur le type de support, les dimensions du produit et la perspective de la pièce.",
+    rationale: userAnchor
+      ? "Point choisi manuellement, avec échelle et lumière adaptées automatiquement au support."
+      : "Placement automatique basé sur le type de support, les dimensions du produit et la perspective de la pièce.",
     source: "automatic-fallback",
   };
 }

@@ -24,9 +24,10 @@ flowchart LR
     C --> D["Cloudinary private"]
     E["Photo de pièce + consentement"] --> B
     B --> F["MongoDB : scène et produit"]
-    F --> G["Vision : meilleur placement"]
-    G --> H["Sharp : composition et masque protégé"]
-    H --> I{"OPENAI_API_KEY ?"}
+    F --> G["Point utilisateur + type de support"]
+    G --> H["Vision : échelle, perspective et lumière"]
+    H --> O["Sharp : composition et masque protégé"]
+    O --> I{"OPENAI_API_KEY ?"}
     I -->|Non ou mode démo| J["Rendu local déterministe"]
     I -->|Oui| K["GPT Image 2 edits"]
     J --> M["Cloudinary + MongoDB"]
@@ -34,9 +35,10 @@ flowchart LR
     M --> N["Débit atomique d’un crédit"]
 ```
 
-Le client choisit uniquement le type de support. Le modèle de vision propose la
-zone, l’échelle, la rotation et la lumière à partir de la photo et des dimensions
-réelles. Si l’analyse distante échoue, un placement local borné prend le relais.
+Le client place un point rouge sur la photo et choisit le type de support. Le
+modèle de vision respecte ce point puis propose l’échelle, la rotation et la
+lumière à partir de la photo et des dimensions réelles. Si l’analyse distante
+échoue, un placement local borné conserve le point choisi.
 GPT Image ne peut modifier que le halo transparent autour du produit ; le produit
 déjà composé reste protégé.
 

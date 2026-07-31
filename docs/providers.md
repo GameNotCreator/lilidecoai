@@ -6,8 +6,8 @@ Le pipeline TypeScript dans `apps/web/lib/server/rendering.ts` reçoit :
 
 - la photo normalisée de la pièce ;
 - le cutout du produit ;
-- le support choisi par l’utilisateur ;
-- le placement structuré proposé par le modèle de vision ;
+- le point de contact et le support choisis par l’utilisateur ;
+- l’échelle, la rotation et la lumière proposées par le modèle de vision ;
 - la composition déterministe ;
 - le masque de modification ;
 - une clé d’idempotence.

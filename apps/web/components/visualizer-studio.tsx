@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { type MouseEvent, useEffect, useMemo, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -41,6 +41,10 @@ export function VisualizerStudio({
   const [productId, setProductId] = useState(initialProductId ?? "");
   const [scene, setScene] = useState<Scene | null>(null);
   const [surface, setSurface] = useState("table");
+  const [placementPoint, setPlacementPoint] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
   const [render, setRender] = useState<Render | null>(null);
   const [beforePercent, setBeforePercent] = useState(48);
   const [credits, setCredits] = useState<number | null>(null);
@@ -100,6 +104,7 @@ export function VisualizerStudio({
         method: "POST",
       });
       setScene(analysed);
+      setPlacementPoint(null);
       setStep(2);
       await recordEvent("room_uploaded");
     } catch (reason) {
@@ -113,7 +118,7 @@ export function VisualizerStudio({
   }
 
   async function generate() {
-    if (!scene || !product) return;
+    if (!scene || !product || !placementPoint) return;
     setBusy(true);
     setError("");
     try {
@@ -121,8 +126,10 @@ export function VisualizerStudio({
         placement: {
           sceneId: scene.id,
           productId: product.id,
-          mode: "auto",
+          mode: "guided",
           surfaceType: surface,
+          xNormalized: placementPoint.x,
+          yNormalized: placementPoint.y,
         },
         idempotencyKey: `web-${crypto.randomUUID()}`,
         quality: "medium",
@@ -147,6 +154,20 @@ export function VisualizerStudio({
     }
   }
 
+  function placeMarker(event: MouseEvent<HTMLButtonElement>) {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const x = Math.max(
+      0,
+      Math.min(1, (event.clientX - bounds.left) / bounds.width),
+    );
+    const y = Math.max(
+      0,
+      Math.min(1, (event.clientY - bounds.top) / bounds.height),
+    );
+    setPlacementPoint({ x, y });
+    void recordEvent("placement_point_selected");
+  }
+
   async function recordEvent(event: string) {
     await api("/v1/analytics", {
       method: "POST",
@@ -167,7 +188,7 @@ export function VisualizerStudio({
           <h1>Voyez l’objet dans votre intérieur.</h1>
         </div>
         <div className="studio-meta">
-          <Badge tone="positive">Placement IA</Badge>
+          <Badge tone="positive">Placement guidé</Badge>
           {!embedded && (
             <span className="credit-pill">
               <Sparkles size={14} /> {credits ?? "—"} crédits
@@ -177,7 +198,7 @@ export function VisualizerStudio({
       </header>
 
       <nav className="studio-steps" aria-label="Étapes du visualiseur">
-        {["Pièce", "Support", "Résultat"].map((label, index) => (
+        {["Pièce", "Placement", "Résultat"].map((label, index) => (
           <button
             key={label}
             className={
@@ -266,23 +287,33 @@ export function VisualizerStudio({
 
         {step === 2 && scene && (
           <div className="studio-grid settings-grid">
-            <div className="room-preview">
+            <button
+              type="button"
+              className="room-preview marker-placement"
+              aria-label="Placer le point rouge sur la pièce"
+              onClick={placeMarker}
+            >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={scene.imageUrl} alt="Pièce téléversée" />
-              <div className="surface-guide" data-surface={surface}>
-                <span>
-                  {surface === "wall" ? "Zone murale" : "Surface de pose"}
-                </span>
-              </div>
-            </div>
+              {placementPoint && (
+                <span
+                  className="red-placement-dot"
+                  data-testid="placement-dot"
+                  style={{
+                    left: `${placementPoint.x * 100}%`,
+                    top: `${placementPoint.y * 100}%`,
+                  }}
+                />
+              )}
+            </button>
             <div className="studio-panel">
               <span className="panel-index">02</span>
-              <h2>Choisissez le support</h2>
+              <h2>Placez le point rouge</h2>
               <p className="muted">
-                Indiquez seulement où l’objet peut être posé. L’IA analyse la
-                photo et décide de la zone libre, de l’échelle, de la
-                perspective et de la lumière.
+                Cliquez sur la photo à l’endroit exact où l’objet doit toucher
+                le meuble, puis indiquez le type de support.
               </p>
+              <strong className="choice-label">Ce point se trouve sur :</strong>
               <div className="choice-grid">
                 {["table", "nightstand", "shelf", "niche", "wall", "floor"].map(
                   (value) => (
@@ -310,17 +341,17 @@ export function VisualizerStudio({
               <div className="auto-placement-note">
                 <Sparkles size={20} />
                 <span>
-                  <strong>Placement automatique</strong>
+                  <strong>Vous choisissez l’endroit</strong>
                   <small>
-                    L’objet sera placé une seule fois, sans superposition, en
-                    respectant ses dimensions réelles et les instructions du
-                    catalogue.
+                    Aucun produit n’est affiché avant la génération. L’IA garde
+                    votre point et adapte uniquement l’échelle, la perspective,
+                    l’ombre et la lumière.
                   </small>
                 </span>
               </div>
               <Button
                 onClick={() => void generate()}
-                disabled={busy || !credits}
+                disabled={busy || !credits || !placementPoint}
               >
                 {busy ? (
                   <LoaderCircle className="spin" size={17} />
@@ -329,7 +360,9 @@ export function VisualizerStudio({
                 )}
                 {busy
                   ? "Analyse et intégration en cours…"
-                  : "Choisir le placement et générer · 1 crédit"}
+                  : placementPoint
+                    ? "Générer à cet endroit · 1 crédit"
+                    : "Placez d’abord le point rouge"}
                 {!busy && <ArrowRight size={17} />}
               </Button>
             </div>
@@ -416,7 +449,7 @@ export function VisualizerStudio({
                   setStep(2);
                 }}
               >
-                <ArrowLeft size={15} /> Changer le support
+                <ArrowLeft size={15} /> Changer le point
               </button>
             </div>
           </div>
