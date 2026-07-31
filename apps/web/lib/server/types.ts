@@ -38,6 +38,7 @@ export interface ProductDocument {
   depthCm: number;
   material: string;
   placementType: string;
+  generationInstructions: string;
   lightingProfile: Record<string, unknown>;
   buyUrl: string | null;
   status: "draft" | "processing" | "ready" | "archived";

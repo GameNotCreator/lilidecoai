@@ -26,6 +26,9 @@ export const productSchema = z.object({
   depthCm: z.coerce.number().nonnegative(),
   material: z.string(),
   placementType: placementTypeSchema,
+  generationInstructions: z.string().default(""),
+  sku: z.string().nullable().optional(),
+  lightingProfile: z.record(z.string(), z.unknown()).optional(),
   status: z.enum(["draft", "processing", "ready", "archived"]),
   buyUrl: z.string().nullable().optional(),
   assetUrl: z.string().nullable().optional(),
@@ -41,6 +44,7 @@ export const renderSchema = z.object({
   resultUrl: z.string().nullable(),
   qualityScore: z.coerce.number().nullable(),
   creditCharged: z.boolean(),
+  placement: z.record(z.string(), z.unknown()).optional(),
   createdAt: z.string(),
 });
 

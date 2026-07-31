@@ -45,6 +45,7 @@ const productCreateSchema = z.object({
   heightCm: z.number().positive().max(1000),
   depthCm: z.number().nonnegative().max(1000),
   material: z.string().trim().min(2).max(120),
+  generationInstructions: z.string().trim().max(1500).default(""),
   placementType: z.enum([
     "table",
     "nightstand",
@@ -55,6 +56,31 @@ const productCreateSchema = z.object({
   ]),
   lightingProfile: z.record(z.string(), z.unknown()).default({}),
   buyUrl: z.url().nullable().optional(),
+});
+
+const renderCreateSchema = z.object({
+  placement: z.object({
+    sceneId: z.string().uuid(),
+    productId: z.string().uuid(),
+    calibrationId: z.string().uuid().optional(),
+    mode: z.string().max(20).optional(),
+    surfaceType: z
+      .enum(["table", "nightstand", "shelf", "niche", "wall", "floor"])
+      .optional(),
+    xNormalized: z.number().min(0).max(1).optional(),
+    yNormalized: z.number().min(0).max(1).optional(),
+    scale: z.number().min(0.04).max(0.75).optional(),
+    rotationDegrees: z.number().min(-180).max(180).optional(),
+    lighting: z
+      .object({
+        direction: z.string().max(30).optional(),
+        temperature: z.string().max(30).optional(),
+        hardness: z.string().max(30).optional(),
+      })
+      .optional(),
+  }),
+  idempotencyKey: z.string().min(1).max(160),
+  quality: z.string().max(30).optional(),
 });
 
 export async function dispatchApi(
@@ -87,10 +113,7 @@ export async function dispatchApi(
       path.length === 3 &&
       request.method === "GET"
     ) {
-      if (
-        path[1] === DEMO_MERCHANT_SLUG &&
-        path[2] === DEMO_PRODUCT_ID
-      ) {
+      if (path[1] === DEMO_MERCHANT_SLUG && path[2] === DEMO_PRODUCT_ID) {
         await ensureDemoSeed(db);
       }
       return await publicVisualizer(db, path[1] as string, path[2] as string);
@@ -239,6 +262,7 @@ async function handleProducts(
       depthCm: body.depthCm,
       material: body.material,
       placementType: body.placementType,
+      generationInstructions: body.generationInstructions,
       lightingProfile: body.lightingProfile,
       buyUrl: body.buyUrl ?? null,
       status: "draft",
@@ -537,7 +561,7 @@ async function handleRenders(
     return Response.json(renders.map(renderResponse));
   }
   if (path.length === 0 && request.method === "POST") {
-    const input = (await request.json()) as Parameters<typeof createRender>[2];
+    const input = renderCreateSchema.parse(await request.json());
     if (tenant.publicSessionId) {
       if (input.placement.productId !== tenant.publicProductId) {
         throw new AuthError("Produit non autorisé", 403);
@@ -585,7 +609,7 @@ async function handleRenders(
     const result = await createRender(
       db,
       tenant.organizationId,
-      retryInput as Parameters<typeof createRender>[2],
+      retryInput as unknown as Parameters<typeof createRender>[2],
       tenant.publicSessionId,
     );
     return Response.json(result, { status: 201 });

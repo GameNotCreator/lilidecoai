@@ -8,8 +8,6 @@ import {
   Download,
   ImagePlus,
   LoaderCircle,
-  Move,
-  Ruler,
   Share2,
   ShoppingBag,
   Sparkles,
@@ -19,7 +17,6 @@ import type { Product, Render } from "@lili/types";
 import { Badge, Button } from "@lili/ui";
 import { api, establishPublicSession, getProducts } from "@/lib/api";
 import { prepareImageForUpload } from "@/lib/client-image";
-import { PlacementCanvas, type PlacementState } from "./placement-canvas";
 
 interface Scene {
   id: string;
@@ -29,19 +26,6 @@ interface Scene {
   heightPx: number;
   analysis: Record<string, unknown>;
 }
-
-interface Calibration {
-  id: string;
-  mode: "quick" | "wall" | "surface";
-  label: string;
-}
-
-const initialPlacement: PlacementState = {
-  x: 0.5,
-  y: 0.78,
-  scale: 0.22,
-  rotation: 0,
-};
 
 export function VisualizerStudio({
   embedded = false,
@@ -57,13 +41,6 @@ export function VisualizerStudio({
   const [productId, setProductId] = useState(initialProductId ?? "");
   const [scene, setScene] = useState<Scene | null>(null);
   const [surface, setSurface] = useState("table");
-  const [calibrationMode, setCalibrationMode] = useState<
-    "quick" | "wall" | "surface"
-  >("quick");
-  const [calibration, setCalibration] = useState<Calibration | null>(null);
-  const [referenceCm, setReferenceCm] = useState(100);
-  const [placement, setPlacement] = useState(initialPlacement);
-  const [lighting, setLighting] = useState("neutral");
   const [render, setRender] = useState<Render | null>(null);
   const [beforePercent, setBeforePercent] = useState(48);
   const [credits, setCredits] = useState<number | null>(null);
@@ -91,7 +68,13 @@ export function VisualizerStudio({
     void load()
       .then(({ availableProducts, wallet }) => {
         setProducts(availableProducts);
-        setProductId((current) => current || availableProducts[0]?.id || "");
+        const nextProductId =
+          initialProductId || availableProducts[0]?.id || "";
+        setProductId(nextProductId);
+        const selected = availableProducts.find(
+          (item) => item.id === nextProductId,
+        );
+        if (selected) setSurface(selected.placementType);
         setCredits(wallet.balance);
       })
       .catch((reason: unknown) =>
@@ -129,46 +112,6 @@ export function VisualizerStudio({
     }
   }
 
-  async function calibrate() {
-    if (!scene) return;
-    setBusy(true);
-    setError("");
-    try {
-      const parameters =
-        calibrationMode === "wall"
-          ? {
-              start: { x: 0.25, y: 0.68 },
-              end: { x: 0.75, y: 0.68 },
-              realLengthCm: referenceCm,
-            }
-          : calibrationMode === "surface"
-            ? {
-                corners: [
-                  { x: 0.18, y: 0.62 },
-                  { x: 0.82, y: 0.62 },
-                  { x: 0.9, y: 0.84 },
-                  { x: 0.1, y: 0.84 },
-                ],
-                widthCm: referenceCm,
-                depthCm: Math.max(30, Math.round(referenceCm * 0.6)),
-              }
-            : {};
-      const value = await api<Calibration>(`/v1/scenes/${scene.id}/calibrate`, {
-        method: "POST",
-        body: JSON.stringify({ mode: calibrationMode, parameters }),
-      });
-      setCalibration(value);
-      setStep(3);
-      await recordEvent("calibration_completed");
-    } catch (reason) {
-      setError(
-        reason instanceof Error ? reason.message : "Calibration impossible",
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function generate() {
     if (!scene || !product) return;
     setBusy(true);
@@ -178,17 +121,8 @@ export function VisualizerStudio({
         placement: {
           sceneId: scene.id,
           productId: product.id,
-          calibrationId: calibration?.id,
-          mode: calibrationMode,
-          xNormalized: placement.x,
-          yNormalized: placement.y,
-          scale: placement.scale,
-          rotationDegrees: placement.rotation,
-          lighting: {
-            direction: "left",
-            temperature: lighting,
-            hardness: lighting === "dramatic" ? "hard" : "soft",
-          },
+          mode: "auto",
+          surfaceType: surface,
         },
         idempotencyKey: `web-${crypto.randomUUID()}`,
         quality: "medium",
@@ -202,7 +136,7 @@ export function VisualizerStudio({
       setCredits((value) =>
         value === null ? value : value - (result.creditCharged ? 1 : 0),
       );
-      setStep(4);
+      setStep(3);
       await recordEvent(
         result.status === "succeeded" ? "render_succeeded" : "render_failed",
       );
@@ -233,9 +167,7 @@ export function VisualizerStudio({
           <h1>Voyez l’objet dans votre intérieur.</h1>
         </div>
         <div className="studio-meta">
-          <Badge tone={calibration?.mode === "quick" ? "warning" : "positive"}>
-            {calibration?.label ?? "Échelle estimée"}
-          </Badge>
+          <Badge tone="positive">Placement IA</Badge>
           {!embedded && (
             <span className="credit-pill">
               <Sparkles size={14} /> {credits ?? "—"} crédits
@@ -245,7 +177,7 @@ export function VisualizerStudio({
       </header>
 
       <nav className="studio-steps" aria-label="Étapes du visualiseur">
-        {["Pièce", "Surface", "Placement", "Résultat"].map((label, index) => (
+        {["Pièce", "Support", "Résultat"].map((label, index) => (
           <button
             key={label}
             className={
@@ -284,7 +216,10 @@ export function VisualizerStudio({
                         ? "product-option selected"
                         : "product-option"
                     }
-                    onClick={() => setProductId(item.id)}
+                    onClick={() => {
+                      setProductId(item.id);
+                      setSurface(item.placementType);
+                    }}
                   >
                     {item.cutoutUrl ? (
                       // The URL is returned by the trusted local API.
@@ -342,160 +277,46 @@ export function VisualizerStudio({
             </div>
             <div className="studio-panel">
               <span className="panel-index">02</span>
-              <h2>Surface & échelle</h2>
+              <h2>Choisissez le support</h2>
               <p className="muted">
-                Les suggestions locales restent entièrement modifiables.
+                Indiquez seulement où l’objet peut être posé. L’IA analyse la
+                photo et décide de la zone libre, de l’échelle, de la
+                perspective et de la lumière.
               </p>
               <div className="choice-grid">
-                {["table", "shelf", "wall", "floor"].map((value) => (
-                  <button
-                    key={value}
-                    className={surface === value ? "choice active" : "choice"}
-                    onClick={() => setSurface(value)}
-                  >
-                    {value === "table"
-                      ? "Table"
-                      : value === "shelf"
-                        ? "Étagère"
-                        : value === "wall"
-                          ? "Mur"
-                          : "Sol"}
-                  </button>
-                ))}
+                {["table", "nightstand", "shelf", "niche", "wall", "floor"].map(
+                  (value) => (
+                    <button
+                      key={value}
+                      className={surface === value ? "choice active" : "choice"}
+                      onClick={() => setSurface(value)}
+                    >
+                      {value === "table"
+                        ? "Table"
+                        : value === "nightstand"
+                          ? "Table de nuit"
+                          : value === "shelf"
+                            ? "Étagère"
+                            : value === "niche"
+                              ? "Niche"
+                              : value === "wall"
+                                ? "Mur"
+                                : "Sol"}
+                    </button>
+                  ),
+                )}
               </div>
               <div className="divider" />
-              <div className="mode-cards">
-                <button
-                  className={
-                    calibrationMode === "quick"
-                      ? "mode-card active"
-                      : "mode-card"
-                  }
-                  onClick={() => setCalibrationMode("quick")}
-                >
-                  <Move size={19} />
-                  <span>
-                    <strong>Mode rapide</strong>
-                    <small>Échelle visuelle estimée</small>
-                  </span>
-                </button>
-                <button
-                  className={
-                    calibrationMode === "wall"
-                      ? "mode-card active"
-                      : "mode-card"
-                  }
-                  onClick={() => setCalibrationMode("wall")}
-                >
-                  <Ruler size={19} />
-                  <span>
-                    <strong>Précision murale</strong>
-                    <small>Segment de longueur connue</small>
-                  </span>
-                </button>
-                <button
-                  className={
-                    calibrationMode === "surface"
-                      ? "mode-card active"
-                      : "mode-card"
-                  }
-                  onClick={() => setCalibrationMode("surface")}
-                >
-                  <Ruler size={19} />
-                  <span>
-                    <strong>Précision surface</strong>
-                    <small>Homographie à quatre coins</small>
-                  </span>
-                </button>
-              </div>
-              {calibrationMode !== "quick" && (
-                <div className="field">
-                  <label htmlFor="reference">
-                    Longueur réelle de référence
-                  </label>
-                  <div className="unit-input">
-                    <input
-                      id="reference"
-                      type="number"
-                      min={10}
-                      max={1000}
-                      value={referenceCm}
-                      onChange={(event) =>
-                        setReferenceCm(Number(event.target.value))
-                      }
-                    />
-                    <span>cm</span>
-                  </div>
-                </div>
-              )}
-              <Button onClick={() => void calibrate()} disabled={busy}>
-                {busy ? <LoaderCircle className="spin" size={17} /> : null}
-                Valider la surface <ArrowRight size={17} />
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {step === 3 && scene && product?.cutoutUrl && (
-          <div className="studio-grid editor-grid">
-            <PlacementCanvas
-              sceneUrl={scene.imageUrl}
-              productUrl={product.cutoutUrl}
-              value={placement}
-              onChange={(value) => {
-                setPlacement(value);
-                void recordEvent("placement_adjusted");
-              }}
-            />
-            <div className="studio-panel">
-              <span className="panel-index">03</span>
-              <h2>Ajustez le placement</h2>
-              <p className="muted">
-                Glissez l’objet. Utilisez les poignées pour l’échelle et la
-                rotation.
-              </p>
-              <div className="measure-card">
-                <div>
-                  <span>Dimensions réelles</span>
-                  <strong>
-                    {product.widthCm} × {product.heightCm} cm
-                  </strong>
-                </div>
-                <Badge
-                  tone={calibrationMode === "quick" ? "warning" : "positive"}
-                >
-                  {calibrationMode === "quick" ? "estimée" : "calibrée"}
-                </Badge>
-              </div>
-              <div className="field">
-                <label htmlFor="scale">Taille à l’écran</label>
-                <input
-                  id="scale"
-                  type="range"
-                  min="0.06"
-                  max="0.6"
-                  step="0.01"
-                  value={placement.scale}
-                  onChange={(event) =>
-                    setPlacement({
-                      ...placement,
-                      scale: Number(event.target.value),
-                    })
-                  }
-                />
-              </div>
-              <div className="field">
-                <label htmlFor="light">Ambiance lumineuse</label>
-                <select
-                  id="light"
-                  value={lighting}
-                  onChange={(event) => setLighting(event.target.value)}
-                >
-                  <option value="neutral">Naturelle neutre</option>
-                  <option value="warm">Fin de journée chaude</option>
-                  <option value="cool">Lumière nord douce</option>
-                  <option value="dramatic">Contraste marqué</option>
-                </select>
+              <div className="auto-placement-note">
+                <Sparkles size={20} />
+                <span>
+                  <strong>Placement automatique</strong>
+                  <small>
+                    L’objet sera placé une seule fois, sans superposition, en
+                    respectant ses dimensions réelles et les instructions du
+                    catalogue.
+                  </small>
+                </span>
               </div>
               <Button
                 onClick={() => void generate()}
@@ -506,16 +327,16 @@ export function VisualizerStudio({
                 ) : (
                   <Sparkles size={17} />
                 )}
-                {busy ? "Intégration en cours…" : "Générer l’aperçu · 1 crédit"}
+                {busy
+                  ? "Analyse et intégration en cours…"
+                  : "Choisir le placement et générer · 1 crédit"}
+                {!busy && <ArrowRight size={17} />}
               </Button>
-              <button className="back-link" onClick={() => setStep(2)}>
-                <ArrowLeft size={15} /> Modifier la calibration
-              </button>
             </div>
           </div>
         )}
 
-        {step === 4 && scene && render?.resultUrl && (
+        {step === 3 && scene && render?.resultUrl && (
           <div className="result-layout">
             <div className="compare-frame">
               {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -547,9 +368,9 @@ export function VisualizerStudio({
               <Badge tone="positive">Rendu accepté</Badge>
               <h2>Il trouve sa place.</h2>
               <p className="muted">
-                Produit protégé, échelle{" "}
-                {calibrationMode === "quick" ? "estimée" : "calibrée"} et
-                intégration lumineuse contrôlée.
+                {typeof render.placement?.rationale === "string"
+                  ? render.placement.rationale
+                  : "Placement, échelle et lumière choisis automatiquement à partir de la pièce et des dimensions du produit."}
               </p>
               <div className="score-row">
                 <span>Score de fidélité</span>
@@ -592,10 +413,10 @@ export function VisualizerStudio({
                 className="back-link"
                 onClick={() => {
                   setRender(null);
-                  setStep(3);
+                  setStep(2);
                 }}
               >
-                <ArrowLeft size={15} /> Ajuster le placement
+                <ArrowLeft size={15} /> Changer le support
               </button>
             </div>
           </div>

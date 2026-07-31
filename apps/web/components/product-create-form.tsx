@@ -44,6 +44,7 @@ export function ProductCreateForm() {
           depthCm: Number(formData.get("depthCm")),
           material: formData.get("material"),
           placementType: formData.get("placementType"),
+          generationInstructions: formData.get("generationInstructions") || "",
           lightingProfile: {
             source: formData.get("lighting"),
             reflectance: formData.get("reflectance"),
@@ -218,6 +219,22 @@ export function ProductCreateForm() {
               rows={3}
               placeholder="Description courte du catalogue…"
             />
+          </div>
+          <div className="field prompt-field">
+            <label htmlFor="generationInstructions">
+              Instructions de génération IA
+            </label>
+            <textarea
+              id="generationInstructions"
+              name="generationInstructions"
+              rows={5}
+              maxLength={1500}
+              placeholder="Ex. ambiance naturelle et chaleureuse, ombre douce, conserver les reflets satinés, style photographie éditoriale…"
+            />
+            <small>
+              Ces indications affinent l’ambiance et le traitement. L’identité,
+              les dimensions et la couleur du produit restent prioritaires.
+            </small>
           </div>
           <Button type="submit" disabled={busy}>
             <Check size={17} /> Créer et préparer

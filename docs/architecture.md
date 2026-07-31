@@ -10,7 +10,8 @@ LiliDecoAI est une application full-stack Next.js :
 - MongoDB est l’unique base de données ;
 - Cloudinary conserve les images avec le type `private` en production ;
 - Sharp assure normalisation, composition, masque et rendu local ;
-- OpenAI GPT Image 2 est un enrichissement serveur optionnel.
+- OpenAI analyse la pièce puis GPT Image 2 harmonise le rendu, de façon
+  optionnelle et uniquement côté serveur.
 
 Il n’existe aucun processus Python, worker ou serveur API séparé.
 
@@ -22,21 +23,22 @@ flowchart LR
     B --> C["Sharp : normalisation et cutout"]
     C --> D["Cloudinary private"]
     E["Photo de pièce + consentement"] --> B
-    B --> F["MongoDB : scène et géométrie"]
-    F --> G["Placement Konva"]
-    G --> H["Sharp : composition et masque"]
+    B --> F["MongoDB : scène et produit"]
+    F --> G["Vision : meilleur placement"]
+    G --> H["Sharp : composition et masque protégé"]
     H --> I{"OPENAI_API_KEY ?"}
     I -->|Non ou mode démo| J["Rendu local déterministe"]
     I -->|Oui| K["GPT Image 2 edits"]
-    J --> L["Overlay catalogue"]
-    K --> L
-    L --> M["Cloudinary + MongoDB"]
+    J --> M["Cloudinary + MongoDB"]
+    K --> M
     M --> N["Débit atomique d’un crédit"]
 ```
 
-L’échelle et le placement restent déterministes. L’IA ne choisit pas la taille
-du produit : elle harmonise uniquement l’éclairage, l’ombre, le contact et les
-contours dans le masque autorisé.
+Le client choisit uniquement le type de support. Le modèle de vision propose la
+zone, l’échelle, la rotation et la lumière à partir de la photo et des dimensions
+réelles. Si l’analyse distante échoue, un placement local borné prend le relais.
+GPT Image ne peut modifier que le halo transparent autour du produit ; le produit
+déjà composé reste protégé.
 
 ## Données MongoDB
 
@@ -66,7 +68,8 @@ que depuis cette même session.
   et sous 3,5 Mo avant de l’envoyer à la fonction Vercel ;
 - un seul objet est placé par rendu ;
 - le rendu OpenAI est synchrone et borné par la durée maximale de la fonction ;
-- la segmentation locale retire surtout les fonds clairs et neutres ;
+- le détourage local retire le fond connecté aux bords avec une transition
+  alpha douce et conserve mieux les parties claires internes ;
 - les objets transparents, réfléchissants ou déformables restent hors périmètre ;
 - le cron fourni est quotidien ; un plan Vercel permettant une fréquence plus
   élevée peut réduire la fenêtre réelle de suppression.

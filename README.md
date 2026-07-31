@@ -50,11 +50,12 @@ tentatives de rendu, analytics et audits.
 1. Le marchand crée un produit, téléverse sa photo et ses dimensions.
 2. Le serveur produit un cutout normalisé.
 3. Le client téléverse sa pièce avec consentement.
-4. Il choisit une surface et ajuste le produit dans l’éditeur Konva.
-5. Next.js crée la composition et le masque avec Sharp.
-6. Le mode local finalise le rendu sans coût, ou GPT Image 2 harmonise lumière,
-   ombre et contact.
-7. Le cutout catalogue est reposé sur la sortie pour préserver le produit.
+4. Il choisit uniquement le type de support : table, étagère, niche, mur ou sol.
+5. Le modèle de vision choisit la meilleure zone, l’échelle et la lumière ; un
+   placement local prend le relais si l’API est indisponible.
+6. Next.js crée une composition unique et un masque qui protège le produit.
+7. Le mode local finalise le rendu sans coût, ou GPT Image 2 harmonise lumière,
+   ombre et contact sans générer un second objet.
 8. Un crédit est débité uniquement après un rendu réussi.
 
 ## Vérification

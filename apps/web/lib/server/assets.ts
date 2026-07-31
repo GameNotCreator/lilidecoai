@@ -54,7 +54,8 @@ export async function normalizeImage(
       fit: "inside",
       withoutEnlargement: true,
     })
-    .webp({ quality: 90 })
+    .toColourspace("srgb")
+    .webp({ quality: 92, smartSubsample: true, effort: 5 })
     .toBuffer();
 }
 
@@ -72,20 +73,15 @@ export async function createCutout(buffer: Buffer): Promise<Buffer> {
     .toBuffer({ resolveWithObject: true });
 
   const pixels = normalized.data;
-  for (let offset = 0; offset < pixels.length; offset += 4) {
-    const red = pixels[offset] ?? 0;
-    const green = pixels[offset + 1] ?? 0;
-    const blue = pixels[offset + 2] ?? 0;
-    const minimum = Math.min(red, green, blue);
-    const maximum = Math.max(red, green, blue);
-    const nearNeutral = maximum - minimum < 28;
-    if (nearNeutral && minimum > 236) {
-      pixels[offset + 3] = 0;
-    } else if (nearNeutral && minimum > 210) {
-      pixels[offset + 3] = Math.round(
-        ((236 - minimum) / 26) * (pixels[offset + 3] ?? 255),
-      );
-    }
+  const width = normalized.info.width;
+  const height = normalized.info.height;
+  let transparentPixels = 0;
+  for (let offset = 3; offset < pixels.length; offset += 4) {
+    if ((pixels[offset] ?? 255) < 245) transparentPixels += 1;
+  }
+
+  if (transparentPixels < width * height * 0.01) {
+    removeConnectedBackground(pixels, width, height);
   }
 
   return sharp(pixels, {
@@ -98,6 +94,122 @@ export async function createCutout(buffer: Buffer): Promise<Buffer> {
     .trim({ background: { r: 0, g: 0, b: 0, alpha: 0 } })
     .webp({ quality: 95, alphaQuality: 100 })
     .toBuffer();
+}
+
+function removeConnectedBackground(
+  pixels: Buffer,
+  width: number,
+  height: number,
+): void {
+  const background = estimateCornerBackground(pixels, width, height);
+  if (background.variation > 34) return;
+
+  const visited = new Uint8Array(width * height);
+  const queue = new Int32Array(width * height);
+  let head = 0;
+  let tail = 0;
+  const enqueue = (x: number, y: number) => {
+    if (x < 0 || x >= width || y < 0 || y >= height) return;
+    const index = y * width + x;
+    if (visited[index]) return;
+    const offset = index * 4;
+    const distance = colorDistance(pixels, offset, background);
+    if (distance > 78) return;
+    visited[index] = 1;
+    queue[tail] = index;
+    tail += 1;
+  };
+
+  for (let x = 0; x < width; x += 1) {
+    enqueue(x, 0);
+    enqueue(x, height - 1);
+  }
+  for (let y = 1; y < height - 1; y += 1) {
+    enqueue(0, y);
+    enqueue(width - 1, y);
+  }
+
+  while (head < tail) {
+    const index = queue[head] ?? 0;
+    head += 1;
+    const x = index % width;
+    const y = Math.floor(index / width);
+    const offset = index * 4;
+    const distance = colorDistance(pixels, offset, background);
+    const softAlpha = Math.round(clamp01((distance - 18) / 52) * 255);
+    pixels[offset + 3] = Math.min(pixels[offset + 3] ?? 255, softAlpha);
+    enqueue(x - 1, y);
+    enqueue(x + 1, y);
+    enqueue(x, y - 1);
+    enqueue(x, y + 1);
+  }
+}
+
+function estimateCornerBackground(
+  pixels: Buffer,
+  width: number,
+  height: number,
+): { red: number; green: number; blue: number; variation: number } {
+  const sampleWidth = Math.max(4, Math.round(width * 0.06));
+  const sampleHeight = Math.max(4, Math.round(height * 0.06));
+  const samples: Array<[number, number, number]> = [];
+  for (let y = 0; y < sampleHeight; y += 1) {
+    for (let x = 0; x < sampleWidth; x += 1) {
+      const corners: Array<readonly [number, number]> = [
+        [x, y],
+        [width - 1 - x, y],
+        [x, height - 1 - y],
+        [width - 1 - x, height - 1 - y],
+      ];
+      for (const [sampleX, sampleY] of corners) {
+        const offset = (sampleY * width + sampleX) * 4;
+        samples.push([
+          pixels[offset] ?? 0,
+          pixels[offset + 1] ?? 0,
+          pixels[offset + 2] ?? 0,
+        ]);
+      }
+    }
+  }
+  const average = samples.reduce(
+    (sum, sample) => [
+      sum[0] + sample[0],
+      sum[1] + sample[1],
+      sum[2] + sample[2],
+    ],
+    [0, 0, 0],
+  );
+  const red = average[0] / samples.length;
+  const green = average[1] / samples.length;
+  const blue = average[2] / samples.length;
+  const variation = Math.sqrt(
+    samples.reduce(
+      (sum, sample) =>
+        sum +
+        ((sample[0] - red) ** 2 +
+          (sample[1] - green) ** 2 +
+          (sample[2] - blue) ** 2) /
+          3,
+      0,
+    ) / samples.length,
+  );
+  return { red, green, blue, variation };
+}
+
+function colorDistance(
+  pixels: Buffer,
+  offset: number,
+  color: { red: number; green: number; blue: number },
+): number {
+  return Math.sqrt(
+    ((pixels[offset] ?? 0) - color.red) ** 2 +
+      ((pixels[offset + 1] ?? 0) - color.green) ** 2 +
+      ((pixels[offset + 2] ?? 0) - color.blue) ** 2,
+  );
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
 }
 
 export async function storeAsset(

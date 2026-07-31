@@ -12,6 +12,7 @@ export function productResponse(product: ProductDocument) {
     depthCm: product.depthCm,
     material: product.material,
     placementType: product.placementType,
+    generationInstructions: product.generationInstructions ?? "",
     lightingProfile: product.lightingProfile,
     buyUrl: product.buyUrl,
     status: product.status,
@@ -46,6 +47,7 @@ export function renderResponse(render: RenderDocument) {
     resultUrl: assetUrl(render.resultAssetId),
     qualityScore: render.qualityScore,
     creditCharged: render.creditCharged,
+    placement: render.placement,
     createdAt: render.createdAt.toISOString(),
   };
 }

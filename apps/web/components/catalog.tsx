@@ -15,7 +15,9 @@ export function Catalog() {
   }, []);
 
   const filtered = products.filter((product) =>
-    `${product.name} ${product.material}`.toLowerCase().includes(query.toLowerCase()),
+    `${product.name} ${product.material}`
+      .toLowerCase()
+      .includes(query.toLowerCase()),
   );
 
   return (
@@ -23,8 +25,11 @@ export function Catalog() {
       <header className="app-page-head">
         <div>
           <span className="eyebrow">Catalogue</span>
-          <h1>Vos objets.</h1>
-          <p>Préparez les images, dimensions et points d’ancrage publiés dans le widget.</p>
+          <h1>Panel produits.</h1>
+          <p>
+            Créez et modifiez les photos, descriptions, dimensions, supports et
+            instructions de génération publiés dans le visualiseur.
+          </p>
         </div>
         <Link className="button" href="/app/products/new">
           <Plus size={17} /> Ajouter un objet
@@ -47,14 +52,30 @@ export function Catalog() {
                 // eslint-disable-next-line @next/next/no-img-element
                 <img src={product.cutoutUrl} alt={product.name} />
               ) : null}
-              <span className={`status status-${product.status}`}>{product.status}</span>
-              <button aria-label={`Actions pour ${product.name}`}><MoreHorizontal /></button>
+              <span className={`status status-${product.status}`}>
+                {product.status}
+              </span>
+              <Link
+                className="catalog-action"
+                href={`/app/products/${product.id}`}
+                aria-label={`Modifier ${product.name}`}
+              >
+                <MoreHorizontal />
+              </Link>
             </div>
             <div className="catalog-content">
               <span>{product.material}</span>
               <h2>{product.name}</h2>
-              <p>{product.widthCm} × {product.heightCm} × {product.depthCm} cm</p>
-              <Link href={`/demo?product=${product.id}`}>Tester le rendu →</Link>
+              <p>
+                {product.widthCm} × {product.heightCm} × {product.depthCm} cm
+              </p>
+              {product.description && (
+                <p className="catalog-description">{product.description}</p>
+              )}
+              <div className="catalog-links">
+                <Link href={`/app/products/${product.id}`}>Modifier →</Link>
+                <Link href={`/demo?product=${product.id}`}>Tester →</Link>
+              </div>
             </div>
           </article>
         ))}
@@ -62,4 +83,3 @@ export function Catalog() {
     </>
   );
 }
-

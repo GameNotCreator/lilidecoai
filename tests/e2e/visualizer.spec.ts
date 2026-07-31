@@ -126,7 +126,7 @@ test("a source photo over 4 MB is optimized before upload", async ({
     buffer: largePhoto,
   });
   await expect(
-    page.getByRole("heading", { name: "Surface & échelle" }),
+    page.getByRole("heading", { name: "Choisissez le support" }),
   ).toBeVisible({ timeout: 30_000 });
   await expect(page.locator(".studio-error")).toHaveCount(0);
 });
@@ -147,19 +147,31 @@ test("required customer journey reaches a successful mock render", async ({
   await page.getByLabel("Largeur").fill("24");
   await page.getByLabel("Hauteur").fill("42");
   await page.getByLabel("Profondeur").fill("24");
+  await page
+    .getByLabel("Instructions de génération IA")
+    .fill("Ambiance naturelle, ombre douce et photographie éditoriale.");
   await page.getByRole("button", { name: /Créer et préparer/i }).click();
   await expect(page).toHaveURL(/\/app\/catalog/);
   await expect(page.getByText(productName)).toBeVisible();
 
-  const productId = await page.evaluate(async (name) => {
+  const createdProduct = await page.evaluate(async (name) => {
     const response = await fetch("/v1/products");
     const products = (await response.json()) as Array<{
       id: string;
       name: string;
+      generationInstructions: string;
     }>;
-    return products.find((product) => product.name === name)?.id;
+    return products.find((product) => product.name === name);
   }, productName);
+  const productId = createdProduct?.id;
   expect(productId).toBeTruthy();
+  expect(createdProduct?.generationInstructions).toContain("ombre douce");
+
+  await page.goto(`/app/products/${productId}`);
+  await expect(page.getByRole("heading", { name: productName })).toBeVisible();
+  await expect(page.getByLabel("Instructions de génération IA")).toHaveValue(
+    /ombre douce/,
+  );
 
   await page.goto(`/visualizer/atelier-lili/${productId}`);
   await expect(
@@ -190,14 +202,12 @@ test("required customer journey reaches a successful mock render", async ({
     buffer: await roomFixture(),
   });
   await expect(
-    page.getByRole("heading", { name: "Surface & échelle" }),
+    page.getByRole("heading", { name: "Choisissez le support" }),
   ).toBeVisible();
-  await page.getByRole("button", { name: /Mode rapide/i }).click();
-  await page.getByRole("button", { name: /Valider la surface/i }).click();
-  await expect(
-    page.getByRole("heading", { name: "Ajustez le placement" }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: /Générer l’aperçu/i }).click();
+  await page.getByRole("button", { name: "Table", exact: true }).click();
+  await page
+    .getByRole("button", { name: /Choisir le placement et générer/i })
+    .click();
   await expect(page.getByText("Rendu accepté")).toBeVisible({
     timeout: 30_000,
   });

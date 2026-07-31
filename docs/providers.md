@@ -6,7 +6,8 @@ Le pipeline TypeScript dans `apps/web/lib/server/rendering.ts` reçoit :
 
 - la photo normalisée de la pièce ;
 - le cutout du produit ;
-- la transformation géométrique ;
+- le support choisi par l’utilisateur ;
+- le placement structuré proposé par le modèle de vision ;
 - la composition déterministe ;
 - le masque de modification ;
 - une clé d’idempotence.
@@ -18,16 +19,20 @@ durée, statut, score qualité et erreur sûre.
 
 L’appel serveur utilise :
 
+- `POST /v1/responses` avec `gpt-5.6` pour analyser la pièce et retourner un
+  placement structuré ;
 - `POST /v1/images/edits` ;
 - le modèle `gpt-image-2` par défaut ;
-- les images `room`, `product`, `composition` et le masque ;
+- les images `composition`, `product`, `room` et le masque ;
 - un format de sortie WebP ;
 - une taille adaptée au ratio de la pièce ;
 - la qualité `medium` par défaut.
 
-Le cutout original est replacé après la génération pour préserver les pixels du
-catalogue. En `DEMO_MODE=true` ou sans `OPENAI_API_KEY`, aucun appel OpenAI
-n’est effectué : le rendu local Sharp est utilisé.
+La composition contenant déjà le produit est l’image principale. Le masque
+protège les pixels du produit et n’autorise que le travail d’ombre, de contact et
+de lumière autour de lui. Aucun second cutout n’est recollé après la génération.
+En `DEMO_MODE=true` ou sans `OPENAI_API_KEY`, aucun appel OpenAI n’est effectué :
+un placement automatique de secours et le rendu local Sharp sont utilisés.
 
 ## Garde-fous
 
@@ -36,7 +41,8 @@ n’est effectué : le rendu local Sharp est utilisé.
 - coût et durée enregistrés par tentative ;
 - débit d’un crédit uniquement après succès ;
 - messages d’erreur nettoyés ;
-- contrôle qualité et overlay indépendants du provider.
+- validation structurée du placement et repli local en cas d’échec de la vision ;
+- un seul exemplaire du produit dans le résultat final.
 
 ## Ajouter un provider
 

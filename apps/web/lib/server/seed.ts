@@ -117,6 +117,8 @@ async function seed(db: Db): Promise<void> {
     depthCm: 28,
     material: "Céramique mate",
     placementType: "table",
+    generationInstructions:
+      "Conserver une ambiance naturelle, éditoriale et chaleureuse, avec une ombre de contact douce.",
     lightingProfile: { source: "softbox-left", reflectance: "matte" },
     buyUrl: "https://example.com/vase-sable",
     status: "ready",
