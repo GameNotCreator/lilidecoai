@@ -335,15 +335,11 @@ async function openAIPlacement(
         "If the dot is on an existing movable object, treat this as a replacement request: identify the whole old object, return its tight bounding box, and infer the true support contact point below it. Keep the replacement centered close to the red dot.",
       ].join(" ")
     : "Choose the most realistic free contact point on the requested support.";
-  const response = await fetch(`${serverConfig.openaiBaseUrl}/responses`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${serverConfig.openaiApiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
+  const response = await fetchOpenAIResponse(
+    {
       model: serverConfig.openaiVisionModel,
       store: false,
+      service_tier: serverConfig.openaiServiceTier,
       reasoning: { effort: "medium" },
       max_output_tokens: 3_000,
       input: [
@@ -447,9 +443,9 @@ async function openAIPlacement(
           },
         },
       },
-    }),
-    signal: AbortSignal.timeout(70_000),
-  });
+    },
+    70_000,
+  );
   if (!response.ok) {
     throw new RenderError(
       `Analyse OpenAI ${response.status}: ${(await response.text()).slice(0, 300)}`,
@@ -782,7 +778,6 @@ async function generateAndReview(
 
   const first = await openAIEdit(
     db,
-    scene,
     product,
     composition,
     input,
@@ -829,7 +824,6 @@ async function generateAndReview(
       : composition;
     const repair = await openAIEdit(
       db,
-      scene,
       product,
       repairComposition,
       repairInput,
@@ -942,21 +936,24 @@ async function openAIQualityReview(
   if (!sceneAsset || !cutoutAsset) {
     throw new RenderError("Fichier source introuvable", 404);
   }
+  const [renderReviewUrl, sceneReviewUrl, productReviewUrl] = await Promise.all(
+    [
+      reviewImageDataUrl(renderBuffer),
+      reviewImageDataUrl(sceneAsset.buffer),
+      reviewImageDataUrl(cutoutAsset.buffer),
+    ],
+  );
   const operationInstruction =
     placement.operation === "replace"
       ? `The original object labeled ${placement.occupiedObject ?? "existing object"} must be completely absent, including every remnant and old shadow.`
       : "No pre-existing object needed removal at the target.";
-  const response = await fetch(`${serverConfig.openaiBaseUrl}/responses`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${serverConfig.openaiApiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
+  const response = await fetchOpenAIResponse(
+    {
       model: serverConfig.openaiVisionModel,
       store: false,
-      reasoning: { effort: "medium" },
-      max_output_tokens: 2_000,
+      service_tier: serverConfig.openaiServiceTier,
+      reasoning: { effort: "low" },
+      max_output_tokens: 1_000,
       input: [
         {
           role: "user",
@@ -976,18 +973,18 @@ async function openAIQualityReview(
             },
             {
               type: "input_image",
-              image_url: `data:image/webp;base64,${renderBuffer.toString("base64")}`,
-              detail: "original",
+              image_url: renderReviewUrl,
+              detail: "high",
             },
             {
               type: "input_image",
-              image_url: `data:${sceneAsset.asset.contentType};base64,${sceneAsset.buffer.toString("base64")}`,
-              detail: "original",
+              image_url: sceneReviewUrl,
+              detail: "high",
             },
             {
               type: "input_image",
-              image_url: `data:${cutoutAsset.asset.contentType};base64,${cutoutAsset.buffer.toString("base64")}`,
-              detail: "original",
+              image_url: productReviewUrl,
+              detail: "high",
             },
           ],
         },
@@ -1030,11 +1027,9 @@ async function openAIQualityReview(
           },
         },
       },
-    }),
-    signal: AbortSignal.timeout(
-      Math.max(5_000, Math.min(35_000, deadlineMs - Date.now() - 5_000)),
-    ),
-  });
+    },
+    Math.max(5_000, Math.min(30_000, deadlineMs - Date.now() - 5_000)),
+  );
   if (!response.ok) {
     throw new RenderError(
       `Contrôle OpenAI ${response.status}: ${(await response.text()).slice(0, 300)}`,
@@ -1072,7 +1067,6 @@ async function openAIQualityReview(
 
 async function openAIEdit(
   db: Db,
-  scene: SceneDocument,
   product: ProductDocument,
   composition: Composition,
   input: ResolvedRenderInput,
@@ -1083,11 +1077,8 @@ async function openAIEdit(
   if (estimatedCostUsd > serverConfig.openaiMaxCostUsd) {
     throw new RenderError("Plafond de coût OpenAI dépassé", 422);
   }
-  const [sceneAsset, cutoutAsset] = await Promise.all([
-    readAsset(db, scene.assetId),
-    readAsset(db, product.cutoutAssetId as string),
-  ]);
-  if (!sceneAsset || !cutoutAsset) {
+  const cutoutAsset = await readAsset(db, product.cutoutAssetId as string);
+  if (!cutoutAsset) {
     throw new RenderError("Fichier source introuvable", 404);
   }
   const baseBuffer = repair?.baseBuffer ?? composition.buffer;
@@ -1119,18 +1110,11 @@ async function openAIEdit(
     "product.webp",
   );
   body.append(
-    "image[]",
-    new Blob([toArrayBuffer(sceneAsset.buffer)], {
-      type: sceneAsset.asset.contentType,
-    }),
-    "room.webp",
-  );
-  body.append(
     "mask",
     new Blob([toArrayBuffer(maskPng)], { type: "image/png" }),
     "mask.png",
   );
-  body.append("quality", "high");
+  body.append("quality", serverConfig.openaiQuality);
   if (!serverConfig.openaiModel.startsWith("gpt-image-2")) {
     body.append("input_fidelity", "high");
   }
@@ -1146,9 +1130,9 @@ async function openAIEdit(
           ? "Image 1 is the first generated render and needs one precise surgical repair inside the transparent mask."
           : "Image 1 is a newly recomposed placement with the scale corrected from the vision review; integrate it cleanly inside the transparent mask."
         : "Image 1 is an exact deterministic composition containing the catalog product at the analyzed position and scale.",
-      "The second image is the product identity reference and the third image is the untouched room reference.",
+      "Image 1 contains the complete room context and the deterministic placement. Image 2 is the exact product identity reference.",
       input.placement.operation === "replace"
-        ? `Operation: REPLACE. Completely erase the old ${input.placement.occupiedObject ?? "object"} in the analyzed target bounds ${JSON.stringify(input.placement.replacementBox)}. Remove its full silhouette, appendages, base, cable, reflections and old contact shadow. Reconstruct the original shelf back, wall, support surface and texture from Image 3 before integrating exactly one catalog product.`
+        ? `Operation: REPLACE. Completely erase the old ${input.placement.occupiedObject ?? "object"} in the analyzed target bounds ${JSON.stringify(input.placement.replacementBox)}. Remove its full silhouette, appendages, base, cable, reflections and old contact shadow. Reconstruct the shelf back, wall, support surface and texture from the visible context surrounding the target in Image 1 before integrating exactly one catalog product.`
         : "Operation: PLACE on empty space. Integrate exactly one catalog product without removing or changing nearby objects.",
       "Change only the local masked target. Preserve the room geometry, camera angle, lens perspective, depth-of-field, crop, furniture, decor and every pixel outside the mask.",
       "Keep exactly one catalog product at the composed position, scale and pose. Preserve its silhouette, proportions, colors, labels and design from Image 2, while naturally re-rendering its material, highlights, surface texture and edge lighting so it belongs to the photograph instead of looking pasted on.",
@@ -1156,7 +1140,7 @@ async function openAIEdit(
       `Perspective analysis: ${JSON.stringify(input.placement.perspective)}.`,
       `Lighting: ${JSON.stringify(input.placement.lighting ?? {})}.`,
       input.placement.perspective.occlusion !== "none"
-        ? "Restore the original foreground shelf lip or edge from Image 3 in front of the lower product where physically required."
+        ? "Restore the original foreground shelf lip or edge visible in Image 1 in front of the lower product where physically required."
         : "Create a physically correct contact with the support; the product must not float.",
       "Match scene illumination direction, color temperature, white balance, exposure, local reflections, contact shadow softness, ambient occlusion, camera grain and compression. Remove halos, ghosts, doubled contours and smeared textures.",
       product.generationInstructions
@@ -1219,6 +1203,59 @@ function isTimeoutError(reason: unknown): boolean {
     reason instanceof Error &&
     (reason.name === "TimeoutError" || reason.name === "AbortError")
   );
+}
+
+async function fetchOpenAIResponse(
+  requestBody: Record<string, unknown>,
+  timeoutMs: number,
+): Promise<Response> {
+  const send = (body: Record<string, unknown>) =>
+    fetch(`${serverConfig.openaiBaseUrl}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${serverConfig.openaiApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+
+  const response = await send(requestBody);
+  if (
+    !response.ok &&
+    requestBody.service_tier &&
+    (response.status === 400 || response.status === 403)
+  ) {
+    const errorBody = await response.text();
+    if (/service.?tier|fast|priority/i.test(errorBody)) {
+      const fallbackBody = { ...requestBody };
+      delete fallbackBody.service_tier;
+      console.warn(
+        "OpenAI Fast mode unavailable; retrying with standard processing",
+      );
+      return send(fallbackBody);
+    }
+    return new Response(errorBody, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  }
+  return response;
+}
+
+async function reviewImageDataUrl(buffer: Buffer): Promise<string> {
+  const reviewBuffer = await sharp(buffer)
+    .rotate()
+    .resize({
+      width: 1_024,
+      height: 1_024,
+      fit: "inside",
+      withoutEnlargement: true,
+    })
+    .webp({ quality: 88, alphaQuality: 96, effort: 2 })
+    .toBuffer();
+  return `data:image/webp;base64,${reviewBuffer.toString("base64")}`;
 }
 
 function toArrayBuffer(buffer: Buffer): ArrayBuffer {

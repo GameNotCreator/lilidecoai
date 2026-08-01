@@ -331,8 +331,8 @@ test("required customer journey reaches a successful mock render", async ({
   await expect(page.getByTestId("placement-dot")).toBeVisible();
   await page.getByRole("button", { name: "Table", exact: true }).click();
   await page.getByRole("button", { name: /Créer mon aperçu/i }).click();
-  await expect(page.getByText("Rendu accepté")).toBeVisible({
-    timeout: 30_000,
-  });
+  await expect(
+    page.getByRole("heading", { name: "Voilà le résultat." }),
+  ).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole("link", { name: "Acheter" })).toBeVisible();
 });
