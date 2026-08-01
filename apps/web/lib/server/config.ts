@@ -26,7 +26,7 @@ export const serverConfig = {
   openaiApiKey: clean(process.env.OPENAI_API_KEY),
   openaiModel: clean(process.env.OPENAI_MODEL) ?? "gpt-image-2",
   openaiVisionModel: clean(process.env.OPENAI_VISION_MODEL) ?? "gpt-5.6",
-  openaiQuality: clean(process.env.OPENAI_QUALITY) ?? "medium",
+  openaiQuality: clean(process.env.OPENAI_QUALITY) ?? "high",
   openaiBaseUrl:
     clean(process.env.OPENAI_BASE_URL) ?? "https://api.openai.com/v1",
   openaiMaxCostUsd: Number(clean(process.env.OPENAI_MAX_COST_USD) ?? "0.25"),

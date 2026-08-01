@@ -141,7 +141,7 @@ export function VisualizerStudio({
           yNormalized: placementPoint.y,
         },
         idempotencyKey: `web-${crypto.randomUUID()}`,
-        quality: "medium",
+        quality: "high",
         fidelityMode: "catalog",
       };
       const result = await api<Render>("/v1/renders", {
@@ -371,8 +371,8 @@ export function VisualizerStudio({
                 <span>
                   <strong>L’IA s’occupe du reste</strong>
                   <small>
-                    Elle adapte automatiquement la taille, la perspective,
-                    l’ombre et la lumière sans modifier votre pièce.
+                    Elle adapte la taille à la distance et remplace
+                    automatiquement l’objet déjà présent sous votre point.
                   </small>
                 </span>
               </div>

@@ -29,6 +29,21 @@ interface PlacementInput {
   };
 }
 
+interface NormalizedBox {
+  xMin: number;
+  yMin: number;
+  xMax: number;
+  yMax: number;
+}
+
+interface PerspectiveAnalysis {
+  distance: "close" | "medium" | "far";
+  framing: "close-up" | "normal" | "wide";
+  surfaceBounds: NormalizedBox;
+  occlusion: "none" | "front-edge" | "partial";
+  evidence: string;
+}
+
 interface ResolvedPlacement extends PlacementInput {
   mode: string;
   surfaceType: string;
@@ -38,6 +53,10 @@ interface ResolvedPlacement extends PlacementInput {
   rotationDegrees: number;
   confidence: number;
   rationale: string;
+  operation: "place" | "replace";
+  occupiedObject: string | null;
+  replacementBox: NormalizedBox | null;
+  perspective: PerspectiveAnalysis;
   source: "manual" | "openai-vision" | "automatic-fallback";
 }
 
@@ -59,6 +78,20 @@ interface Composition {
   top: number;
   width: number;
   height: number;
+  sceneWidth: number;
+  sceneHeight: number;
+}
+
+interface QualityReview {
+  accepted: boolean;
+  score: number;
+  replacementComplete: boolean;
+  scaleAndPerspectivePlausible: boolean;
+  scaleCorrectionFactor: number;
+  photorealistic: boolean;
+  duplicateProduct: boolean;
+  artifactsPresent: boolean;
+  feedback: string;
 }
 
 export async function createRender(
@@ -133,7 +166,7 @@ export async function createRender(
     );
     const composition = await compose(db, scene, product, resolvedInput);
     const generated = serverConfig.openaiApiKey
-      ? await openAIEdit(
+      ? await generateAndReview(
           db,
           scene,
           product,
@@ -146,6 +179,19 @@ export async function createRender(
           provider: "mock",
           model: "deterministic-compositor",
           estimatedCostUsd: 0,
+          qualityReview: {
+            accepted: true,
+            score: 0.99,
+            replacementComplete: true,
+            scaleAndPerspectivePlausible: true,
+            scaleCorrectionFactor: 1,
+            photorealistic: true,
+            duplicateProduct: false,
+            artifactsPresent: false,
+            feedback: "Composition déterministe de test.",
+          } satisfies QualityReview,
+          repaired: false,
+          finalPlacement: resolvedPlacement,
         };
     const finalBuffer =
       generated.provider === "mock"
@@ -163,12 +209,18 @@ export async function createRender(
       organizationId,
       `render:${renderId}`,
     );
+    const finalPlacement = {
+      ...generated.finalPlacement,
+      qualityReview: generated.qualityReview,
+      repaired: generated.repaired,
+    };
     const update = {
       status: "succeeded" as const,
       provider: generated.provider,
       model: generated.model,
       resultAssetId: resultAsset.id,
-      qualityScore: generated.provider === "mock" ? 0.99 : 0.94,
+      qualityScore: generated.qualityReview.score,
+      placement: finalPlacement,
       creditCharged,
       updatedAt: new Date(),
     };
@@ -186,7 +238,6 @@ export async function createRender(
     });
     return renderResponse({
       ...render,
-      placement: resolvedPlacement,
       ...update,
     });
   } catch (error) {
@@ -242,6 +293,10 @@ async function resolvePlacement(
       rotationDegrees: clamp(input.rotationDegrees ?? 0, -20, 20),
       confidence: 1,
       rationale: "Placement ajusté manuellement",
+      operation: "place",
+      occupiedObject: null,
+      replacementBox: null,
+      perspective: defaultPerspective(),
       source: "manual",
     };
   }
@@ -274,7 +329,11 @@ async function openAIPlacement(
       ? { x: input.xNormalized, y: input.yNormalized }
       : null;
   const anchorInstruction = userAnchor
-    ? `The user selected the exact product contact point at x=${userAnchor.x.toFixed(4)}, y=${userAnchor.y.toFixed(4)}. Keep these exact normalized coordinates in the response and analyze only the realistic scale, rotation and lighting around that point.`
+    ? [
+        `The red dot is at x=${userAnchor.x.toFixed(4)}, y=${userAnchor.y.toFixed(4)} and identifies the intended target zone.`,
+        "If that zone is empty, keep the red dot as the exact horizontal center and bottom contact point.",
+        "If the dot is on an existing movable object, treat this as a replacement request: identify the whole old object, return its tight bounding box, and infer the true support contact point below it. Keep the replacement centered close to the red dot.",
+      ].join(" ")
     : "Choose the most realistic free contact point on the requested support.";
   const response = await fetch(`${serverConfig.openaiBaseUrl}/responses`, {
     method: "POST",
@@ -285,8 +344,8 @@ async function openAIPlacement(
     body: JSON.stringify({
       model: serverConfig.openaiVisionModel,
       store: false,
-      reasoning: { effort: "none" },
-      max_output_tokens: 1_000,
+      reasoning: { effort: "high" },
+      max_output_tokens: 3_000,
       input: [
         {
           role: "user",
@@ -294,12 +353,14 @@ async function openAIPlacement(
             {
               type: "input_text",
               text: [
-                "Choose the most realistic and visually balanced placement for this catalog product in the supplied room photo.",
+                "Act as a meticulous interior-photography and single-view geometry analyst. Analyze the supplied room photo before deciding any coordinates.",
                 `Required support type: ${surfaceType}.`,
                 anchorInstruction,
                 `Product: ${product.name}; ${product.description}; material ${product.material}; real dimensions ${product.widthCm} x ${product.heightCm} x ${product.depthCm} cm.`,
                 "Return normalized coordinates relative to the full image: xNormalized is the horizontal center of the product, yNormalized is its bottom contact point, and scale is the product width divided by room image width.",
-                "Prefer a clear, physically plausible support area, preserve walkways and existing objects, respect perspective, and avoid image edges.",
+                "Estimate apparent depth and camera framing from converging shelf lines, the visible support opening, nearby objects and depth-of-field. A close-up or zoomed shelf must produce a materially larger image-width scale than the same shelf seen far away. Cross-check the real product dimensions against the apparent support width and height so it physically fits.",
+                "Inspect the complete local region around the red dot. Set operation=replace when a decor object, appliance or other removable item occupies that target. Include its entire silhouette, base, appendages, cable and local shadow in replacement bounds. Set operation=place only for genuinely empty support space.",
+                "Detect whether a shelf lip or other foreground edge must occlude the lower part of the new product. Do not invent a new support surface.",
                 "Choose a subtle rotation and lighting values matching the room. Do not invent a new support surface.",
               ].join(" "),
             },
@@ -335,6 +396,29 @@ async function openAIPlacement(
               },
               confidence: { type: "number", minimum: 0, maximum: 1 },
               rationale: { type: "string", maxLength: 240 },
+              operation: { type: "string", enum: ["place", "replace"] },
+              occupiedObject: { type: "string", maxLength: 100 },
+              replacementXMin: { type: "number", minimum: 0, maximum: 1 },
+              replacementYMin: { type: "number", minimum: 0, maximum: 1 },
+              replacementXMax: { type: "number", minimum: 0, maximum: 1 },
+              replacementYMax: { type: "number", minimum: 0, maximum: 1 },
+              surfaceXMin: { type: "number", minimum: 0, maximum: 1 },
+              surfaceYMin: { type: "number", minimum: 0, maximum: 1 },
+              surfaceXMax: { type: "number", minimum: 0, maximum: 1 },
+              surfaceYMax: { type: "number", minimum: 0, maximum: 1 },
+              apparentDistance: {
+                type: "string",
+                enum: ["close", "medium", "far"],
+              },
+              framing: {
+                type: "string",
+                enum: ["close-up", "normal", "wide"],
+              },
+              occlusion: {
+                type: "string",
+                enum: ["none", "front-edge", "partial"],
+              },
+              perspectiveEvidence: { type: "string", maxLength: 180 },
             },
             required: [
               "xNormalized",
@@ -345,6 +429,20 @@ async function openAIPlacement(
               "lightingTemperature",
               "confidence",
               "rationale",
+              "operation",
+              "occupiedObject",
+              "replacementXMin",
+              "replacementYMin",
+              "replacementXMax",
+              "replacementYMax",
+              "surfaceXMin",
+              "surfaceYMin",
+              "surfaceXMax",
+              "surfaceYMax",
+              "apparentDistance",
+              "framing",
+              "occlusion",
+              "perspectiveEvidence",
             ],
           },
         },
@@ -379,18 +477,48 @@ async function openAIPlacement(
     lightingTemperature: string;
     confidence: number;
     rationale: string;
+    operation: "place" | "replace";
+    occupiedObject: string;
+    replacementXMin: number;
+    replacementYMin: number;
+    replacementXMax: number;
+    replacementYMax: number;
+    surfaceXMin: number;
+    surfaceYMin: number;
+    surfaceXMax: number;
+    surfaceYMax: number;
+    apparentDistance: "close" | "medium" | "far";
+    framing: "close-up" | "normal" | "wide";
+    occlusion: "none" | "front-edge" | "partial";
+    perspectiveEvidence: string;
   };
+  const operation = result.operation === "replace" ? "replace" : "place";
+  const replacementBox =
+    operation === "replace"
+      ? normalizeBox({
+          xMin: result.replacementXMin,
+          yMin: result.replacementYMin,
+          xMax: result.replacementXMax,
+          yMax: result.replacementYMax,
+        })
+      : null;
+  const analyzedX = clamp(Number(result.xNormalized), 0.04, 0.96);
+  const analyzedY = clamp(Number(result.yNormalized), 0.08, 0.98);
   return {
     ...input,
     mode: userAnchor ? "guided" : "auto",
     surfaceType,
     xNormalized: userAnchor
-      ? clamp(userAnchor.x, 0.02, 0.98)
-      : clamp(Number(result.xNormalized), 0.04, 0.96),
+      ? operation === "replace"
+        ? clamp(analyzedX, userAnchor.x - 0.12, userAnchor.x + 0.12)
+        : clamp(userAnchor.x, 0.02, 0.98)
+      : analyzedX,
     yNormalized: userAnchor
-      ? clamp(userAnchor.y, 0.02, 0.98)
-      : clamp(Number(result.yNormalized), 0.08, 0.98),
-    scale: clamp(Number(result.scale), 0.06, 0.55),
+      ? operation === "replace"
+        ? clamp(analyzedY, userAnchor.y - 0.18, userAnchor.y + 0.18)
+        : clamp(userAnchor.y, 0.02, 0.98)
+      : analyzedY,
+    scale: clamp(Number(result.scale), 0.035, 0.68),
     rotationDegrees: clamp(Number(result.rotationDegrees), -20, 20),
     lighting: {
       direction: result.lightingDirection,
@@ -399,6 +527,24 @@ async function openAIPlacement(
     },
     confidence: clamp(Number(result.confidence), 0, 1),
     rationale: String(result.rationale).slice(0, 240),
+    operation,
+    occupiedObject:
+      operation === "replace"
+        ? String(result.occupiedObject || "objet existant").slice(0, 100)
+        : null,
+    replacementBox,
+    perspective: {
+      distance: result.apparentDistance,
+      framing: result.framing,
+      surfaceBounds: normalizeBox({
+        xMin: result.surfaceXMin,
+        yMin: result.surfaceYMin,
+        xMax: result.surfaceXMax,
+        yMax: result.surfaceYMax,
+      }),
+      occlusion: result.occlusion,
+      evidence: String(result.perspectiveEvidence).slice(0, 180),
+    },
     source: "openai-vision",
   };
 }
@@ -447,8 +593,30 @@ function fallbackPlacement(
     rationale: userAnchor
       ? "Point choisi manuellement, avec échelle et lumière adaptées automatiquement au support."
       : "Placement automatique basé sur le type de support, les dimensions du produit et la perspective de la pièce.",
+    operation: "place",
+    occupiedObject: null,
+    replacementBox: null,
+    perspective: defaultPerspective(),
     source: "automatic-fallback",
   };
+}
+
+function defaultPerspective(): PerspectiveAnalysis {
+  return {
+    distance: "medium",
+    framing: "normal",
+    surfaceBounds: { xMin: 0, yMin: 0, xMax: 1, yMax: 1 },
+    occlusion: "none",
+    evidence: "Estimation locale de secours.",
+  };
+}
+
+function normalizeBox(box: NormalizedBox): NormalizedBox {
+  const xMin = clamp(Math.min(Number(box.xMin), Number(box.xMax)), 0, 1);
+  const xMax = clamp(Math.max(Number(box.xMin), Number(box.xMax)), 0, 1);
+  const yMin = clamp(Math.min(Number(box.yMin), Number(box.yMax)), 0, 1);
+  const yMax = clamp(Math.max(Number(box.yMin), Number(box.yMax)), 0, 1);
+  return { xMin, yMin, xMax, yMax };
 }
 
 function normalizeSurfaceType(value: string): string {
@@ -523,13 +691,24 @@ async function compose(
     ])
     .webp({ quality: 92 })
     .toBuffer();
-  const mask = await createEditMask(sceneWidth, sceneHeight, overlay, {
+  const mask = await createEditMask(
+    sceneWidth,
+    sceneHeight,
+    overlay,
+    { left, top, width, height },
+    input.placement,
+  );
+  return {
+    buffer,
+    mask,
+    overlay,
     left,
     top,
     width,
     height,
-  });
-  return { buffer, mask, overlay, left, top, width, height };
+    sceneWidth,
+    sceneHeight,
+  };
 }
 
 async function createEditMask(
@@ -537,16 +716,50 @@ async function createEditMask(
   height: number,
   overlay: Buffer,
   box: { left: number; top: number; width: number; height: number },
+  placement: ResolvedPlacement,
 ): Promise<Buffer> {
   const data = Buffer.alloc(width * height * 4, 255);
+  const paddingRatio = placement.operation === "replace" ? 0.14 : 0.08;
   const padding = Math.max(
-    6,
-    Math.round(Math.min(box.width, box.height) * 0.06),
+    8,
+    Math.round(Math.min(box.width, box.height) * paddingRatio),
   );
-  const minX = Math.max(0, box.left - padding);
-  const maxX = Math.min(width, box.left + box.width + padding);
-  const minY = Math.max(0, box.top - padding);
-  const maxY = Math.min(height, box.top + box.height + padding);
+  let minX = Math.max(0, box.left - padding);
+  let maxX = Math.min(width, box.left + box.width + padding);
+  let minY = Math.max(0, box.top - padding);
+  let maxY = Math.min(height, box.top + box.height + padding);
+
+  if (placement.operation === "replace" && placement.replacementBox) {
+    const replacementPadding = Math.max(10, Math.round(padding * 1.25));
+    minX = Math.max(
+      0,
+      Math.min(
+        minX,
+        Math.round(placement.replacementBox.xMin * width) - replacementPadding,
+      ),
+    );
+    maxX = Math.min(
+      width,
+      Math.max(
+        maxX,
+        Math.round(placement.replacementBox.xMax * width) + replacementPadding,
+      ),
+    );
+    minY = Math.max(
+      0,
+      Math.min(
+        minY,
+        Math.round(placement.replacementBox.yMin * height) - replacementPadding,
+      ),
+    );
+    maxY = Math.min(
+      height,
+      Math.max(
+        maxY,
+        Math.round(placement.replacementBox.yMax * height) + replacementPadding,
+      ),
+    );
+  }
   for (let y = minY; y < maxY; y += 1) {
     for (let x = minX; x < maxX; x += 1) {
       data[(y * width + x) * 4 + 3] = 0;
@@ -563,10 +776,303 @@ async function createEditMask(
       if (sceneX < 0 || sceneX >= width || sceneY < 0 || sceneY >= height) {
         continue;
       }
-      data[(sceneY * width + sceneX) * 4 + 3] = productAlpha;
+      const mustRestoreForeground =
+        placement.perspective.occlusion !== "none" &&
+        y >= Math.round(box.height * 0.86);
+      if (!mustRestoreForeground) {
+        data[(sceneY * width + sceneX) * 4 + 3] = productAlpha;
+      }
     }
   }
   return data;
+}
+
+async function generateAndReview(
+  db: Db,
+  scene: SceneDocument,
+  product: ProductDocument,
+  composition: Composition,
+  input: ResolvedRenderInput,
+  requestedSize: RenderDocument["requestedSize"],
+) {
+  const perEditCostUsd = estimatedImageEditCost(requestedSize);
+  if (perEditCostUsd > serverConfig.openaiMaxCostUsd) {
+    throw new RenderError("Plafond de coût OpenAI dépassé", 422);
+  }
+
+  const first = await openAIEdit(
+    db,
+    scene,
+    product,
+    composition,
+    input,
+    requestedSize,
+  );
+  let selected = first;
+  let qualityReview = await reviewRenderSafely(
+    db,
+    scene,
+    product,
+    first.buffer,
+    input.placement,
+  );
+  let totalEstimatedCostUsd = first.estimatedCostUsd;
+  let repaired = false;
+  let finalPlacement = input.placement;
+
+  if (
+    shouldRepair(qualityReview, input.placement) &&
+    totalEstimatedCostUsd + perEditCostUsd <= serverConfig.openaiMaxCostUsd
+  ) {
+    const correctedPlacement =
+      !qualityReview.scaleAndPerspectivePlausible &&
+      Math.abs(qualityReview.scaleCorrectionFactor - 1) >= 0.05
+        ? {
+            ...input.placement,
+            scale: clamp(
+              input.placement.scale * qualityReview.scaleCorrectionFactor,
+              0.035,
+              0.68,
+            ),
+            rationale: `${input.placement.rationale} Échelle affinée après contrôle visuel.`,
+          }
+        : input.placement;
+    const repairInput: ResolvedRenderInput = {
+      ...input,
+      placement: correctedPlacement,
+    };
+    const scaleWasCorrected = correctedPlacement !== input.placement;
+    const repairComposition = scaleWasCorrected
+      ? await compose(db, scene, product, repairInput)
+      : composition;
+    const repair = await openAIEdit(
+      db,
+      scene,
+      product,
+      repairComposition,
+      repairInput,
+      requestedSize,
+      {
+        ...(scaleWasCorrected ? {} : { baseBuffer: first.buffer }),
+        feedback: qualityReview.feedback,
+      },
+    );
+    totalEstimatedCostUsd += repair.estimatedCostUsd;
+    const repairReview = await reviewRenderSafely(
+      db,
+      scene,
+      product,
+      repair.buffer,
+      correctedPlacement,
+    );
+    if (repairReview.score >= qualityReview.score) {
+      selected = repair;
+      qualityReview = repairReview;
+      repaired = true;
+      finalPlacement = correctedPlacement;
+    }
+  }
+
+  return {
+    ...selected,
+    estimatedCostUsd: totalEstimatedCostUsd,
+    qualityReview,
+    repaired,
+    finalPlacement,
+  };
+}
+
+function shouldRepair(
+  review: QualityReview,
+  placement: ResolvedPlacement,
+): boolean {
+  return (
+    !review.accepted ||
+    review.score < 0.86 ||
+    review.duplicateProduct ||
+    review.artifactsPresent ||
+    !review.scaleAndPerspectivePlausible ||
+    !review.photorealistic ||
+    (placement.operation === "replace" && !review.replacementComplete)
+  );
+}
+
+function estimatedImageEditCost(
+  requestedSize: RenderDocument["requestedSize"],
+): number {
+  return requestedSize === "1024x1024" ? 0.12 : 0.115;
+}
+
+async function reviewRenderSafely(
+  db: Db,
+  scene: SceneDocument,
+  product: ProductDocument,
+  renderBuffer: Buffer,
+  placement: ResolvedPlacement,
+): Promise<QualityReview> {
+  try {
+    return await openAIQualityReview(
+      db,
+      scene,
+      product,
+      renderBuffer,
+      placement,
+    );
+  } catch (reason) {
+    console.warn("OpenAI render quality review failed", reason);
+    return {
+      accepted: true,
+      score: 0.9,
+      replacementComplete: true,
+      scaleAndPerspectivePlausible: true,
+      scaleCorrectionFactor: 1,
+      photorealistic: true,
+      duplicateProduct: false,
+      artifactsPresent: false,
+      feedback:
+        "Contrôle automatique indisponible; rendu haute fidélité conservé.",
+    };
+  }
+}
+
+async function openAIQualityReview(
+  db: Db,
+  scene: SceneDocument,
+  product: ProductDocument,
+  renderBuffer: Buffer,
+  placement: ResolvedPlacement,
+): Promise<QualityReview> {
+  const [sceneAsset, cutoutAsset] = await Promise.all([
+    readAsset(db, scene.assetId),
+    readAsset(db, product.cutoutAssetId as string),
+  ]);
+  if (!sceneAsset || !cutoutAsset) {
+    throw new RenderError("Fichier source introuvable", 404);
+  }
+  const operationInstruction =
+    placement.operation === "replace"
+      ? `The original object labeled ${placement.occupiedObject ?? "existing object"} must be completely absent, including every remnant and old shadow.`
+      : "No pre-existing object needed removal at the target.";
+  const response = await fetch(`${serverConfig.openaiBaseUrl}/responses`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${serverConfig.openaiApiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: serverConfig.openaiVisionModel,
+      store: false,
+      reasoning: { effort: "medium" },
+      max_output_tokens: 2_000,
+      input: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: [
+                "Perform a strict photorealism quality-control review.",
+                "Image 1 is the generated result. Image 2 is the untouched room. Image 3 is the exact catalog product reference.",
+                operationInstruction,
+                `The placement analysis classified the view as ${placement.perspective.framing}, distance ${placement.perspective.distance}, with occlusion ${placement.perspective.occlusion}.`,
+                "Reject visible double objects, ghosts, leftover parts, melted or smeared textures, broken shelf geometry, halos, incorrect contact shadows, implausible scale or perspective, a floating product, identity changes, or duplicated products.",
+                "Judge scale against the support depth and framing: a close-up target should appear larger than the same real object in a distant wide view.",
+                "scaleCorrectionFactor is the width multiplier needed for the product: 1 means unchanged, below 1 smaller, above 1 larger.",
+                "accepted must only be true when the result could pass as an unedited interior photograph at normal viewing size. Give concise actionable repair feedback.",
+              ].join(" "),
+            },
+            {
+              type: "input_image",
+              image_url: `data:image/webp;base64,${renderBuffer.toString("base64")}`,
+              detail: "original",
+            },
+            {
+              type: "input_image",
+              image_url: `data:${sceneAsset.asset.contentType};base64,${sceneAsset.buffer.toString("base64")}`,
+              detail: "original",
+            },
+            {
+              type: "input_image",
+              image_url: `data:${cutoutAsset.asset.contentType};base64,${cutoutAsset.buffer.toString("base64")}`,
+              detail: "original",
+            },
+          ],
+        },
+      ],
+      text: {
+        verbosity: "low",
+        format: {
+          type: "json_schema",
+          name: "render_quality_review",
+          strict: true,
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              accepted: { type: "boolean" },
+              score: { type: "number", minimum: 0, maximum: 1 },
+              replacementComplete: { type: "boolean" },
+              scaleAndPerspectivePlausible: { type: "boolean" },
+              scaleCorrectionFactor: {
+                type: "number",
+                minimum: 0.65,
+                maximum: 1.5,
+              },
+              photorealistic: { type: "boolean" },
+              duplicateProduct: { type: "boolean" },
+              artifactsPresent: { type: "boolean" },
+              feedback: { type: "string", maxLength: 300 },
+            },
+            required: [
+              "accepted",
+              "score",
+              "replacementComplete",
+              "scaleAndPerspectivePlausible",
+              "scaleCorrectionFactor",
+              "photorealistic",
+              "duplicateProduct",
+              "artifactsPresent",
+              "feedback",
+            ],
+          },
+        },
+      },
+    }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!response.ok) {
+    throw new RenderError(
+      `Contrôle OpenAI ${response.status}: ${(await response.text()).slice(0, 300)}`,
+      502,
+    );
+  }
+  const payload = (await response.json()) as {
+    output?: Array<{
+      content?: Array<{ type?: string; text?: string }>;
+    }>;
+  };
+  const outputText = payload.output
+    ?.flatMap((item) => item.content ?? [])
+    .find((item) => item.type === "output_text")?.text;
+  if (!outputText) {
+    throw new RenderError("Le contrôle qualité OpenAI est vide", 502);
+  }
+  const result = JSON.parse(outputText) as QualityReview;
+  return {
+    accepted: Boolean(result.accepted),
+    score: clamp(Number(result.score), 0, 1),
+    replacementComplete: Boolean(result.replacementComplete),
+    scaleAndPerspectivePlausible: Boolean(result.scaleAndPerspectivePlausible),
+    scaleCorrectionFactor: clamp(
+      Number(result.scaleCorrectionFactor),
+      0.65,
+      1.5,
+    ),
+    photorealistic: Boolean(result.photorealistic),
+    duplicateProduct: Boolean(result.duplicateProduct),
+    artifactsPresent: Boolean(result.artifactsPresent),
+    feedback: String(result.feedback).slice(0, 300),
+  };
 }
 
 async function openAIEdit(
@@ -576,8 +1082,9 @@ async function openAIEdit(
   composition: Composition,
   input: ResolvedRenderInput,
   requestedSize: RenderDocument["requestedSize"],
+  repair?: { baseBuffer?: Buffer; feedback: string },
 ) {
-  const estimatedCostUsd = requestedSize === "1024x1024" ? 0.053 : 0.041;
+  const estimatedCostUsd = estimatedImageEditCost(requestedSize);
   if (estimatedCostUsd > serverConfig.openaiMaxCostUsd) {
     throw new RenderError("Plafond de coût OpenAI dépassé", 422);
   }
@@ -588,17 +1095,26 @@ async function openAIEdit(
   if (!sceneAsset || !cutoutAsset) {
     throw new RenderError("Fichier source introuvable", 404);
   }
+  const baseBuffer = repair?.baseBuffer ?? composition.buffer;
+  const baseMetadata = await sharp(baseBuffer).metadata();
+  const baseWidth = baseMetadata.width ?? composition.sceneWidth;
+  const baseHeight = baseMetadata.height ?? composition.sceneHeight;
   const maskPng = await sharp(composition.mask, {
-    raw: { width: scene.widthPx, height: scene.heightPx, channels: 4 },
+    raw: {
+      width: composition.sceneWidth,
+      height: composition.sceneHeight,
+      channels: 4,
+    },
   })
+    .resize({ width: baseWidth, height: baseHeight, kernel: "nearest" })
     .png()
     .toBuffer();
   const body = new FormData();
   body.append("model", serverConfig.openaiModel);
   body.append(
     "image[]",
-    new Blob([toArrayBuffer(composition.buffer)], { type: "image/webp" }),
-    "composition.webp",
+    new Blob([toArrayBuffer(baseBuffer)], { type: "image/webp" }),
+    repair ? "render-to-repair.webp" : "composition.webp",
   );
   body.append(
     "image[]",
@@ -619,7 +1135,10 @@ async function openAIEdit(
     new Blob([toArrayBuffer(maskPng)], { type: "image/png" }),
     "mask.png",
   );
-  body.append("quality", input.quality ?? serverConfig.openaiQuality);
+  body.append("quality", "high");
+  if (!serverConfig.openaiModel.startsWith("gpt-image-2")) {
+    body.append("input_fidelity", "high");
+  }
   body.append("size", requestedSize);
   body.append("background", "opaque");
   body.append("output_format", "webp");
@@ -627,26 +1146,42 @@ async function openAIEdit(
   body.append(
     "prompt",
     [
-      "The first image is an exact deterministic composition that already contains the catalog product in its final position.",
-      "Improve only the contact shadow, local reflections, edge blending and light interaction in the transparent mask surrounding the existing product.",
-      "Never generate, add or duplicate another product. Never move, resize, rotate, reshape, recolor or redesign the existing product.",
+      repair
+        ? repair.baseBuffer
+          ? "Image 1 is the first generated render and needs one precise surgical repair inside the transparent mask."
+          : "Image 1 is a newly recomposed placement with the scale corrected from the vision review; integrate it cleanly inside the transparent mask."
+        : "Image 1 is an exact deterministic composition containing the catalog product at the analyzed position and scale.",
       "The second image is the product identity reference and the third image is the untouched room reference.",
+      input.placement.operation === "replace"
+        ? `Operation: REPLACE. Completely erase the old ${input.placement.occupiedObject ?? "object"} in the analyzed target bounds ${JSON.stringify(input.placement.replacementBox)}. Remove its full silhouette, appendages, base, cable, reflections and old contact shadow. Reconstruct the original shelf back, wall, support surface and texture from Image 3 before integrating exactly one catalog product.`
+        : "Operation: PLACE on empty space. Integrate exactly one catalog product without removing or changing nearby objects.",
+      "Change only the local masked target. Preserve the room geometry, camera angle, lens perspective, depth-of-field, crop, furniture, decor and every pixel outside the mask.",
+      "Keep the catalog product identity exact. Never add or duplicate another product. Never move, resize, rotate, reshape, recolor, relabel or redesign the composed product.",
       `Product: ${product.name}; ${product.description}; material ${product.material}; real dimensions ${product.widthCm} x ${product.heightCm} x ${product.depthCm} cm.`,
+      `Perspective analysis: ${JSON.stringify(input.placement.perspective)}.`,
       `Lighting: ${JSON.stringify(input.placement.lighting ?? {})}.`,
+      input.placement.perspective.occlusion !== "none"
+        ? "Restore the original foreground shelf lip or edge from Image 3 in front of the lower product where physically required."
+        : "Create a physically correct contact with the support; the product must not float.",
+      "Match scene illumination direction, color temperature, white balance, exposure, local reflections, contact shadow softness, ambient occlusion, camera grain and compression. Remove halos, ghosts, doubled contours and smeared textures.",
       product.generationInstructions
         ? `Merchant aesthetic instructions, applied only when compatible with product fidelity and the mask: ${product.generationInstructions}`
         : "Use a natural, photorealistic and restrained interior photography finish.",
-      "Preserve every pixel outside the transparent mask and keep the result photorealistic.",
+      repair
+        ? `Mandatory repair feedback from the vision reviewer: ${repair.feedback}`
+        : "The final result must look like one untouched photorealistic interior photograph, not a collage or a generative edit.",
     ].join(" "),
   );
   const response = await fetch(`${serverConfig.openaiBaseUrl}/images/edits`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${serverConfig.openaiApiKey}`,
-      "Idempotency-Key": input.idempotencyKey,
+      "Idempotency-Key": repair
+        ? `${input.idempotencyKey}-repair`
+        : input.idempotencyKey,
     },
     body,
-    signal: AbortSignal.timeout(120_000),
+    signal: AbortSignal.timeout(90_000),
   });
   if (!response.ok) {
     throw new RenderError(

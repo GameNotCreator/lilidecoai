@@ -650,7 +650,7 @@ async function handleRenders(
     const retryInput = {
       placement: render.placement,
       idempotencyKey: `${render.idempotencyKey}:retry:${crypto.randomUUID()}`,
-      quality: "medium",
+      quality: "high",
     };
     const result = await createRender(
       db,
