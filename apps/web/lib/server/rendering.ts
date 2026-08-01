@@ -173,6 +173,7 @@ export async function createRender(
           composition,
           resolvedInput,
           requestedSize,
+          startedAt + 285_000,
         )
       : {
           buffer: composition.buffer,
@@ -344,7 +345,7 @@ async function openAIPlacement(
     body: JSON.stringify({
       model: serverConfig.openaiVisionModel,
       store: false,
-      reasoning: { effort: "high" },
+      reasoning: { effort: "medium" },
       max_output_tokens: 3_000,
       input: [
         {
@@ -448,7 +449,7 @@ async function openAIPlacement(
         },
       },
     }),
-    signal: AbortSignal.timeout(45_000),
+    signal: AbortSignal.timeout(70_000),
   });
   if (!response.ok) {
     throw new RenderError(
@@ -794,6 +795,7 @@ async function generateAndReview(
   composition: Composition,
   input: ResolvedRenderInput,
   requestedSize: RenderDocument["requestedSize"],
+  deadlineMs: number,
 ) {
   const perEditCostUsd = estimatedImageEditCost(requestedSize);
   if (perEditCostUsd > serverConfig.openaiMaxCostUsd) {
@@ -815,6 +817,7 @@ async function generateAndReview(
     product,
     first.buffer,
     input.placement,
+    deadlineMs,
   );
   let totalEstimatedCostUsd = first.estimatedCostUsd;
   let repaired = false;
@@ -822,7 +825,8 @@ async function generateAndReview(
 
   if (
     shouldRepair(qualityReview, input.placement) &&
-    totalEstimatedCostUsd + perEditCostUsd <= serverConfig.openaiMaxCostUsd
+    totalEstimatedCostUsd + perEditCostUsd <= serverConfig.openaiMaxCostUsd &&
+    Date.now() + 185_000 < deadlineMs
   ) {
     const correctedPlacement =
       !qualityReview.scaleAndPerspectivePlausible &&
@@ -864,6 +868,7 @@ async function generateAndReview(
       product,
       repair.buffer,
       correctedPlacement,
+      deadlineMs,
     );
     if (repairReview.score >= qualityReview.score) {
       selected = repair;
@@ -909,7 +914,11 @@ async function reviewRenderSafely(
   product: ProductDocument,
   renderBuffer: Buffer,
   placement: ResolvedPlacement,
+  deadlineMs: number,
 ): Promise<QualityReview> {
+  if (deadlineMs - Date.now() < 12_000) {
+    return fallbackQualityReview();
+  }
   try {
     return await openAIQualityReview(
       db,
@@ -917,22 +926,27 @@ async function reviewRenderSafely(
       product,
       renderBuffer,
       placement,
+      deadlineMs,
     );
   } catch (reason) {
     console.warn("OpenAI render quality review failed", reason);
-    return {
-      accepted: true,
-      score: 0.9,
-      replacementComplete: true,
-      scaleAndPerspectivePlausible: true,
-      scaleCorrectionFactor: 1,
-      photorealistic: true,
-      duplicateProduct: false,
-      artifactsPresent: false,
-      feedback:
-        "Contrôle automatique indisponible; rendu haute fidélité conservé.",
-    };
+    return fallbackQualityReview();
   }
+}
+
+function fallbackQualityReview(): QualityReview {
+  return {
+    accepted: true,
+    score: 0.9,
+    replacementComplete: true,
+    scaleAndPerspectivePlausible: true,
+    scaleCorrectionFactor: 1,
+    photorealistic: true,
+    duplicateProduct: false,
+    artifactsPresent: false,
+    feedback:
+      "Contrôle automatique indisponible; rendu haute fidélité conservé.",
+  };
 }
 
 async function openAIQualityReview(
@@ -941,6 +955,7 @@ async function openAIQualityReview(
   product: ProductDocument,
   renderBuffer: Buffer,
   placement: ResolvedPlacement,
+  deadlineMs: number,
 ): Promise<QualityReview> {
   const [sceneAsset, cutoutAsset] = await Promise.all([
     readAsset(db, scene.assetId),
@@ -1038,7 +1053,9 @@ async function openAIQualityReview(
         },
       },
     }),
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(
+      Math.max(5_000, Math.min(35_000, deadlineMs - Date.now() - 5_000)),
+    ),
   });
   if (!response.ok) {
     throw new RenderError(
@@ -1172,17 +1189,28 @@ async function openAIEdit(
         : "The final result must look like one untouched photorealistic interior photograph, not a collage or a generative edit.",
     ].join(" "),
   );
-  const response = await fetch(`${serverConfig.openaiBaseUrl}/images/edits`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${serverConfig.openaiApiKey}`,
-      "Idempotency-Key": repair
-        ? `${input.idempotencyKey}-repair`
-        : input.idempotencyKey,
-    },
-    body,
-    signal: AbortSignal.timeout(90_000),
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${serverConfig.openaiBaseUrl}/images/edits`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${serverConfig.openaiApiKey}`,
+        "Idempotency-Key": repair
+          ? `${input.idempotencyKey}-repair`
+          : input.idempotencyKey,
+      },
+      body,
+      signal: AbortSignal.timeout(150_000),
+    });
+  } catch (reason) {
+    if (isTimeoutError(reason)) {
+      throw new RenderError(
+        "La génération haute qualité a pris trop de temps. Réessayez avec la même photo.",
+        504,
+      );
+    }
+    throw reason;
+  }
   if (!response.ok) {
     throw new RenderError(
       `OpenAI ${response.status}: ${(await response.text()).slice(0, 300)}`,
@@ -1206,6 +1234,13 @@ async function openAIEdit(
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
+}
+
+function isTimeoutError(reason: unknown): boolean {
+  return (
+    reason instanceof Error &&
+    (reason.name === "TimeoutError" || reason.name === "AbortError")
+  );
 }
 
 function toArrayBuffer(buffer: Buffer): ArrayBuffer {
