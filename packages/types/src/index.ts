@@ -9,6 +9,15 @@ export const placementTypeSchema = z.enum([
   "wall",
   "floor",
 ]);
+export const objectTypeSchema = z.enum([
+  "vase",
+  "lamp",
+  "frame",
+  "mirror",
+  "rug",
+  "furniture",
+  "other",
+]);
 export const renderStatusSchema = z.enum([
   "queued",
   "processing",
@@ -21,6 +30,7 @@ export const productSchema = z.object({
   id: z.string().uuid(),
   name: z.string(),
   description: z.string().default(""),
+  objectType: objectTypeSchema.default("other"),
   widthCm: z.coerce.number().positive(),
   heightCm: z.coerce.number().positive(),
   depthCm: z.coerce.number().nonnegative(),
@@ -52,6 +62,7 @@ export type Product = z.infer<typeof productSchema>;
 export type Render = z.infer<typeof renderSchema>;
 export type PlacementMode = z.infer<typeof placementModeSchema>;
 export type PlacementType = z.infer<typeof placementTypeSchema>;
+export type ObjectType = z.infer<typeof objectTypeSchema>;
 
 export type AnalyticsEventName =
   | "visualizer_opened"

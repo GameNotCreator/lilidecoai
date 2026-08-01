@@ -40,6 +40,9 @@ import { DEMO_MERCHANT_SLUG, DEMO_PRODUCT_ID } from "./types";
 const productCreateSchema = z.object({
   name: z.string().trim().min(2).max(120),
   description: z.string().trim().max(1000).default(""),
+  objectType: z
+    .enum(["vase", "lamp", "frame", "mirror", "rug", "furniture", "other"])
+    .default("other"),
   sku: z.string().trim().max(80).nullable().optional(),
   widthCm: z.number().positive().max(1000),
   heightCm: z.number().positive().max(1000),
@@ -256,6 +259,7 @@ async function handleProducts(
       organizationId: tenant.organizationId,
       name: body.name,
       description: body.description,
+      objectType: body.objectType,
       sku: body.sku ?? null,
       widthCm: body.widthCm,
       heightCm: body.heightCm,

@@ -49,17 +49,40 @@ export function MerchantDashboard() {
         <div>
           <span className="eyebrow">Vue d’ensemble</span>
           <h1>Bonjour, Lili.</h1>
-          <p>Votre catalogue est prêt à prendre place dans de nouveaux intérieurs.</p>
+          <p>
+            Votre catalogue est prêt à prendre place dans de nouveaux
+            intérieurs.
+          </p>
         </div>
         <Link className="button" href="/app/products/new">
           <Plus size={17} /> Nouveau produit
         </Link>
       </header>
       <div className="metric-grid">
-        <Metric icon={<Box />} label="Produits prêts" value={String(products.length)} trend="+1 ce mois" />
-        <Metric icon={<Eye />} label="Visualisations" value={String(overview.renders)} trend="Parcours mock inclus" />
-        <Metric icon={<Sparkles />} label="Taux de réussite" value={`${Math.round(overview.successRate * 100)}%`} trend="Contrôle qualité actif" />
-        <Metric icon={<CircleDollarSign />} label="Crédits" value={String(credits)} trend="Débit après succès" />
+        <Metric
+          icon={<Box />}
+          label="Produits prêts"
+          value={String(products.length)}
+          trend="+1 ce mois"
+        />
+        <Metric
+          icon={<Eye />}
+          label="Visualisations"
+          value={String(overview.renders)}
+          trend="Parcours mock inclus"
+        />
+        <Metric
+          icon={<Sparkles />}
+          label="Taux de réussite"
+          value={`${Math.round(overview.successRate * 100)}%`}
+          trend="Contrôle qualité actif"
+        />
+        <Metric
+          icon={<CircleDollarSign />}
+          label="Crédits"
+          value={String(credits)}
+          trend="Débit après succès"
+        />
       </div>
       <section className="app-grid">
         <div className="app-card app-card-wide">
@@ -68,7 +91,9 @@ export function MerchantDashboard() {
               <span>Catalogue</span>
               <h2>Objets les plus récents</h2>
             </div>
-            <Link href="/app/catalog">Voir tout <ArrowUpRight size={15} /></Link>
+            <Link href="/app/catalog">
+              Voir tout <ArrowUpRight size={15} />
+            </Link>
           </div>
           <div className="product-table">
             {products.map((product) => (
@@ -77,13 +102,20 @@ export function MerchantDashboard() {
                   {product.cutoutUrl ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img src={product.cutoutUrl} alt="" />
-                  ) : <ImageIcon size={20} />}
+                  ) : (
+                    <ImageIcon size={20} />
+                  )}
                 </div>
                 <div>
                   <strong>{product.name}</strong>
-                  <small>{product.material} · {product.widthCm} × {product.heightCm} cm</small>
+                  <small>
+                    {product.material} · {product.widthCm} × {product.heightCm}{" "}
+                    cm
+                  </small>
                 </div>
-                <span className={`status status-${product.status}`}>{product.status}</span>
+                <span className={`status status-${product.status}`}>
+                  {product.status}
+                </span>
               </div>
             ))}
           </div>
@@ -95,9 +127,12 @@ export function MerchantDashboard() {
               <h2>IA ce mois</h2>
             </div>
           </div>
-          <div className="cost-figure">${overview.recentEstimatedCostUsd.toFixed(3)}</div>
+          <div className="cost-figure">
+            ${overview.recentEstimatedCostUsd.toFixed(3)}
+          </div>
           <p className="muted">
-            En mode démonstration, aucun appel externe n’est effectué et le coût reste nul.
+            En mode démonstration, aucun appel externe n’est effectué et le coût
+            reste nul.
           </p>
           <div className="provider-line">
             <span className="provider-dot" /> MockImageProvider actif

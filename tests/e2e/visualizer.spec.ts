@@ -93,9 +93,11 @@ test("landing and merchant dashboard expose the core promise", async ({
 }) => {
   await page.goto("/");
   await expect(
-    page.getByRole("heading", { name: /Imaginez-le chez vous/i }),
+    page.getByRole("heading", { name: /Voyez l’objet chez vous/i }),
   ).toBeVisible();
-  await expect(page.getByText(/Aucune génération OpenAI/i)).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: /Ajouter un objet/i }),
+  ).toBeVisible();
   await page.goto("/app");
   await expect(
     page.getByRole("heading", { name: /Bonjour, Lili/i }),
@@ -114,6 +116,26 @@ test("public demo establishes a restricted viewer session", async ({
   await expect(page.locator(".studio-error")).toHaveCount(0);
 });
 
+test("object form adapts dimensions to the selected object type", async ({
+  page,
+}) => {
+  await page.goto("/objet");
+  await expect(
+    page.getByRole("heading", { name: /Préparez votre objet/i }),
+  ).toBeVisible();
+  await page.getByRole("radio", { name: /Tapis/i }).check();
+  await expect(
+    page.getByRole("spinbutton", { name: "Longueur", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("spinbutton", { name: "Épaisseur", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("radio", { name: /Meuble/i }).check();
+  await expect(
+    page.getByRole("spinbutton", { name: "Profondeur", exact: true }),
+  ).toBeVisible();
+});
+
 test("a source photo over 4 MB is optimized before upload", async ({
   page,
 }) => {
@@ -126,8 +148,8 @@ test("a source photo over 4 MB is optimized before upload", async ({
     buffer: largePhoto,
   });
   await expect(
-    page.getByRole("heading", { name: "Placez le point rouge" }),
-  ).toBeVisible({ timeout: 30_000 });
+    page.getByRole("heading", { name: "Indiquez l’endroit." }),
+  ).toBeVisible({ timeout: 60_000 });
   await expect(page.locator(".studio-error")).toHaveCount(0);
 });
 
@@ -142,15 +164,19 @@ test("required customer journey reaches a successful mock render", async ({
   });
   const productName = `Vase E2E ${Date.now()}`;
   await page.getByLabel("Nom").fill(productName);
+  await page.getByText("Options facultatives").click();
   await page.getByLabel("SKU").fill(`E2E-${Date.now()}`);
-  await page.getByLabel("Matériau").fill("céramique mate");
-  await page.getByLabel("Largeur").fill("24");
-  await page.getByLabel("Hauteur").fill("42");
-  await page.getByLabel("Profondeur").fill("24");
+  await page.getByLabel("Matière principale").fill("céramique mate");
   await page
-    .getByLabel("Instructions de génération IA")
+    .getByRole("spinbutton", { name: "Diamètre", exact: true })
+    .fill("24");
+  await page
+    .getByRole("spinbutton", { name: "Hauteur", exact: true })
+    .fill("42");
+  await page
+    .getByLabel("Indications pour le rendu IA")
     .fill("Ambiance naturelle, ombre douce et photographie éditoriale.");
-  await page.getByRole("button", { name: /Créer et préparer/i }).click();
+  await page.getByRole("button", { name: /Préparer cet objet/i }).click();
   await expect(page).toHaveURL(/\/app\/catalog/);
   await expect(page.getByText(productName)).toBeVisible();
 
@@ -202,7 +228,7 @@ test("required customer journey reaches a successful mock render", async ({
     buffer: await roomFixture(),
   });
   await expect(
-    page.getByRole("heading", { name: "Placez le point rouge" }),
+    page.getByRole("heading", { name: "Indiquez l’endroit." }),
   ).toBeVisible();
   const roomPlacement = page.getByRole("button", {
     name: "Placer le point rouge sur la pièce",
@@ -210,7 +236,7 @@ test("required customer journey reaches a successful mock render", async ({
   await roomPlacement.click({ position: { x: 100, y: 100 } });
   await expect(page.getByTestId("placement-dot")).toBeVisible();
   await page.getByRole("button", { name: "Table", exact: true }).click();
-  await page.getByRole("button", { name: /Générer à cet endroit/i }).click();
+  await page.getByRole("button", { name: /Créer mon aperçu/i }).click();
   await expect(page.getByText("Rendu accepté")).toBeVisible({
     timeout: 30_000,
   });

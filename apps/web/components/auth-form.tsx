@@ -57,8 +57,8 @@ export function AuthForm({
   return (
     <main className="auth-page">
       <form action={(data) => void submit(data)} className="auth-card">
-        <span className="brand-mark">V</span>
-        <span className="eyebrow">Espace marchand</span>
+        <span className="brand-mark">L</span>
+        <span className="eyebrow">Accès sécurisé</span>
         <h1>
           {mode === "login" ? "Ravi de vous revoir." : "Créez votre atelier."}
         </h1>
@@ -101,11 +101,16 @@ export function AuthForm({
           {mode === "login" ? (
             <>
               Pas encore de compte ?{" "}
-              <Link href="/signup">Créer un atelier</Link>
+              <Link href={`/signup?next=${encodeURIComponent(returnTo)}`}>
+                Créer un atelier
+              </Link>
             </>
           ) : (
             <>
-              Déjà inscrit ? <Link href="/login">Se connecter</Link>
+              Déjà inscrit ?{" "}
+              <Link href={`/login?next=${encodeURIComponent(returnTo)}`}>
+                Se connecter
+              </Link>
             </>
           )}
         </small>

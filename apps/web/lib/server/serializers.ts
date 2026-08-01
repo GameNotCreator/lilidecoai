@@ -6,6 +6,7 @@ export function productResponse(product: ProductDocument) {
     id: product.id,
     name: product.name,
     description: product.description,
+    objectType: product.objectType ?? "other",
     sku: product.sku,
     widthCm: product.widthCm,
     heightCm: product.heightCm,

@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Cormorant_Garamond, Manrope } from "next/font/google";
 import Link from "next/link";
-import { ArrowUpRight, UserRound } from "lucide-react";
+import { Plus, ScanLine } from "lucide-react";
 import { serverConfig } from "@/lib/server/config";
 import "./globals.css";
 
@@ -18,11 +18,11 @@ const serif = Cormorant_Garamond({
 
 export const metadata: Metadata = {
   title: {
-    default: "Project Visualizer — Voir avant d’acheter",
-    template: "%s — Project Visualizer",
+    default: "Lili Deco AI — Essayez un objet chez vous",
+    template: "%s — Lili Deco AI",
   },
   description:
-    "Visualisez un objet décoratif chez vous, à la bonne échelle, avant de l’acheter.",
+    "Ajoutez une photo de votre pièce et visualisez un objet à la bonne place.",
 };
 
 export default function RootLayout({
@@ -31,56 +31,26 @@ export default function RootLayout({
   return (
     <html lang="fr" data-scroll-behavior="smooth">
       <body className={`${sans.variable} ${serif.variable}`}>
-        {serverConfig.demoMode && (
-          <div className="demo-banner">
-            <span>Mode démonstration</span>
-            <span aria-hidden="true">•</span>
-            <span>Aucune génération OpenAI sans clé serveur</span>
-          </div>
-        )}
-        <header className="site-header">
+        <header className="site-header simple-site-header">
           <div className="container site-header-inner">
-            <Link className="brand" href="/">
-              <span className="brand-mark">V</span>
-              <span>Project Visualizer</span>
+            <Link className="brand simple-brand" href="/">
+              <span className="brand-mark">L</span>
+              <span>Lili Deco AI</span>
             </Link>
-            <nav className="main-nav" aria-label="Navigation principale">
-              <Link href="/#fonctionnement">Comment ça marche</Link>
-              <Link href="/pricing">Tarifs</Link>
-              <Link href="/demo">Démo</Link>
-              <Link href="/app">Espace marchand</Link>
+            <nav className="simple-nav" aria-label="Navigation principale">
+              {serverConfig.demoMode && <span className="demo-chip">Démo</span>}
+              <Link className="simple-nav-link" href="/">
+                <ScanLine size={18} />
+                <span>Visualiser</span>
+              </Link>
+              <Link className="button simple-add-button" href="/objet">
+                <Plus size={18} />
+                <span>Ajouter un objet</span>
+              </Link>
             </nav>
-            <Link className="button header-cta" href="/demo">
-              Essayer maintenant <ArrowUpRight size={16} />
-            </Link>
-            <Link
-              className="button secondary mobile-nav"
-              href="/app"
-              aria-label="Espace marchand"
-            >
-              <UserRound size={18} />
-              <span>Compte</span>
-            </Link>
           </div>
         </header>
         {children}
-        <footer className="site-footer">
-          <div className="container footer-grid">
-            <div>
-              <div className="brand">
-                <span className="brand-mark">V</span>
-                <span>Project Visualizer</span>
-              </div>
-              <p>La bonne échelle. Le bon choix. Moins de retours.</p>
-            </div>
-            <div className="footer-links">
-              <Link href="/terms">Conditions</Link>
-              <Link href="/privacy">Confidentialité</Link>
-              <Link href="/pricing">Tarifs</Link>
-              <Link href="/login">Connexion</Link>
-            </div>
-          </div>
-        </footer>
       </body>
     </html>
   );

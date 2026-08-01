@@ -32,6 +32,7 @@ export interface ProductDocument {
   organizationId: string;
   name: string;
   description: string;
+  objectType?: string;
   sku: string | null;
   widthCm: number;
   heightCm: number;

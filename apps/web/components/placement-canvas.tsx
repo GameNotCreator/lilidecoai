@@ -105,7 +105,9 @@ export function PlacementCanvas({
             keepRatio
             flipEnabled={false}
             boundBoxFunc={(oldBox, newBox) =>
-              newBox.width < 32 || newBox.width > stageWidth * 0.9 ? oldBox : newBox
+              newBox.width < 32 || newBox.width > stageWidth * 0.9
+                ? oldBox
+                : newBox
             }
             anchorFill="#fbfaf6"
             anchorStroke="#667052"
@@ -117,4 +119,3 @@ export function PlacementCanvas({
     </div>
   );
 }
-

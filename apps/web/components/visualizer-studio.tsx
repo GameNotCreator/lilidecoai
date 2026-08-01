@@ -187,13 +187,15 @@ export function VisualizerStudio({
     >
       <header className="studio-head">
         <div>
-          <span className="eyebrow">Studio de visualisation</span>
-          <h1>Voyez l’objet dans votre intérieur.</h1>
+          <span className="eyebrow">Simple, rapide, sans installation</span>
+          <h1>Voyez l’objet chez vous.</h1>
+          <p>
+            Choisissez une photo, indiquez l’endroit, puis laissez l’IA faire.
+          </p>
         </div>
         <div className="studio-meta">
-          <Badge tone="positive">Placement guidé</Badge>
           {!embedded && (
-            <span className="credit-pill">
+            <span className="credit-pill" aria-label="Crédits disponibles">
               <Sparkles size={14} /> {credits ?? "—"} crédits
             </span>
           )}
@@ -201,7 +203,7 @@ export function VisualizerStudio({
       </header>
 
       <nav className="studio-steps" aria-label="Étapes du visualiseur">
-        {["Pièce", "Placement", "Résultat"].map((label, index) => (
+        {["Photo", "Placement", "Résultat"].map((label, index) => (
           <button
             key={label}
             className={
@@ -225,11 +227,11 @@ export function VisualizerStudio({
       <div className="studio-body">
         {step === 1 && (
           <div className="studio-grid intro-grid">
-            <div className="studio-panel">
-              <span className="panel-index">01</span>
-              <h2>Choisissez l’objet</h2>
+            <div className="studio-panel object-choice-panel">
+              <span className="panel-index">1 — L’objet</span>
+              <h2>Que voulez-vous essayer ?</h2>
               <p className="muted">
-                Le produit catalogue reste protégé pendant l’intégration.
+                Touchez simplement l’objet de votre choix.
               </p>
               <div className="product-options">
                 {products.map((item) => (
@@ -240,6 +242,7 @@ export function VisualizerStudio({
                         ? "product-option selected"
                         : "product-option"
                     }
+                    aria-pressed={item.id === productId}
                     onClick={() => {
                       setProductId(item.id);
                       setSurface(item.placementType);
@@ -255,7 +258,7 @@ export function VisualizerStudio({
                     <span>
                       <strong>{item.name}</strong>
                       <small>
-                        {item.widthCm} × {item.heightCm} cm
+                        {item.widthCm} × {item.heightCm} cm · {item.material}
                       </small>
                     </span>
                   </button>
@@ -264,15 +267,16 @@ export function VisualizerStudio({
             </div>
             <label className="upload-zone">
               <Upload size={32} />
-              <strong>Ajoutez une photo de votre pièce</strong>
-              <span>
-                JPEG, PNG ou WebP · jusqu’à 20 Mo · optimisation automatique
-              </span>
-              <span className="button">
+              <span className="panel-index">2 — Votre pièce</span>
+              <strong>Ajoutez une photo de la pièce</strong>
+              <span>Prenez-la bien droite et avec assez de lumière.</span>
+              <span className="button upload-button" aria-live="polite">
                 {busy ? uploadStatus : "Choisir une photo"}
               </span>
+              <span>JPEG, PNG ou WebP · 20 Mo maximum</span>
               <input
                 type="file"
+                aria-label="Photo de votre pièce"
                 accept="image/jpeg,image/png,image/webp"
                 disabled={busy || !product}
                 onChange={(event) => {
@@ -280,10 +284,7 @@ export function VisualizerStudio({
                   if (file) void uploadRoom(file);
                 }}
               />
-              <small>
-                En continuant, vous consentez au traitement. Suppression
-                automatique sous 24 h.
-              </small>
+              <small>La photo est automatiquement allégée avant l’envoi.</small>
             </label>
           </div>
         )}
@@ -291,7 +292,7 @@ export function VisualizerStudio({
         {step === 2 && scene && (
           <div className="studio-grid settings-grid">
             <p className="mobile-placement-hint">
-              Touchez la photo pour poser le point rouge.
+              Touchez la photo à l’endroit où poser l’objet.
             </p>
             <button
               type="button"
@@ -313,13 +314,13 @@ export function VisualizerStudio({
               )}
             </button>
             <div className="studio-panel">
-              <span className="panel-index">02</span>
-              <h2>Placez le point rouge</h2>
+              <span className="panel-index">Étape 2 sur 3</span>
+              <h2>Indiquez l’endroit.</h2>
               <p className="muted">
-                Cliquez sur la photo à l’endroit exact où l’objet doit toucher
-                le meuble, puis indiquez le type de support.
+                Touchez la photo pour déplacer le point rouge, puis choisissez
+                ce qui se trouve dessous.
               </p>
-              <strong className="choice-label">Ce point se trouve sur :</strong>
+              <strong className="choice-label">L’objet sera posé sur :</strong>
               <div className="choice-grid">
                 {["table", "nightstand", "shelf", "niche", "wall", "floor"].map(
                   (value) => (
@@ -347,17 +348,18 @@ export function VisualizerStudio({
               <div className="auto-placement-note">
                 <Sparkles size={20} />
                 <span>
-                  <strong>Vous choisissez l’endroit</strong>
+                  <strong>L’IA s’occupe du reste</strong>
                   <small>
-                    Aucun produit n’est affiché avant la génération. L’IA garde
-                    votre point et adapte uniquement l’échelle, la perspective,
-                    l’ombre et la lumière.
+                    Elle adapte automatiquement la taille, la perspective,
+                    l’ombre et la lumière sans modifier votre pièce.
                   </small>
                 </span>
               </div>
               <Button
                 onClick={() => void generate()}
-                disabled={busy || !credits || !placementPoint}
+                disabled={
+                  busy || credits === null || credits < 1 || !placementPoint
+                }
               >
                 {busy ? (
                   <LoaderCircle className="spin" size={17} />
@@ -365,12 +367,25 @@ export function VisualizerStudio({
                   <Sparkles size={17} />
                 )}
                 {busy
-                  ? "Analyse et intégration en cours…"
-                  : placementPoint
-                    ? "Générer à cet endroit · 1 crédit"
-                    : "Placez d’abord le point rouge"}
+                  ? "Création de votre aperçu…"
+                  : !placementPoint
+                    ? "Touchez d’abord la photo"
+                    : credits === 0
+                      ? "Aucun crédit disponible"
+                      : "Créer mon aperçu · 1 crédit"}
                 {!busy && <ArrowRight size={17} />}
               </Button>
+              <button
+                className="back-link"
+                type="button"
+                onClick={() => {
+                  setScene(null);
+                  setPlacementPoint(null);
+                  setStep(1);
+                }}
+              >
+                <ArrowLeft size={15} /> Choisir une autre photo
+              </button>
             </div>
           </div>
         )}
@@ -405,7 +420,7 @@ export function VisualizerStudio({
             </div>
             <div className="result-summary card">
               <Badge tone="positive">Rendu accepté</Badge>
-              <h2>Il trouve sa place.</h2>
+              <h2>Voilà le résultat.</h2>
               <p className="muted">
                 {typeof render.placement?.rationale === "string"
                   ? render.placement.rationale
@@ -455,7 +470,7 @@ export function VisualizerStudio({
                   setStep(2);
                 }}
               >
-                <ArrowLeft size={15} /> Changer le point
+                <ArrowLeft size={15} /> Essayer un autre endroit
               </button>
             </div>
           </div>

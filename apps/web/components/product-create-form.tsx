@@ -1,7 +1,14 @@
 "use client";
 
-import { useState } from "react";
-import { Check, ImagePlus, LoaderCircle, Upload } from "lucide-react";
+import { useEffect, useState } from "react";
+import {
+  ArrowRight,
+  Check,
+  ChevronDown,
+  ImagePlus,
+  LoaderCircle,
+  Upload,
+} from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Button } from "@lili/ui";
 import { api } from "@/lib/api";
@@ -14,54 +21,120 @@ interface CreatedProduct {
   cutoutUrl?: string | null;
 }
 
-export function ProductCreateForm() {
+type ObjectType =
+  "vase" | "lamp" | "frame" | "mirror" | "rug" | "furniture" | "other";
+
+const objectTypes: Array<{
+  value: ObjectType;
+  label: string;
+  help: string;
+  placement: string;
+}> = [
+  {
+    value: "vase",
+    label: "Vase ou pot",
+    help: "Diamètre et hauteur",
+    placement: "table",
+  },
+  {
+    value: "lamp",
+    label: "Lampe",
+    help: "Diamètre et hauteur",
+    placement: "table",
+  },
+  {
+    value: "frame",
+    label: "Cadre ou tableau",
+    help: "Largeur, hauteur et épaisseur",
+    placement: "wall",
+  },
+  {
+    value: "mirror",
+    label: "Miroir",
+    help: "Largeur, hauteur et épaisseur",
+    placement: "wall",
+  },
+  {
+    value: "rug",
+    label: "Tapis",
+    help: "Largeur, longueur et épaisseur",
+    placement: "floor",
+  },
+  {
+    value: "furniture",
+    label: "Meuble",
+    help: "Largeur, hauteur et profondeur",
+    placement: "floor",
+  },
+  {
+    value: "other",
+    label: "Autre objet",
+    help: "Largeur, hauteur et profondeur",
+    placement: "table",
+  },
+];
+
+export function ProductCreateForm({
+  afterCreate = "catalog",
+}: {
+  afterCreate?: "catalog" | "visualizer";
+}) {
   const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [phase, setPhase] = useState("Informations");
+  const [phase, setPhase] = useState("Prêt");
+  const [objectType, setObjectType] = useState<ObjectType>("vase");
+  const objectConfig = objectTypes.find((item) => item.value === objectType)!;
+
+  useEffect(
+    () => () => {
+      if (preview) URL.revokeObjectURL(preview);
+    },
+    [preview],
+  );
 
   async function submit(formData: FormData) {
     if (!file) {
-      setError("Ajoutez une photo produit");
+      setError("Ajoutez le fichier PNG de votre objet.");
       return;
     }
+    const dimensions = readDimensions(formData, objectType);
     setBusy(true);
     setError("");
     try {
-      setPhase("Optimisation de l’image");
+      setPhase("Optimisation du PNG");
       const preparedFile = await prepareImageForUpload(file);
-      setPhase("Création");
+      setPhase("Création de l’objet");
       const product = await api<CreatedProduct>("/v1/products", {
         method: "POST",
         body: JSON.stringify({
           name: formData.get("name"),
-          description: formData.get("description"),
+          description: formData.get("description") || "",
           sku: formData.get("sku") || null,
-          widthCm: Number(formData.get("widthCm")),
-          heightCm: Number(formData.get("heightCm")),
-          depthCm: Number(formData.get("depthCm")),
+          objectType,
+          ...dimensions,
           material: formData.get("material"),
           placementType: formData.get("placementType"),
           generationInstructions: formData.get("generationInstructions") || "",
           lightingProfile: {
-            source: formData.get("lighting"),
-            reflectance: formData.get("reflectance"),
+            source: formData.get("lighting") || "front",
+            reflectance: formData.get("reflectance") || "matte",
           },
           buyUrl: formData.get("buyUrl") || null,
         }),
       });
-      setPhase("Nettoyage de l’image");
+      setPhase("Envoi de l’image");
       const upload = new FormData();
       upload.set("file", preparedFile);
       await api(`/v1/products/${product.id}/assets`, {
         method: "POST",
         body: upload,
       });
-      setPhase("Segmentation locale");
+      setPhase("Détourage automatique");
       await api(`/v1/products/${product.id}/prepare`, { method: "POST" });
-      setPhase("Point d’ancrage");
+      setPhase("Finalisation");
       await api(`/v1/products/${product.id}/anchor`, {
         method: "POST",
         body: JSON.stringify({
@@ -70,8 +143,12 @@ export function ProductCreateForm() {
           yNormalized: 1,
         }),
       });
-      setPhase("Publié");
-      router.push("/app/catalog");
+      setPhase("Objet prêt");
+      router.push(
+        afterCreate === "visualizer"
+          ? `/?product=${product.id}`
+          : "/app/catalog",
+      );
       router.refresh();
     } catch (reason) {
       setError(
@@ -83,169 +160,315 @@ export function ProductCreateForm() {
   }
 
   return (
-    <form action={(formData) => void submit(formData)} className="product-form">
-      <header className="app-page-head">
+    <form
+      action={(formData) => void submit(formData)}
+      className="product-form focused-product-form"
+    >
+      <header className="object-page-head">
         <div>
-          <span className="eyebrow">Nouveau produit</span>
-          <h1>Préparez votre objet.</h1>
+          <span className="eyebrow">Ajouter un objet</span>
+          <h1>Préparez votre objet en quelques minutes.</h1>
           <p>
-            Une image nette, des mesures réelles et un ancrage précis suffisent.
+            Un PNG propre et les vraies dimensions suffisent. Les réglages
+            techniques restent facultatifs.
           </p>
         </div>
-        <div className="creation-phase">
+        <div className="creation-phase" aria-live="polite">
           {busy ? (
-            <LoaderCircle className="spin" size={17} />
+            <LoaderCircle className="spin" size={18} />
           ) : (
-            <Check size={17} />
+            <Check size={18} />
           )}
           {phase}
         </div>
       </header>
-      {error && <div className="studio-error">{error}</div>}
-      <div className="product-form-grid">
-        <div className="app-card">
-          <div className="form-section-title">
-            <span>01</span>
+
+      {error && (
+        <div className="studio-error" role="alert">
+          {error}
+        </div>
+      )}
+
+      <div className="focused-product-grid">
+        <section className="object-form-section object-photo-section">
+          <div className="simple-section-title">
+            <span>1</span>
             <div>
-              <h2>Photo produit</h2>
-              <p>Fond uni ou transparent recommandé.</p>
+              <h2>Ajoutez le PNG</h2>
+              <p>De face, bien éclairé, sans autre objet autour.</p>
             </div>
           </div>
-          <label className="product-upload">
+          <label
+            className={
+              preview ? "product-upload has-preview" : "product-upload"
+            }
+          >
             {preview ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img src={preview} alt="Aperçu du produit" />
             ) : (
               <>
-                <ImagePlus size={32} />
-                <strong>Déposez votre image</strong>
-                <span>
-                  JPEG, PNG ou WebP · jusqu’à 20 Mo · optimisation auto
-                </span>
+                <ImagePlus size={38} />
+                <strong>Choisir un fichier PNG</strong>
+                <span>Fond transparent recommandé · 20 Mo maximum</span>
               </>
             )}
             <input
               type="file"
-              accept="image/jpeg,image/png,image/webp"
+              aria-label="Image PNG de l’objet"
+              accept="image/png,.png"
               onChange={(event) => {
                 const selected = event.target.files?.[0] ?? null;
+                if (
+                  selected &&
+                  selected.type !== "image/png" &&
+                  !selected.name.toLowerCase().endsWith(".png")
+                ) {
+                  setError("Choisissez un fichier au format PNG.");
+                  event.target.value = "";
+                  return;
+                }
+                setError("");
                 setFile(selected);
-                if (selected) setPreview(URL.createObjectURL(selected));
+                setPreview(selected ? URL.createObjectURL(selected) : "");
               }}
             />
           </label>
-          <div className="mask-note">
-            <Upload size={17} />
-            <span>
-              Le MVP produit un masque déterministe sur fond clair. Le pinceau
-              de correction est préparé comme prochaine extension GPU/SAM.
-            </span>
-          </div>
-        </div>
-        <div className="app-card form-fields">
-          <div className="form-section-title">
-            <span>02</span>
-            <div>
-              <h2>Identité & dimensions</h2>
-              <p>Ces valeurs pilotent l’échelle, pas le modèle IA.</p>
-            </div>
-          </div>
-          <div className="field">
-            <label htmlFor="name">Nom</label>
-            <input id="name" name="name" required placeholder="Vase Sienne" />
-          </div>
-          <div className="two-fields">
-            <div className="field">
-              <label htmlFor="sku">SKU</label>
-              <input id="sku" name="sku" placeholder="VAS-042" />
-            </div>
-            <div className="field">
-              <label htmlFor="material">Matériau</label>
+          {preview && (
+            <label className="replace-image-button">
+              <Upload size={17} /> Remplacer le PNG
               <input
-                id="material"
-                name="material"
-                required
-                placeholder="Céramique mate"
+                type="file"
+                aria-label="Remplacer l’image PNG"
+                accept="image/png,.png"
+                onChange={(event) => {
+                  const selected = event.target.files?.[0] ?? null;
+                  if (selected) {
+                    setFile(selected);
+                    setPreview(URL.createObjectURL(selected));
+                  }
+                }}
               />
+            </label>
+          )}
+        </section>
+
+        <section className="object-form-section object-details-section">
+          <div className="simple-section-title">
+            <span>2</span>
+            <div>
+              <h2>Décrivez l’objet</h2>
+              <p>Nous adaptons les mesures au type choisi.</p>
             </div>
           </div>
-          <div className="three-fields">
-            <Dimension name="widthCm" label="Largeur" />
-            <Dimension name="heightCm" label="Hauteur" />
-            <Dimension name="depthCm" label="Profondeur" />
+
+          <div className="field large-field">
+            <label htmlFor="name">Nom de l’objet</label>
+            <input
+              id="name"
+              name="name"
+              required
+              placeholder="Ex. Vase Sienne"
+              autoComplete="off"
+            />
           </div>
-          <div className="two-fields">
-            <div className="field">
-              <label htmlFor="placementType">Placement</label>
-              <select id="placementType" name="placementType">
-                <option value="table">Table</option>
-                <option value="shelf">Étagère</option>
-                <option value="wall">Mur</option>
-                <option value="floor">Sol</option>
-                <option value="niche">Niche</option>
-              </select>
+
+          <fieldset className="object-type-fieldset">
+            <legend>Type d’objet</legend>
+            <div className="object-type-grid">
+              {objectTypes.map((item) => (
+                <label
+                  key={item.value}
+                  className={
+                    objectType === item.value
+                      ? "object-type-option selected"
+                      : "object-type-option"
+                  }
+                >
+                  <input
+                    type="radio"
+                    name="objectTypeChoice"
+                    value={item.value}
+                    checked={objectType === item.value}
+                    onChange={() => setObjectType(item.value)}
+                  />
+                  <strong>{item.label}</strong>
+                  <small>{item.help}</small>
+                </label>
+              ))}
             </div>
-            <div className="field">
-              <label htmlFor="reflectance">Réflexion</label>
-              <select id="reflectance" name="reflectance">
-                <option value="matte">Mate</option>
-                <option value="satin">Satinée</option>
-                <option value="glossy">Brillante</option>
-              </select>
-            </div>
-          </div>
+          </fieldset>
+
           <div className="field">
-            <label htmlFor="lighting">Lumière photo produit</label>
-            <select id="lighting" name="lighting">
-              <option value="softbox-left">Diffuse, depuis la gauche</option>
-              <option value="softbox-right">Diffuse, depuis la droite</option>
-              <option value="front">Face uniforme</option>
+            <label htmlFor="material">Matière principale</label>
+            <input
+              id="material"
+              name="material"
+              required
+              placeholder="Ex. céramique mate, bois, métal…"
+            />
+          </div>
+
+          <div className="dimensions-block">
+            <div>
+              <strong>Dimensions réelles</strong>
+              <span>Mesurez l’objet au point le plus large.</span>
+            </div>
+            <DimensionFields objectType={objectType} />
+          </div>
+
+          <div className="field">
+            <label htmlFor="placementType">
+              Où pose-t-on généralement cet objet ?
+            </label>
+            <select
+              key={objectType}
+              id="placementType"
+              name="placementType"
+              defaultValue={objectConfig.placement}
+            >
+              <option value="table">Sur une table</option>
+              <option value="nightstand">Sur une table de nuit</option>
+              <option value="shelf">Sur une étagère</option>
+              <option value="niche">Dans une niche</option>
+              <option value="wall">Sur un mur</option>
+              <option value="floor">Au sol</option>
             </select>
           </div>
-          <div className="field">
-            <label htmlFor="buyUrl">Lien d’achat</label>
-            <input
-              id="buyUrl"
-              name="buyUrl"
-              type="url"
-              placeholder="https://boutique.example/objet"
-            />
-          </div>
-          <div className="field">
-            <label htmlFor="description">Description</label>
-            <textarea
-              id="description"
-              name="description"
-              rows={3}
-              placeholder="Description courte du catalogue…"
-            />
-          </div>
-          <div className="field prompt-field">
-            <label htmlFor="generationInstructions">
-              Instructions de génération IA
-            </label>
-            <textarea
-              id="generationInstructions"
-              name="generationInstructions"
-              rows={5}
-              maxLength={1500}
-              placeholder="Ex. ambiance naturelle et chaleureuse, ombre douce, conserver les reflets satinés, style photographie éditoriale…"
-            />
-            <small>
-              Ces indications affinent l’ambiance et le traitement. L’identité,
-              les dimensions et la couleur du produit restent prioritaires.
-            </small>
-          </div>
+
+          <details className="advanced-options">
+            <summary>
+              Options facultatives <ChevronDown size={18} />
+            </summary>
+            <div className="advanced-options-body">
+              <div className="two-fields">
+                <div className="field">
+                  <label htmlFor="sku">Référence / SKU</label>
+                  <input id="sku" name="sku" placeholder="Ex. VAS-042" />
+                </div>
+                <div className="field">
+                  <label htmlFor="buyUrl">Lien d’achat</label>
+                  <input
+                    id="buyUrl"
+                    name="buyUrl"
+                    type="url"
+                    placeholder="https://…"
+                  />
+                </div>
+              </div>
+              <div className="field">
+                <label htmlFor="description">Description</label>
+                <textarea
+                  id="description"
+                  name="description"
+                  rows={3}
+                  placeholder="Quelques mots sur l’objet…"
+                />
+              </div>
+              <div className="field prompt-field">
+                <label htmlFor="generationInstructions">
+                  Indications pour le rendu IA
+                </label>
+                <textarea
+                  id="generationInstructions"
+                  name="generationInstructions"
+                  rows={4}
+                  maxLength={1500}
+                  placeholder="Ex. ombre douce, conserver les reflets satinés…"
+                />
+                <small>
+                  L’IA ne peut pas changer les couleurs, la silhouette ou les
+                  proportions du produit.
+                </small>
+              </div>
+              <div className="two-fields">
+                <div className="field">
+                  <label htmlFor="reflectance">Aspect de la matière</label>
+                  <select
+                    id="reflectance"
+                    name="reflectance"
+                    defaultValue="matte"
+                  >
+                    <option value="matte">Mat</option>
+                    <option value="satin">Satiné</option>
+                    <option value="glossy">Brillant</option>
+                  </select>
+                </div>
+                <div className="field">
+                  <label htmlFor="lighting">Lumière du PNG</label>
+                  <select id="lighting" name="lighting" defaultValue="front">
+                    <option value="front">De face</option>
+                    <option value="softbox-left">Depuis la gauche</option>
+                    <option value="softbox-right">Depuis la droite</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          </details>
+
           <Button type="submit" disabled={busy}>
-            <Check size={17} /> Créer et préparer
+            {busy ? (
+              <LoaderCircle className="spin" size={18} />
+            ) : (
+              <Check size={18} />
+            )}
+            {busy ? phase : "Préparer cet objet"}
+            {!busy && <ArrowRight size={18} />}
           </Button>
-        </div>
+          <p className="form-submit-help">
+            Le détourage et la préparation se font automatiquement.
+          </p>
+        </section>
       </div>
     </form>
   );
 }
 
-function Dimension({ name, label }: { name: string; label: string }) {
+function DimensionFields({ objectType }: { objectType: ObjectType }) {
+  if (objectType === "vase" || objectType === "lamp") {
+    return (
+      <div className="two-fields">
+        <Dimension name="diameterCm" label="Diamètre" />
+        <Dimension name="heightCm" label="Hauteur" />
+      </div>
+    );
+  }
+  if (objectType === "frame" || objectType === "mirror") {
+    return (
+      <div className="three-fields">
+        <Dimension name="widthCm" label="Largeur" />
+        <Dimension name="heightCm" label="Hauteur" />
+        <Dimension name="thicknessCm" label="Épaisseur" min="0.1" />
+      </div>
+    );
+  }
+  if (objectType === "rug") {
+    return (
+      <div className="three-fields">
+        <Dimension name="widthCm" label="Largeur" />
+        <Dimension name="lengthCm" label="Longueur" />
+        <Dimension name="thicknessCm" label="Épaisseur" min="0.1" />
+      </div>
+    );
+  }
+  return (
+    <div className="three-fields">
+      <Dimension name="widthCm" label="Largeur" />
+      <Dimension name="heightCm" label="Hauteur" />
+      <Dimension name="depthCm" label="Profondeur" min="0.1" />
+    </div>
+  );
+}
+
+function Dimension({
+  name,
+  label,
+  min = "1",
+}: {
+  name: string;
+  label: string;
+  min?: string;
+}) {
   return (
     <div className="field">
       <label htmlFor={name}>{label}</label>
@@ -254,13 +477,46 @@ function Dimension({ name, label }: { name: string; label: string }) {
           id={name}
           name={name}
           type="number"
+          inputMode="decimal"
           required
-          min="1"
+          min={min}
           max="1000"
           step="0.1"
+          placeholder="0"
         />
         <span>cm</span>
       </div>
     </div>
   );
+}
+
+function readDimensions(formData: FormData, objectType: ObjectType) {
+  const number = (name: string) => Number(formData.get(name));
+  if (objectType === "vase" || objectType === "lamp") {
+    const diameter = number("diameterCm");
+    return {
+      widthCm: diameter,
+      heightCm: number("heightCm"),
+      depthCm: diameter,
+    };
+  }
+  if (objectType === "frame" || objectType === "mirror") {
+    return {
+      widthCm: number("widthCm"),
+      heightCm: number("heightCm"),
+      depthCm: number("thicknessCm"),
+    };
+  }
+  if (objectType === "rug") {
+    return {
+      widthCm: number("widthCm"),
+      heightCm: number("thicknessCm"),
+      depthCm: number("lengthCm"),
+    };
+  }
+  return {
+    widthCm: number("widthCm"),
+    heightCm: number("heightCm"),
+    depthCm: number("depthCm"),
+  };
 }
