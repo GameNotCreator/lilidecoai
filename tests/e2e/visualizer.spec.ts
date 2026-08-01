@@ -105,7 +105,7 @@ test("landing and merchant dashboard expose the core promise", async ({
   await expect(page.getByText("Vase Sable")).toBeVisible();
 });
 
-test("public demo establishes a restricted viewer session", async ({
+test("public demo loads the multi-product guest catalog", async ({
   page,
 }) => {
   await page.goto("/demo");
@@ -113,7 +113,78 @@ test("public demo establishes a restricted viewer session", async ({
     page.getByRole("heading", { name: /Voyez l’objet/i }),
   ).toBeVisible();
   await expect(page.getByRole("button", { name: /Vase Sable/i })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /Lampe Boman/i }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /Miroir Rococo/i }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /Table basse Noyer/i }),
+  ).toBeVisible();
   await expect(page.locator(".studio-error")).toHaveCount(0);
+});
+
+test("guest access exposes the demo catalog but keeps admin protected", async ({
+  request,
+}) => {
+  const session = await request.post("/v1/auth/guest");
+  expect(session.status()).toBe(201);
+
+  const me = (await (await request.get("/v1/auth/me")).json()) as {
+    role: string;
+  };
+  expect(me.role).toBe("guest");
+
+  const products = (await (await request.get("/v1/products")).json()) as Array<{
+    id: string;
+    name: string;
+    objectType: string;
+  }>;
+  expect(products.length).toBeGreaterThanOrEqual(8);
+  expect(products.map((product) => product.name)).toEqual(
+    expect.arrayContaining([
+      "Vase Sable",
+      "Lampe Boman",
+      "Miroir Rococo",
+      "Table basse Noyer",
+      "Plante Plectranthus",
+      "Tapis Sienne",
+      "Horloge Blanche",
+      "Affiche Mucha",
+    ]),
+  );
+  expect(
+    products.find((product) => product.name === "Plante Plectranthus")
+      ?.objectType,
+  ).toBe("plant");
+
+  expect((await request.get("/v1/admin/overview")).status()).toBe(403);
+  expect(
+    (
+      await request.patch(
+        "/v1/products/11111111-1111-4111-8111-111111111111",
+        { data: { name: "Interdit" } },
+      )
+    ).status(),
+  ).toBe(404);
+
+  const created = await request.post("/v1/products", {
+    data: {
+      name: "Objet invité E2E",
+      description: "Objet créé avec les droits limités de la page publique.",
+      objectType: "plant",
+      widthCm: 30,
+      heightCm: 60,
+      depthCm: 30,
+      material: "Terre cuite",
+      generationInstructions: "Conserver le feuillage.",
+      placementType: "floor",
+      lightingProfile: {},
+      buyUrl: null,
+    },
+  });
+  expect(created.status()).toBe(201);
 });
 
 test("object form adapts dimensions to the selected object type", async ({
@@ -134,6 +205,28 @@ test("object form adapts dimensions to the selected object type", async ({
   await expect(
     page.getByRole("spinbutton", { name: "Profondeur", exact: true }),
   ).toBeVisible();
+
+  await page.getByRole("radio", { name: /Plante en pot/i }).check();
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "plante-invitee.png",
+    mimeType: "image/png",
+    buffer: await productFixture(),
+  });
+  const productName = `Plante invitée ${test.info().project.name} ${Date.now()}`;
+  await page.getByLabel("Nom").fill(productName);
+  await page.getByLabel("Matière principale").fill("Terre cuite");
+  await page
+    .getByRole("spinbutton", { name: "Diamètre", exact: true })
+    .fill("32");
+  await page
+    .getByRole("spinbutton", { name: "Hauteur", exact: true })
+    .fill("58");
+  await page.getByRole("button", { name: /Préparer cet objet/i }).click();
+  await expect(page).toHaveURL(/\?product=/, { timeout: 60_000 });
+  await expect(
+    page.getByRole("button", { name: new RegExp(productName) }),
+  ).toBeVisible();
+  await expect(page.getByText("Droits marchand requis")).toHaveCount(0);
 });
 
 test("a source photo over 4 MB is optimized before upload", async ({
@@ -156,6 +249,7 @@ test("a source photo over 4 MB is optimized before upload", async ({
 test("required customer journey reaches a successful mock render", async ({
   page,
 }) => {
+  test.setTimeout(120_000);
   await page.goto("/app/products/new");
   await page.locator('input[type="file"]').setInputFiles({
     name: "vase-e2e.png",

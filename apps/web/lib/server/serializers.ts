@@ -16,6 +16,8 @@ export function productResponse(product: ProductDocument) {
     generationInstructions: product.generationInstructions ?? "",
     lightingProfile: product.lightingProfile,
     buyUrl: product.buyUrl,
+    imageSourceUrl: product.imageSourceUrl,
+    imageCredit: product.imageCredit,
     status: product.status,
     assetUrl: assetUrl(product.assetId),
     cutoutUrl: assetUrl(product.cutoutAssetId),

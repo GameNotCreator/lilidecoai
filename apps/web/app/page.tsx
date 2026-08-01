@@ -1,5 +1,4 @@
 import { DemoExperience } from "@/components/demo-experience";
-import { serverConfig } from "@/lib/server/config";
 
 export default async function HomePage({
   searchParams,
@@ -7,10 +6,5 @@ export default async function HomePage({
   searchParams: Promise<{ product?: string }>;
 }) {
   const { product } = await searchParams;
-  return (
-    <DemoExperience
-      productId={product}
-      publicSession={!serverConfig.demoMode}
-    />
-  );
+  return <DemoExperience productId={product} />;
 }

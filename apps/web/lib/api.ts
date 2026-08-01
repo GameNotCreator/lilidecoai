@@ -62,6 +62,15 @@ export async function establishPublicSession(
   return publicSessionPromise;
 }
 
+export async function establishGuestEditorSession(): Promise<void> {
+  if (publicSessionToken && publicSessionKey === "guest-editor") return;
+  const session = await api<{ accessToken: string }>("/v1/auth/guest", {
+    method: "POST",
+  });
+  publicSessionToken = session.accessToken;
+  publicSessionKey = "guest-editor";
+}
+
 export async function getProducts(): Promise<Product[]> {
   const payload = await api<unknown[]>("/v1/products");
   return z.array(productSchema).parse(payload);

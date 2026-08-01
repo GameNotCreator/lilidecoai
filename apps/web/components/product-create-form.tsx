@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Button } from "@lili/ui";
-import { api } from "@/lib/api";
+import { api, establishGuestEditorSession } from "@/lib/api";
 import { prepareImageForUpload } from "@/lib/client-image";
 
 interface CreatedProduct {
@@ -22,7 +22,15 @@ interface CreatedProduct {
 }
 
 type ObjectType =
-  "vase" | "lamp" | "frame" | "mirror" | "rug" | "furniture" | "other";
+  | "vase"
+  | "lamp"
+  | "frame"
+  | "mirror"
+  | "rug"
+  | "furniture"
+  | "plant"
+  | "clock"
+  | "other";
 
 const objectTypes: Array<{
   value: ObjectType;
@@ -67,6 +75,18 @@ const objectTypes: Array<{
     placement: "floor",
   },
   {
+    value: "plant",
+    label: "Plante en pot",
+    help: "Diamètre et hauteur",
+    placement: "floor",
+  },
+  {
+    value: "clock",
+    label: "Horloge murale",
+    help: "Largeur, hauteur et épaisseur",
+    placement: "wall",
+  },
+  {
     value: "other",
     label: "Autre objet",
     help: "Largeur, hauteur et profondeur",
@@ -76,15 +96,20 @@ const objectTypes: Array<{
 
 export function ProductCreateForm({
   afterCreate = "catalog",
+  guestAccess = false,
 }: {
   afterCreate?: "catalog" | "visualizer";
+  guestAccess?: boolean;
 }) {
   const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [phase, setPhase] = useState("Prêt");
+  const [phase, setPhase] = useState(
+    guestAccess ? "Préparation de l’espace" : "Prêt",
+  );
+  const [editorReady, setEditorReady] = useState(!guestAccess);
   const [objectType, setObjectType] = useState<ObjectType>("vase");
   const objectConfig = objectTypes.find((item) => item.value === objectType)!;
 
@@ -95,7 +120,28 @@ export function ProductCreateForm({
     [preview],
   );
 
+  useEffect(() => {
+    if (!guestAccess) return;
+    void establishGuestEditorSession()
+      .then(() => {
+        setEditorReady(true);
+        setPhase("Prêt");
+      })
+      .catch((reason: unknown) => {
+        setError(
+          reason instanceof Error
+            ? reason.message
+            : "Impossible de préparer l’ajout d’objet",
+        );
+        setPhase("Réessayer");
+      });
+  }, [guestAccess]);
+
   async function submit(formData: FormData) {
+    if (!editorReady) {
+      setError("Patientez une seconde, l’espace de test se prépare.");
+      return;
+    }
     if (!file) {
       setError("Ajoutez le fichier PNG de votre objet.");
       return;
@@ -217,6 +263,7 @@ export function ProductCreateForm({
               type="file"
               aria-label="Image PNG de l’objet"
               accept="image/png,.png"
+              disabled={!editorReady || busy}
               onChange={(event) => {
                 const selected = event.target.files?.[0] ?? null;
                 if (
@@ -241,6 +288,7 @@ export function ProductCreateForm({
                 type="file"
                 aria-label="Remplacer l’image PNG"
                 accept="image/png,.png"
+                disabled={!editorReady || busy}
                 onChange={(event) => {
                   const selected = event.target.files?.[0] ?? null;
                   if (selected) {
@@ -406,13 +454,13 @@ export function ProductCreateForm({
             </div>
           </details>
 
-          <Button type="submit" disabled={busy}>
+          <Button type="submit" disabled={busy || !editorReady}>
             {busy ? (
               <LoaderCircle className="spin" size={18} />
             ) : (
               <Check size={18} />
             )}
-            {busy ? phase : "Préparer cet objet"}
+            {busy || !editorReady ? phase : "Préparer cet objet"}
             {!busy && <ArrowRight size={18} />}
           </Button>
           <p className="form-submit-help">
@@ -425,7 +473,11 @@ export function ProductCreateForm({
 }
 
 function DimensionFields({ objectType }: { objectType: ObjectType }) {
-  if (objectType === "vase" || objectType === "lamp") {
+  if (
+    objectType === "vase" ||
+    objectType === "lamp" ||
+    objectType === "plant"
+  ) {
     return (
       <div className="two-fields">
         <Dimension name="diameterCm" label="Diamètre" />
@@ -433,7 +485,11 @@ function DimensionFields({ objectType }: { objectType: ObjectType }) {
       </div>
     );
   }
-  if (objectType === "frame" || objectType === "mirror") {
+  if (
+    objectType === "frame" ||
+    objectType === "mirror" ||
+    objectType === "clock"
+  ) {
     return (
       <div className="three-fields">
         <Dimension name="widthCm" label="Largeur" />
@@ -492,7 +548,11 @@ function Dimension({
 
 function readDimensions(formData: FormData, objectType: ObjectType) {
   const number = (name: string) => Number(formData.get(name));
-  if (objectType === "vase" || objectType === "lamp") {
+  if (
+    objectType === "vase" ||
+    objectType === "lamp" ||
+    objectType === "plant"
+  ) {
     const diameter = number("diameterCm");
     return {
       widthCm: diameter,
@@ -500,7 +560,11 @@ function readDimensions(formData: FormData, objectType: ObjectType) {
       depthCm: diameter,
     };
   }
-  if (objectType === "frame" || objectType === "mirror") {
+  if (
+    objectType === "frame" ||
+    objectType === "mirror" ||
+    objectType === "clock"
+  ) {
     return {
       widthCm: number("widthCm"),
       heightCm: number("heightCm"),

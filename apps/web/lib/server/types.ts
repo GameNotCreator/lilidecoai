@@ -2,6 +2,7 @@ import type { Binary } from "mongodb";
 
 export const DEMO_ORGANIZATION_ID = "00000000-0000-4000-8000-000000000001";
 export const DEMO_USER_ID = "00000000-0000-4000-8000-000000000002";
+export const DEMO_CATALOG_USER_ID = "demo-catalog";
 export const DEMO_PRODUCT_ID = "11111111-1111-4111-8111-111111111111";
 export const DEMO_MERCHANT_SLUG = "atelier-lili";
 
@@ -30,6 +31,7 @@ export interface AssetDocument {
 export interface ProductDocument {
   id: string;
   organizationId: string;
+  createdByUserId?: string;
   name: string;
   description: string;
   objectType?: string;
@@ -42,6 +44,8 @@ export interface ProductDocument {
   generationInstructions: string;
   lightingProfile: Record<string, unknown>;
   buyUrl: string | null;
+  imageSourceUrl?: string;
+  imageCredit?: string;
   status: "draft" | "processing" | "ready" | "archived";
   assetId?: string;
   cutoutAssetId?: string;

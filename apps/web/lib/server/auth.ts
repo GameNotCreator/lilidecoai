@@ -11,12 +11,19 @@ import { DEMO_ORGANIZATION_ID, DEMO_USER_ID } from "./types";
 export interface Tenant {
   organizationId: string;
   userId: string;
-  role: "owner" | "admin" | "member" | "viewer" | "platform_admin";
+  role:
+    | "owner"
+    | "admin"
+    | "member"
+    | "viewer"
+    | "guest"
+    | "platform_admin";
   publicProductId?: string;
   publicSessionId?: string;
 }
 
 const cookieName = "lili_session";
+const guestCookieName = "lili_guest_session";
 const publicCookieName = "lili_public_session";
 const developmentSecret = "lilidecoai-development-session-secret-2026";
 
@@ -33,6 +40,7 @@ export async function tenantForRequest(request: Request): Promise<Tenant> {
       ? authorization.slice("Bearer ".length)
       : undefined) ??
     readCookie(request, cookieName) ??
+    readCookie(request, guestCookieName) ??
     readCookie(request, publicCookieName);
   if (token) {
     const tenant = await verifySessionToken(token);
@@ -115,6 +123,28 @@ export async function createPublicSession(
     token,
     sessionId,
     cookie: `${publicCookieName}=${token}; Path=/; HttpOnly; Max-Age=86400${production}`,
+  };
+}
+
+export async function createGuestSession(existing?: Tenant): Promise<{
+  token: string;
+  cookie: string;
+}> {
+  const sessionId = crypto.randomUUID();
+  const tenant: Tenant =
+    existing?.role === "guest"
+      ? existing
+      : {
+          organizationId: DEMO_ORGANIZATION_ID,
+          userId: `guest:${sessionId}`,
+          role: "guest",
+          publicSessionId: `guest:${sessionId}`,
+        };
+  const token = await signTenant(tenant, "24h");
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  return {
+    token,
+    cookie: `${guestCookieName}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400${secure}`,
   };
 }
 

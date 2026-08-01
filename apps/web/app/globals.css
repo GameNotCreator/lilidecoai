@@ -2584,6 +2584,19 @@ button {
   line-height: 1.35;
 }
 
+.focused-demo-page .demo-image-credit {
+  margin: 2px 0 0;
+  color: #717171;
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.focused-demo-page .demo-image-credit a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .focused-demo-page .upload-zone {
   min-height: 390px;
   gap: 13px;

@@ -15,7 +15,12 @@ import {
 } from "lucide-react";
 import type { Product, Render } from "@lili/types";
 import { Badge, Button } from "@lili/ui";
-import { api, establishPublicSession, getProducts } from "@/lib/api";
+import {
+  api,
+  establishGuestEditorSession,
+  establishPublicSession,
+  getProducts,
+} from "@/lib/api";
 import { prepareImageForUpload } from "@/lib/client-image";
 
 interface Scene {
@@ -29,10 +34,12 @@ interface Scene {
 
 export function VisualizerStudio({
   embedded = false,
+  catalogSession = false,
   initialProductId,
   merchantSlug,
 }: {
   embedded?: boolean;
+  catalogSession?: boolean;
   initialProductId?: string;
   merchantSlug?: string;
 }) {
@@ -59,7 +66,9 @@ export function VisualizerStudio({
 
   useEffect(() => {
     async function load() {
-      if (merchantSlug && initialProductId) {
+      if (catalogSession) {
+        await establishGuestEditorSession();
+      } else if (merchantSlug && initialProductId) {
         await establishPublicSession(merchantSlug, initialProductId);
       }
       const [availableProducts, wallet] = await Promise.all([
@@ -84,7 +93,7 @@ export function VisualizerStudio({
       .catch((reason: unknown) =>
         setError(reason instanceof Error ? reason.message : "API indisponible"),
       );
-  }, [embedded, initialProductId, merchantSlug]);
+  }, [catalogSession, embedded, initialProductId, merchantSlug]);
 
   async function uploadRoom(file: File) {
     setBusy(true);
@@ -264,6 +273,18 @@ export function VisualizerStudio({
                   </button>
                 ))}
               </div>
+              {product?.imageSourceUrl && (
+                <p className="demo-image-credit">
+                  Image de test :{" "}
+                  <a
+                    href={product.imageSourceUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {product.imageCredit ?? "Wikimedia Commons"}
+                  </a>
+                </p>
+              )}
             </div>
             <label className="upload-zone">
               <Upload size={32} />

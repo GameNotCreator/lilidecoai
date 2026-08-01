@@ -18,6 +18,7 @@ import {
   AuthError,
   authenticateUser,
   clearSessionCookie,
+  createGuestSession,
   createPublicSession,
   createSession,
   registerUser,
@@ -29,19 +30,33 @@ import { CreditError, getCredits } from "./credits";
 import { collections, database, pingMongo } from "./mongodb";
 import { createRender, RenderError } from "./rendering";
 import { productResponse, renderResponse, sceneResponse } from "./serializers";
-import { ensureDemoSeed } from "./seed";
+import { ensureDemoCredits, ensureDemoSeed } from "./seed";
 import type {
   CalibrationDocument,
   ProductDocument,
   SceneDocument,
 } from "./types";
-import { DEMO_MERCHANT_SLUG, DEMO_PRODUCT_ID } from "./types";
+import {
+  DEMO_CATALOG_USER_ID,
+  DEMO_MERCHANT_SLUG,
+  DEMO_PRODUCT_ID,
+} from "./types";
 
 const productCreateSchema = z.object({
   name: z.string().trim().min(2).max(120),
   description: z.string().trim().max(1000).default(""),
   objectType: z
-    .enum(["vase", "lamp", "frame", "mirror", "rug", "furniture", "other"])
+    .enum([
+      "vase",
+      "lamp",
+      "frame",
+      "mirror",
+      "rug",
+      "furniture",
+      "plant",
+      "clock",
+      "other",
+    ])
     .default("other"),
   sku: z.string().trim().max(80).nullable().optional(),
   widthCm: z.number().positive().max(1000),
@@ -116,8 +131,9 @@ export async function dispatchApi(
       path.length === 3 &&
       request.method === "GET"
     ) {
-      if (path[1] === DEMO_MERCHANT_SLUG && path[2] === DEMO_PRODUCT_ID) {
+      if (path[1] === DEMO_MERCHANT_SLUG) {
         await ensureDemoSeed(db);
+        await ensureDemoCredits(db);
       }
       return await publicVisualizer(db, path[1] as string, path[2] as string);
     }
@@ -174,6 +190,18 @@ async function handleAuth(
   request: Request,
   path: string[],
 ): Promise<Response> {
+  if (path[0] === "guest" && request.method === "POST") {
+    await ensureDemoSeed(db);
+    await ensureDemoCredits(db);
+    const currentTenant = await tenantForRequest(request).catch(() => null);
+    const session = await createGuestSession(
+      currentTenant?.role === "guest" ? currentTenant : undefined,
+    );
+    return Response.json(
+      { authenticated: true, role: "guest", accessToken: session.token },
+      { status: 201, headers: { "Set-Cookie": session.cookie } },
+    );
+  }
   if (path[0] === "signup" && request.method === "POST") {
     const body = (await request.json()) as {
       name?: string;
@@ -245,18 +273,28 @@ async function handleProducts(
         ...(tenant.publicProductId
           ? { id: tenant.publicProductId, status: "ready" as const }
           : {}),
+        ...(tenant.role === "guest"
+          ? {
+              $or: [
+                { createdByUserId: DEMO_CATALOG_USER_ID },
+                { createdByUserId: tenant.userId },
+                { id: DEMO_PRODUCT_ID },
+              ],
+            }
+          : {}),
       })
       .sort({ createdAt: -1 })
       .toArray();
     return Response.json(products.map(productResponse));
   }
   if (path.length === 0 && request.method === "POST") {
-    requireMerchant(tenant);
+    requireProductEditor(tenant);
     const body = productCreateSchema.parse(await request.json());
     const now = new Date();
     const product: ProductDocument = {
       id: crypto.randomUUID(),
       organizationId: tenant.organizationId,
+      createdByUserId: tenant.userId,
       name: body.name,
       description: body.description,
       objectType: body.objectType,
@@ -282,13 +320,14 @@ async function handleProducts(
     organizationId: tenant.organizationId,
     id: productId,
     ...(tenant.publicProductId ? { id: tenant.publicProductId } : {}),
+    ...(tenant.role === "guest" ? { createdByUserId: tenant.userId } : {}),
   });
   if (!product) return error("Produit introuvable", 404);
 
   if (path.length === 1 && request.method === "GET") {
     return Response.json(productResponse(product));
   }
-  requireMerchant(tenant);
+  requireProductEditor(tenant);
   if (path.length === 1 && request.method === "PATCH") {
     const patch = productCreateSchema.partial().parse(await request.json());
     await c.products.updateOne(
@@ -567,7 +606,10 @@ async function handleRenders(
   if (path.length === 0 && request.method === "POST") {
     const input = renderCreateSchema.parse(await request.json());
     if (tenant.publicSessionId) {
-      if (input.placement.productId !== tenant.publicProductId) {
+      if (
+        tenant.publicProductId &&
+        input.placement.productId !== tenant.publicProductId
+      ) {
         throw new AuthError("Produit non autorisé", 403);
       }
       const ownedScene = await c.scenes.findOne({
@@ -706,8 +748,22 @@ async function publicVisualizer(
 }
 
 function requireMerchant(tenant: Tenant): void {
-  if (tenant.role === "viewer" || tenant.publicSessionId) {
+  if (
+    tenant.publicSessionId ||
+    !["owner", "admin", "member", "platform_admin"].includes(tenant.role)
+  ) {
     throw new AuthError("Droits marchand requis", 403);
+  }
+}
+
+function requireProductEditor(tenant: Tenant): void {
+  if (
+    (tenant.publicSessionId && tenant.role !== "guest") ||
+    !["owner", "admin", "member", "guest", "platform_admin"].includes(
+      tenant.role,
+    )
+  ) {
+    throw new AuthError("Modification de produit non autorisée", 403);
   }
 }
 

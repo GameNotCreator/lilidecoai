@@ -16,6 +16,8 @@ export const objectTypeSchema = z.enum([
   "mirror",
   "rug",
   "furniture",
+  "plant",
+  "clock",
   "other",
 ]);
 export const renderStatusSchema = z.enum([
@@ -41,6 +43,8 @@ export const productSchema = z.object({
   lightingProfile: z.record(z.string(), z.unknown()).optional(),
   status: z.enum(["draft", "processing", "ready", "archived"]),
   buyUrl: z.string().nullable().optional(),
+  imageSourceUrl: z.string().url().optional(),
+  imageCredit: z.string().optional(),
   assetUrl: z.string().nullable().optional(),
   cutoutUrl: z.string().nullable().optional(),
 });
