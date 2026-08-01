@@ -148,6 +148,10 @@ button {
   background: #f5e7d5;
 }
 
+.refining-icon {
+  margin-right: 6px;
+}
+
 .card {
   border: 1px solid var(--line);
   border-radius: 24px;

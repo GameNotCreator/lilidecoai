@@ -93,11 +93,14 @@ interface QualityReview {
   feedback: string;
 }
 
+export type DeferRenderTask = (task: () => Promise<void>) => void;
+
 export async function createRender(
   db: Db,
   organizationId: string,
   input: RenderInput,
   publicSessionId?: string,
+  deferTask?: DeferRenderTask,
 ) {
   if (!input.idempotencyKey || input.idempotencyKey.length > 160) {
     throw new RenderError("Clé d’idempotence invalide", 422);
@@ -164,109 +167,181 @@ export async function createRender(
       { $set: { placement: resolvedPlacement, updatedAt: new Date() } },
     );
     const composition = await compose(db, scene, product, resolvedInput);
-    const generated = serverConfig.openaiApiKey
-      ? await generateAndReview(
-          db,
-          scene,
-          product,
-          composition,
-          resolvedInput,
-          requestedSize,
-          startedAt + 285_000,
-        )
-      : {
-          buffer: composition.buffer,
-          provider: "mock",
-          model: "deterministic-compositor",
-          estimatedCostUsd: 0,
-          qualityReview: {
-            accepted: true,
-            score: 0.99,
-            replacementComplete: true,
-            scaleAndPerspectivePlausible: true,
-            scaleCorrectionFactor: 1,
-            photorealistic: true,
-            duplicateProduct: false,
-            artifactsPresent: false,
-            feedback: "Composition déterministe de test.",
-          } satisfies QualityReview,
-          repaired: false,
-          finalPlacement: resolvedPlacement,
-        };
-    const finalBuffer =
-      generated.provider === "mock"
-        ? composition.buffer
-        : await sharp(generated.buffer).webp({ quality: 92 }).toBuffer();
-    const resultAsset = await storeAsset(db, {
-      organizationId,
-      kind: "render",
-      buffer: finalBuffer,
-      contentType: "image/webp",
-      expiresAt: scene.expiresAt,
-    });
-    const creditCharged = await captureCredit(
+    if (serverConfig.openaiApiKey && deferTask) {
+      const previewAsset = await storeAsset(db, {
+        organizationId,
+        kind: "render",
+        buffer: composition.buffer,
+        contentType: "image/webp",
+        expiresAt: scene.expiresAt,
+      });
+      const previewUpdate = {
+        status: "processing" as const,
+        provider: "openai",
+        model: serverConfig.openaiModel,
+        resultAssetId: previewAsset.id,
+        placement: resolvedPlacement,
+        updatedAt: new Date(),
+      };
+      await c.renders.updateOne({ id: renderId }, { $set: previewUpdate });
+      deferTask(async () => {
+        try {
+          await finalizeRender(
+            db,
+            organizationId,
+            render,
+            scene,
+            product,
+            composition,
+            resolvedInput,
+            requestedSize,
+            startedAt,
+          );
+        } catch (error) {
+          await recordRenderFailure(
+            db,
+            organizationId,
+            renderId,
+            startedAt,
+            error,
+          );
+          console.error("Deferred high-fidelity render failed", error);
+        }
+      });
+      return renderResponse({ ...render, ...previewUpdate });
+    }
+
+    return await finalizeRender(
       db,
       organizationId,
-      `render:${renderId}`,
+      render,
+      scene,
+      product,
+      composition,
+      resolvedInput,
+      requestedSize,
+      startedAt,
     );
-    const finalPlacement = {
-      ...generated.finalPlacement,
-      qualityReview: generated.qualityReview,
-      repaired: generated.repaired,
-    };
-    const update = {
-      status: "succeeded" as const,
-      provider: generated.provider,
-      model: generated.model,
-      resultAssetId: resultAsset.id,
-      qualityScore: generated.qualityReview.score,
-      placement: finalPlacement,
-      creditCharged,
-      updatedAt: new Date(),
-    };
-    await c.renders.updateOne({ id: renderId }, { $set: update });
-    await c.renderAttempts.insertOne({
-      id: crypto.randomUUID(),
-      organizationId,
-      renderId,
-      provider: generated.provider,
-      model: generated.model,
-      status: "succeeded",
-      latencyMs: Date.now() - startedAt,
-      estimatedCostUsd: generated.estimatedCostUsd,
-      createdAt: new Date(),
-    });
-    return renderResponse({
-      ...render,
-      ...update,
-    });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Rendu impossible";
-    await c.renders.updateOne(
-      { id: renderId },
-      {
-        $set: {
-          status: "failed",
-          updatedAt: new Date(),
-        },
-      },
-    );
-    await c.renderAttempts.insertOne({
-      id: crypto.randomUUID(),
-      organizationId,
-      renderId,
-      provider: serverConfig.openaiApiKey ? "openai" : "mock",
-      model: serverConfig.openaiApiKey
-        ? serverConfig.openaiModel
-        : "deterministic-compositor",
-      status: "failed",
-      latencyMs: Date.now() - startedAt,
-      estimatedCostUsd: 0,
-      error: message.slice(0, 500),
-      createdAt: new Date(),
-    });
+    await recordRenderFailure(db, organizationId, renderId, startedAt, error);
     throw error;
   }
+}
+
+async function finalizeRender(
+  db: Db,
+  organizationId: string,
+  render: RenderDocument,
+  scene: SceneDocument,
+  product: ProductDocument,
+  composition: Composition,
+  input: ResolvedRenderInput,
+  requestedSize: RenderDocument["requestedSize"],
+  startedAt: number,
+) {
+  const c = collections(db);
+  const generated = serverConfig.openaiApiKey
+    ? await generateAndReview(
+        db,
+        scene,
+        product,
+        composition,
+        input,
+        requestedSize,
+        startedAt + 285_000,
+      )
+    : {
+        buffer: composition.buffer,
+        provider: "mock",
+        model: "deterministic-compositor",
+        estimatedCostUsd: 0,
+        qualityReview: {
+          accepted: true,
+          score: 0.99,
+          replacementComplete: true,
+          scaleAndPerspectivePlausible: true,
+          scaleCorrectionFactor: 1,
+          photorealistic: true,
+          duplicateProduct: false,
+          artifactsPresent: false,
+          feedback: "Composition déterministe de test.",
+        } satisfies QualityReview,
+        repaired: false,
+        finalPlacement: input.placement,
+      };
+  const finalBuffer =
+    generated.provider === "mock"
+      ? composition.buffer
+      : await sharp(generated.buffer).webp({ quality: 92 }).toBuffer();
+  const resultAsset = await storeAsset(db, {
+    organizationId,
+    kind: "render",
+    buffer: finalBuffer,
+    contentType: "image/webp",
+    expiresAt: scene.expiresAt,
+  });
+  const creditCharged = await captureCredit(
+    db,
+    organizationId,
+    `render:${render.id}`,
+  );
+  const finalPlacement = {
+    ...generated.finalPlacement,
+    qualityReview: generated.qualityReview,
+    repaired: generated.repaired,
+  };
+  const update = {
+    status: "succeeded" as const,
+    provider: generated.provider,
+    model: generated.model,
+    resultAssetId: resultAsset.id,
+    qualityScore: generated.qualityReview.score,
+    placement: finalPlacement,
+    creditCharged,
+    updatedAt: new Date(),
+  };
+  await c.renders.updateOne({ id: render.id }, { $set: update });
+  await c.renderAttempts.insertOne({
+    id: crypto.randomUUID(),
+    organizationId,
+    renderId: render.id,
+    provider: generated.provider,
+    model: generated.model,
+    status: "succeeded",
+    latencyMs: Date.now() - startedAt,
+    estimatedCostUsd: generated.estimatedCostUsd,
+    createdAt: new Date(),
+  });
+  return renderResponse({ ...render, ...update });
+}
+
+async function recordRenderFailure(
+  db: Db,
+  organizationId: string,
+  renderId: string,
+  startedAt: number,
+  error: unknown,
+): Promise<void> {
+  const c = collections(db);
+  const message = error instanceof Error ? error.message : "Rendu impossible";
+  await c.renders.updateOne(
+    { id: renderId },
+    { $set: { status: "failed", updatedAt: new Date() } },
+  );
+  await c.renderAttempts.insertOne({
+    id: crypto.randomUUID(),
+    organizationId,
+    renderId,
+    provider: serverConfig.openaiApiKey ? "openai" : "mock",
+    model: serverConfig.openaiApiKey
+      ? serverConfig.openaiModel
+      : "deterministic-compositor",
+    status: "failed",
+    latencyMs: Date.now() - startedAt,
+    estimatedCostUsd: 0,
+    error: message.slice(0, 500),
+    createdAt: new Date(),
+  });
 }
 
 async function resolvePlacement(
@@ -936,13 +1011,6 @@ async function openAIQualityReview(
   if (!sceneAsset || !cutoutAsset) {
     throw new RenderError("Fichier source introuvable", 404);
   }
-  const [renderReviewUrl, sceneReviewUrl, productReviewUrl] = await Promise.all(
-    [
-      reviewImageDataUrl(renderBuffer),
-      reviewImageDataUrl(sceneAsset.buffer),
-      reviewImageDataUrl(cutoutAsset.buffer),
-    ],
-  );
   const operationInstruction =
     placement.operation === "replace"
       ? `The original object labeled ${placement.occupiedObject ?? "existing object"} must be completely absent, including every remnant and old shadow.`
@@ -952,8 +1020,8 @@ async function openAIQualityReview(
       model: serverConfig.openaiVisionModel,
       store: false,
       service_tier: serverConfig.openaiServiceTier,
-      reasoning: { effort: "low" },
-      max_output_tokens: 1_000,
+      reasoning: { effort: "medium" },
+      max_output_tokens: 2_000,
       input: [
         {
           role: "user",
@@ -973,18 +1041,18 @@ async function openAIQualityReview(
             },
             {
               type: "input_image",
-              image_url: renderReviewUrl,
-              detail: "high",
+              image_url: `data:image/webp;base64,${renderBuffer.toString("base64")}`,
+              detail: "original",
             },
             {
               type: "input_image",
-              image_url: sceneReviewUrl,
-              detail: "high",
+              image_url: `data:${sceneAsset.asset.contentType};base64,${sceneAsset.buffer.toString("base64")}`,
+              detail: "original",
             },
             {
               type: "input_image",
-              image_url: productReviewUrl,
-              detail: "high",
+              image_url: `data:${cutoutAsset.asset.contentType};base64,${cutoutAsset.buffer.toString("base64")}`,
+              detail: "original",
             },
           ],
         },
@@ -1028,7 +1096,7 @@ async function openAIQualityReview(
         },
       },
     },
-    Math.max(5_000, Math.min(30_000, deadlineMs - Date.now() - 5_000)),
+    Math.max(5_000, Math.min(35_000, deadlineMs - Date.now() - 5_000)),
   );
   if (!response.ok) {
     throw new RenderError(
@@ -1242,20 +1310,6 @@ async function fetchOpenAIResponse(
     });
   }
   return response;
-}
-
-async function reviewImageDataUrl(buffer: Buffer): Promise<string> {
-  const reviewBuffer = await sharp(buffer)
-    .rotate()
-    .resize({
-      width: 1_024,
-      height: 1_024,
-      fit: "inside",
-      withoutEnlargement: true,
-    })
-    .webp({ quality: 88, alphaQuality: 96, effort: 2 })
-    .toBuffer();
-  return `data:image/webp;base64,${reviewBuffer.toString("base64")}`;
 }
 
 function toArrayBuffer(buffer: Buffer): ArrayBuffer {

@@ -20,6 +20,7 @@ import {
   establishGuestEditorSession,
   establishPublicSession,
   getProducts,
+  getRender,
 } from "@/lib/api";
 import { prepareImageForUpload } from "@/lib/client-image";
 
@@ -63,6 +64,7 @@ export function VisualizerStudio({
     () => products.find((item) => item.id === productId) ?? null,
     [products, productId],
   );
+  const pendingRenderId = render?.status === "processing" ? render.id : null;
 
   useEffect(() => {
     async function load() {
@@ -94,6 +96,51 @@ export function VisualizerStudio({
         setError(reason instanceof Error ? reason.message : "API indisponible"),
       );
   }, [catalogSession, embedded, initialProductId, merchantSlug]);
+
+  useEffect(() => {
+    if (!pendingRenderId) return;
+    const renderId = pendingRenderId;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let consecutiveFailures = 0;
+
+    async function refreshRender() {
+      try {
+        const nextRender = await getRender(renderId);
+        if (cancelled) return;
+        consecutiveFailures = 0;
+        setRender(nextRender);
+        if (nextRender.status === "succeeded") {
+          if (nextRender.creditCharged) {
+            setCredits((value) => (value === null ? value : value - 1));
+          }
+          return;
+        }
+        if (nextRender.status === "failed") {
+          setError(
+            "La finition haute qualité n’a pas abouti. Votre aperçu rapide reste visible.",
+          );
+          return;
+        }
+        timer = setTimeout(refreshRender, 3_000);
+      } catch {
+        if (cancelled) return;
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= 5) {
+          setError(
+            "La finition continue en arrière-plan. Vérifiez le résultat dans quelques instants.",
+          );
+        }
+        timer = setTimeout(refreshRender, 4_000);
+      }
+    }
+
+    timer = setTimeout(refreshRender, 2_000);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [pendingRenderId]);
 
   async function uploadRoom(file: File) {
     setBusy(true);
@@ -149,12 +196,12 @@ export function VisualizerStudio({
         body: JSON.stringify(payload),
       });
       setRender(result);
-      setCredits((value) =>
-        value === null ? value : value - (result.creditCharged ? 1 : 0),
-      );
+      if (result.creditCharged) {
+        setCredits((value) => (value === null ? value : value - 1));
+      }
       setStep(3);
       await recordEvent(
-        result.status === "succeeded" ? "render_succeeded" : "render_failed",
+        result.status === "succeeded" ? "render_succeeded" : "render_requested",
       );
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Rendu impossible");
@@ -440,59 +487,88 @@ export function VisualizerStudio({
               />
             </div>
             <div className="result-summary card">
-              <Badge tone="positive">Rendu contrôlé</Badge>
-              <h2>Voilà le résultat.</h2>
+              <Badge
+                tone={render.status === "succeeded" ? "positive" : "warning"}
+              >
+                {render.status === "processing" && (
+                  <LoaderCircle className="spin refining-icon" size={14} />
+                )}
+                {render.status === "processing"
+                  ? "Finition haute qualité en cours"
+                  : render.status === "failed"
+                    ? "Aperçu rapide disponible"
+                    : "Rendu contrôlé"}
+              </Badge>
+              <h2>
+                {render.status === "processing"
+                  ? "Votre aperçu est déjà prêt."
+                  : render.status === "failed"
+                    ? "Votre aperçu reste disponible."
+                    : "Voilà le résultat."}
+              </h2>
               <p className="muted">
-                {typeof render.placement?.rationale === "string"
-                  ? render.placement.rationale
-                  : "Placement, échelle et lumière choisis automatiquement à partir de la pièce et des dimensions du produit."}
+                {render.status === "processing"
+                  ? "Vous pouvez déjà vérifier le placement. La version photoréaliste se remplacera automatiquement ici, sans nouvelle action."
+                  : render.status === "failed"
+                    ? "La finition n’a pas abouti, mais vous pouvez vérifier le placement et réessayer sans reprendre la photo."
+                    : typeof render.placement?.rationale === "string"
+                      ? render.placement.rationale
+                      : "Placement, échelle et lumière choisis automatiquement à partir de la pièce et des dimensions du produit."}
               </p>
-              <div className="score-row">
-                <span>Score de fidélité</span>
-                <strong>
-                  {Math.round(Number(render.qualityScore ?? 0) * 100)}%
-                </strong>
-              </div>
-              <div className="result-actions">
-                <a
-                  className="button"
-                  href={product?.buyUrl ?? "#"}
-                  target="_blank"
-                  rel="noreferrer"
-                  onClick={() => void recordEvent("add_to_cart_clicked")}
-                >
-                  <ShoppingBag size={17} /> Acheter
-                </a>
-                <a
-                  className="button secondary"
-                  href={render.resultUrl}
-                  download
-                  onClick={() => void recordEvent("result_downloaded")}
-                >
-                  <Download size={17} /> Télécharger
-                </a>
+              {render.status === "succeeded" && (
+                <div className="score-row">
+                  <span>Score de fidélité</span>
+                  <strong>
+                    {Math.round(Number(render.qualityScore ?? 0) * 100)}%
+                  </strong>
+                </div>
+              )}
+              {render.status === "succeeded" && (
+                <div className="result-actions">
+                  <a
+                    className="button"
+                    href={product?.buyUrl ?? "#"}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={() => void recordEvent("add_to_cart_clicked")}
+                  >
+                    <ShoppingBag size={17} /> Acheter
+                  </a>
+                  <>
+                    <a
+                      className="button secondary"
+                      href={render.resultUrl}
+                      download
+                      onClick={() => void recordEvent("result_downloaded")}
+                    >
+                      <Download size={17} /> Télécharger
+                    </a>
+                    <button
+                      className="button secondary"
+                      onClick={() => {
+                        void navigator.share?.({
+                          title: "Mon aperçu déco",
+                          url: render.resultUrl ?? undefined,
+                        });
+                        void recordEvent("result_shared");
+                      }}
+                    >
+                      <Share2 size={17} /> Partager
+                    </button>
+                  </>
+                </div>
+              )}
+              {render.status !== "processing" && (
                 <button
-                  className="button secondary"
+                  className="back-link"
                   onClick={() => {
-                    void navigator.share?.({
-                      title: "Mon aperçu déco",
-                      url: render.resultUrl ?? undefined,
-                    });
-                    void recordEvent("result_shared");
+                    setRender(null);
+                    setStep(2);
                   }}
                 >
-                  <Share2 size={17} /> Partager
+                  <ArrowLeft size={15} /> Essayer un autre endroit
                 </button>
-              </div>
-              <button
-                className="back-link"
-                onClick={() => {
-                  setRender(null);
-                  setStep(2);
-                }}
-              >
-                <ArrowLeft size={15} /> Essayer un autre endroit
-              </button>
+              )}
             </div>
           </div>
         )}

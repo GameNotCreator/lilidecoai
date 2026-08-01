@@ -28,7 +28,7 @@ import {
 import { cloudinaryStorageConfigured, serverConfig } from "./config";
 import { CreditError, getCredits } from "./credits";
 import { collections, database, pingMongo } from "./mongodb";
-import { createRender, RenderError } from "./rendering";
+import { createRender, RenderError, type DeferRenderTask } from "./rendering";
 import { productResponse, renderResponse, sceneResponse } from "./serializers";
 import { ensureDemoCredits, ensureDemoSeed } from "./seed";
 import type {
@@ -104,6 +104,7 @@ const renderCreateSchema = z.object({
 export async function dispatchApi(
   request: Request,
   path: string[],
+  deferRenderTask?: DeferRenderTask,
 ): Promise<Response> {
   try {
     if (path[0] === "health" && request.method === "GET") {
@@ -146,7 +147,13 @@ export async function dispatchApi(
       return await handleScenes(db, tenant, request, path.slice(1));
     }
     if (path[0] === "renders") {
-      return await handleRenders(db, tenant, request, path.slice(1));
+      return await handleRenders(
+        db,
+        tenant,
+        request,
+        path.slice(1),
+        deferRenderTask,
+      );
     }
     if (path[0] === "credits" && request.method === "GET") {
       const credits = await getCredits(db, tenant.organizationId);
@@ -588,6 +595,7 @@ async function handleRenders(
   tenant: Tenant,
   request: Request,
   path: string[],
+  deferRenderTask?: DeferRenderTask,
 ): Promise<Response> {
   const c = collections(db);
   if (path.length === 0 && request.method === "GET") {
@@ -624,6 +632,7 @@ async function handleRenders(
       tenant.organizationId,
       input,
       tenant.publicSessionId,
+      deferRenderTask,
     );
     return Response.json(result, { status: 201 });
   }
@@ -657,6 +666,7 @@ async function handleRenders(
       tenant.organizationId,
       retryInput as unknown as Parameters<typeof createRender>[2],
       tenant.publicSessionId,
+      deferRenderTask,
     );
     return Response.json(result, { status: 201 });
   }

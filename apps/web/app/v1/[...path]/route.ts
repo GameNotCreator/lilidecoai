@@ -1,4 +1,5 @@
 import { dispatchApi } from "@/lib/server/api";
+import { after } from "next/server";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -8,7 +9,7 @@ type Context = { params: Promise<{ path: string[] }> };
 
 async function handler(request: Request, context: Context): Promise<Response> {
   const { path } = await context.params;
-  return dispatchApi(request, path);
+  return dispatchApi(request, path, (task) => after(task));
 }
 
 export const GET = handler;

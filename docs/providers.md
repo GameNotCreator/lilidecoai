@@ -28,11 +28,17 @@ L’appel serveur utilise :
 - une taille adaptée au ratio de la pièce ;
 - la qualité `high` par défaut.
 
-Le contrôle qualité utilise des copies WebP limitées à 1 024 px avec un niveau
-de détail `high`. Le rendu final, la photo utilisée pour le placement et le
-cutout envoyé au générateur conservent leur précision d'origine. Si le compte
-OpenAI ne permet pas le mode Fast, le pipeline retente automatiquement l'analyse
-en traitement standard.
+Le contrôle qualité conserve les trois références en détail `original`. Le
+rendu final, la photo utilisée pour le placement et le cutout envoyé au
+générateur gardent donc leur précision d'origine. Si le compte OpenAI ne permet
+pas le mode Fast, le pipeline retente automatiquement l'analyse en traitement
+standard.
+
+Sur Vercel, la route renvoie la composition de prévisualisation dès que le
+placement est analysé, puis poursuit la génération haute fidélité avec `after`.
+Le client interroge ensuite le rendu toutes les trois secondes et remplace
+automatiquement la prévisualisation par l'image contrôlée. Le temps de calcul
+final reste identique, mais l'utilisateur n'attend plus devant un écran bloqué.
 
 La composition contenant déjà le produit est l’image principale. Le masque
 limite la retouche à la zone cible et protège tous les pixels extérieurs, tout en
