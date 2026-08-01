@@ -440,7 +440,7 @@ export function VisualizerStudio({
               />
             </div>
             <div className="result-summary card">
-              <Badge tone="positive">Rendu accepté</Badge>
+              <Badge tone="positive">Rendu contrôlé</Badge>
               <h2>Voilà le résultat.</h2>
               <p className="muted">
                 {typeof render.placement?.rationale === "string"

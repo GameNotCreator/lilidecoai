@@ -73,7 +73,6 @@ interface ResolvedRenderInput extends Omit<RenderInput, "placement"> {
 interface Composition {
   buffer: Buffer;
   mask: Buffer;
-  overlay: Buffer;
   left: number;
   top: number;
   width: number;
@@ -695,14 +694,12 @@ async function compose(
   const mask = await createEditMask(
     sceneWidth,
     sceneHeight,
-    overlay,
     { left, top, width, height },
     input.placement,
   );
   return {
     buffer,
     mask,
-    overlay,
     left,
     top,
     width,
@@ -715,7 +712,6 @@ async function compose(
 async function createEditMask(
   width: number,
   height: number,
-  overlay: Buffer,
   box: { left: number; top: number; width: number; height: number },
   placement: ResolvedPlacement,
 ): Promise<Buffer> {
@@ -767,24 +763,6 @@ async function createEditMask(
     }
   }
 
-  const product = await sharp(overlay).ensureAlpha().raw().toBuffer();
-  for (let y = 0; y < box.height; y += 1) {
-    for (let x = 0; x < box.width; x += 1) {
-      const productAlpha = product[(y * box.width + x) * 4 + 3] ?? 0;
-      if (productAlpha < 20) continue;
-      const sceneX = box.left + x;
-      const sceneY = box.top + y;
-      if (sceneX < 0 || sceneX >= width || sceneY < 0 || sceneY >= height) {
-        continue;
-      }
-      const mustRestoreForeground =
-        placement.perspective.occlusion !== "none" &&
-        y >= Math.round(box.height * 0.86);
-      if (!mustRestoreForeground) {
-        data[(sceneY * width + sceneX) * 4 + 3] = productAlpha;
-      }
-    }
-  }
   return data;
 }
 
@@ -1173,7 +1151,7 @@ async function openAIEdit(
         ? `Operation: REPLACE. Completely erase the old ${input.placement.occupiedObject ?? "object"} in the analyzed target bounds ${JSON.stringify(input.placement.replacementBox)}. Remove its full silhouette, appendages, base, cable, reflections and old contact shadow. Reconstruct the original shelf back, wall, support surface and texture from Image 3 before integrating exactly one catalog product.`
         : "Operation: PLACE on empty space. Integrate exactly one catalog product without removing or changing nearby objects.",
       "Change only the local masked target. Preserve the room geometry, camera angle, lens perspective, depth-of-field, crop, furniture, decor and every pixel outside the mask.",
-      "Keep the catalog product identity exact. Never add or duplicate another product. Never move, resize, rotate, reshape, recolor, relabel or redesign the composed product.",
+      "Keep exactly one catalog product at the composed position, scale and pose. Preserve its silhouette, proportions, colors, labels and design from Image 2, while naturally re-rendering its material, highlights, surface texture and edge lighting so it belongs to the photograph instead of looking pasted on.",
       `Product: ${product.name}; ${product.description}; material ${product.material}; real dimensions ${product.widthCm} x ${product.heightCm} x ${product.depthCm} cm.`,
       `Perspective analysis: ${JSON.stringify(input.placement.perspective)}.`,
       `Lighting: ${JSON.stringify(input.placement.lighting ?? {})}.`,
