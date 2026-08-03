@@ -21,21 +21,23 @@ interface Overview {
   recentEstimatedCostUsd: number;
 }
 
+const emptyOverview: Overview = {
+  renders: 0,
+  succeeded: 0,
+  successRate: 0,
+  recentEstimatedCostUsd: 0,
+};
+
 export function MerchantDashboard() {
   const [products, setProducts] = useState<Product[]>([]);
   const [credits, setCredits] = useState(0);
-  const [overview, setOverview] = useState<Overview>({
-    renders: 0,
-    succeeded: 0,
-    successRate: 0,
-    recentEstimatedCostUsd: 0,
-  });
+  const [overview, setOverview] = useState<Overview>(emptyOverview);
 
   useEffect(() => {
     void Promise.all([
       getProducts(),
       api<{ balance: number }>("/v1/credits"),
-      api<Overview>("/v1/admin/overview"),
+      api<Overview>("/v1/admin/overview").catch(() => emptyOverview),
     ]).then(([items, wallet, metrics]) => {
       setProducts(items);
       setCredits(wallet.balance);

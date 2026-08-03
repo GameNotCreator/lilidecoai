@@ -1,6 +1,6 @@
 import "server-only";
 
-import { selectOutputSize } from "@lili/geometry";
+import { selectOutputSize, validatePlacementFit } from "@lili/geometry";
 import type { Db } from "mongodb";
 import sharp from "sharp";
 
@@ -56,8 +56,22 @@ interface ResolvedPlacement extends PlacementInput {
   operation: "place" | "replace";
   occupiedObject: string | null;
   replacementBox: NormalizedBox | null;
+  fitBounds?: NormalizedBox;
+  obstacleRemoved?: boolean;
+  pipelineStage?: string;
   perspective: PerspectiveAnalysis;
   source: "manual" | "openai-vision" | "automatic-fallback";
+}
+
+interface SceneInspection {
+  imageClear: boolean;
+  clarityScore: number;
+  targetVisible: boolean;
+  supportVisible: boolean;
+  obstacleAtPoint: boolean;
+  obstacleName: string | null;
+  obstacleBox: NormalizedBox | null;
+  evidence: string;
 }
 
 interface RenderInput {
@@ -151,6 +165,44 @@ export async function createRender(
   await c.renders.insertOne(render);
 
   const startedAt = Date.now();
+  if (serverConfig.openaiApiKey && deferTask) {
+    const placement = {
+      ...input.placement,
+      pipelineStage: "inspecting_scene",
+    };
+    const update = {
+      provider: "openai",
+      model: serverConfig.openaiModel,
+      placement,
+      updatedAt: new Date(),
+    };
+    await c.renders.updateOne({ id: renderId }, { $set: update });
+    deferTask(async () => {
+      try {
+        await runLayeredRender(
+          db,
+          organizationId,
+          render,
+          scene,
+          product,
+          input,
+          requestedSize,
+          startedAt,
+        );
+      } catch (error) {
+        await recordRenderFailure(
+          db,
+          organizationId,
+          renderId,
+          startedAt,
+          error,
+        );
+        console.error("Deferred layered render failed", error);
+      }
+    });
+    return renderResponse({ ...render, ...update });
+  }
+
   try {
     const resolvedPlacement = await resolvePlacement(
       db,
@@ -167,50 +219,6 @@ export async function createRender(
       { $set: { placement: resolvedPlacement, updatedAt: new Date() } },
     );
     const composition = await compose(db, scene, product, resolvedInput);
-    if (serverConfig.openaiApiKey && deferTask) {
-      const previewAsset = await storeAsset(db, {
-        organizationId,
-        kind: "render",
-        buffer: composition.buffer,
-        contentType: "image/webp",
-        expiresAt: scene.expiresAt,
-      });
-      const previewUpdate = {
-        status: "processing" as const,
-        provider: "openai",
-        model: serverConfig.openaiModel,
-        resultAssetId: previewAsset.id,
-        placement: resolvedPlacement,
-        updatedAt: new Date(),
-      };
-      await c.renders.updateOne({ id: renderId }, { $set: previewUpdate });
-      deferTask(async () => {
-        try {
-          await finalizeRender(
-            db,
-            organizationId,
-            render,
-            scene,
-            product,
-            composition,
-            resolvedInput,
-            requestedSize,
-            startedAt,
-          );
-        } catch (error) {
-          await recordRenderFailure(
-            db,
-            organizationId,
-            renderId,
-            startedAt,
-            error,
-          );
-          console.error("Deferred high-fidelity render failed", error);
-        }
-      });
-      return renderResponse({ ...render, ...previewUpdate });
-    }
-
     return await finalizeRender(
       db,
       organizationId,
@@ -228,6 +236,159 @@ export async function createRender(
   }
 }
 
+async function runLayeredRender(
+  db: Db,
+  organizationId: string,
+  render: RenderDocument,
+  scene: SceneDocument,
+  product: ProductDocument,
+  input: RenderInput,
+  requestedSize: RenderDocument["requestedSize"],
+  startedAt: number,
+): Promise<void> {
+  const c = collections(db);
+  const sceneAsset = await readAsset(db, scene.assetId);
+  if (!sceneAsset) throw new RenderError("Photo de pièce introuvable", 404);
+  const surfaceType = normalizeSurfaceType(
+    input.placement.surfaceType ?? product.placementType,
+  );
+  const anchor = requireUserAnchor(input.placement);
+  const setStage = async (
+    pipelineStage: string,
+    extra: Record<string, unknown> = {},
+  ) => {
+    await c.renders.updateOne(
+      { id: render.id },
+      {
+        $set: {
+          placement: { ...input.placement, pipelineStage, ...extra },
+          updatedAt: new Date(),
+        },
+      },
+    );
+  };
+
+  await setStage("inspecting_scene");
+  const inspection = await openAIInspectScene(
+    sceneAsset.buffer,
+    sceneAsset.asset.contentType,
+    anchor,
+    surfaceType,
+  );
+  assertClearInspection(inspection);
+
+  let workingScene = sceneAsset.buffer;
+  let workingContentType = sceneAsset.asset.contentType;
+  if (inspection.obstacleAtPoint && inspection.obstacleBox) {
+    await setStage("removing_obstacle", {
+      operation: "replace",
+      occupiedObject: inspection.obstacleName,
+      replacementBox: inspection.obstacleBox,
+    });
+    workingScene = await openAIRemoveObstacle(
+      workingScene,
+      inspection,
+      requestedSize,
+      `${input.idempotencyKey}-obstacle`,
+    );
+    workingContentType = "image/webp";
+    const cleanedAsset = await storeAsset(db, {
+      organizationId,
+      kind: "render",
+      buffer: await sharp(workingScene).webp({ quality: 92 }).toBuffer(),
+      contentType: "image/webp",
+      expiresAt: scene.expiresAt,
+    });
+    await c.renders.updateOne(
+      { id: render.id },
+      {
+        $set: {
+          resultAssetId: cleanedAsset.id,
+          placement: {
+            ...input.placement,
+            pipelineStage: "analyzing_cleaned_scene",
+            operation: "replace",
+            occupiedObject: inspection.obstacleName,
+            replacementBox: inspection.obstacleBox,
+            obstacleRemoved: true,
+          },
+          updatedAt: new Date(),
+        },
+      },
+    );
+  } else {
+    await setStage("analyzing_cleaned_scene", {
+      operation: "place",
+      obstacleRemoved: false,
+    });
+  }
+
+  const placement = await openAICleanedPlacement(
+    workingScene,
+    workingContentType,
+    scene,
+    product,
+    input.placement,
+    surfaceType,
+    inspection,
+  );
+  await setStage("validating_fit", placement);
+  const fit = validatePlacementFit({
+    imageWidth: scene.widthPx,
+    imageHeight: scene.heightPx,
+    productWidthCm: product.widthCm,
+    productHeightCm: product.heightCm,
+    xNormalized: placement.xNormalized,
+    yNormalized: placement.yNormalized,
+    scale: placement.scale,
+    fitBounds: placement.fitBounds ?? placement.perspective.surfaceBounds,
+    marginRatio: 0.006,
+  });
+  if (!fit.fits) throw placementTooSmallError();
+
+  const resolvedInput: ResolvedRenderInput = {
+    ...input,
+    placement: { ...placement, pipelineStage: "composing_preview" },
+  };
+  const composition = await compose(
+    db,
+    scene,
+    product,
+    resolvedInput,
+    workingScene,
+  );
+  const previewAsset = await storeAsset(db, {
+    organizationId,
+    kind: "render",
+    buffer: composition.buffer,
+    contentType: "image/webp",
+    expiresAt: scene.expiresAt,
+  });
+  resolvedInput.placement.pipelineStage = "refining_final";
+  await c.renders.updateOne(
+    { id: render.id },
+    {
+      $set: {
+        resultAssetId: previewAsset.id,
+        placement: resolvedInput.placement,
+        updatedAt: new Date(),
+      },
+    },
+  );
+  await finalizeRender(
+    db,
+    organizationId,
+    render,
+    scene,
+    product,
+    composition,
+    resolvedInput,
+    requestedSize,
+    startedAt,
+    workingScene,
+  );
+}
+
 async function finalizeRender(
   db: Db,
   organizationId: string,
@@ -238,6 +399,7 @@ async function finalizeRender(
   input: ResolvedRenderInput,
   requestedSize: RenderDocument["requestedSize"],
   startedAt: number,
+  sourceSceneBuffer?: Buffer,
 ) {
   const c = collections(db);
   const generated = serverConfig.openaiApiKey
@@ -249,6 +411,7 @@ async function finalizeRender(
         input,
         requestedSize,
         startedAt + 285_000,
+        sourceSceneBuffer,
       )
     : {
         buffer: composition.buffer,
@@ -287,6 +450,7 @@ async function finalizeRender(
   );
   const finalPlacement = {
     ...generated.finalPlacement,
+    pipelineStage: "complete",
     qualityReview: generated.qualityReview,
     repaired: generated.repaired,
   };
@@ -300,7 +464,10 @@ async function finalizeRender(
     creditCharged,
     updatedAt: new Date(),
   };
-  await c.renders.updateOne({ id: render.id }, { $set: update });
+  await c.renders.updateOne(
+    { id: render.id },
+    { $set: update, $unset: { error: "" } },
+  );
   await c.renderAttempts.insertOne({
     id: crypto.randomUUID(),
     organizationId,
@@ -326,7 +493,13 @@ async function recordRenderFailure(
   const message = error instanceof Error ? error.message : "Rendu impossible";
   await c.renders.updateOne(
     { id: renderId },
-    { $set: { status: "failed", updatedAt: new Date() } },
+    {
+      $set: {
+        status: "failed",
+        error: message.slice(0, 500),
+        updatedAt: new Date(),
+      },
+    },
   );
   await c.renderAttempts.insertOne({
     id: crypto.randomUUID(),
@@ -387,6 +560,479 @@ async function resolvePlacement(
     }
   }
   return fallbackPlacement(scene, product, input, surfaceType);
+}
+
+function requireUserAnchor(input: PlacementInput): { x: number; y: number } {
+  if (
+    typeof input.xNormalized !== "number" ||
+    typeof input.yNormalized !== "number"
+  ) {
+    throw new RenderError(
+      "Touchez la photo pour indiquer précisément l’emplacement.",
+      422,
+    );
+  }
+  return {
+    x: clamp(input.xNormalized, 0, 1),
+    y: clamp(input.yNormalized, 0, 1),
+  };
+}
+
+function assertClearInspection(inspection: SceneInspection): void {
+  if (
+    !inspection.imageClear ||
+    inspection.clarityScore < 0.55 ||
+    !inspection.targetVisible ||
+    !inspection.supportVisible ||
+    (inspection.obstacleAtPoint && !inspection.obstacleBox)
+  ) {
+    throw imageUnclearError();
+  }
+}
+
+function imageUnclearError(): RenderError {
+  return new RenderError(
+    "Veuillez fournir une image plus claire : le support ou le point choisi n’est pas suffisamment visible.",
+    422,
+  );
+}
+
+function placementTooSmallError(): RenderError {
+  return new RenderError(
+    "L’emplacement est trop petit pour contenir cet élément. Choisissez une zone plus grande.",
+    422,
+  );
+}
+
+async function openAIInspectScene(
+  sceneBuffer: Buffer,
+  contentType: string,
+  anchor: { x: number; y: number },
+  surfaceType: string,
+): Promise<SceneInspection> {
+  const response = await fetchOpenAIResponse(
+    {
+      model: serverConfig.openaiVisionModel,
+      store: false,
+      service_tier: serverConfig.openaiServiceTier,
+      reasoning: { effort: "high" },
+      max_output_tokens: 2_500,
+      input: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: [
+                "Layer 1 of a strict interior-product placement pipeline. Inspect only; do not choose product size or placement yet.",
+                `The user target is the pixel-equivalent of normalized point x=${anchor.x.toFixed(4)}, y=${anchor.y.toFixed(4)} on a requested ${surfaceType} support. The point is supplied as coordinates and is not visibly drawn into the image.`,
+                "Decide whether the photograph, target and support geometry are clear enough for a photorealistic edit.",
+                "Obstacle means a removable item occupying the target point, such as decor, an appliance, a container or its cable. The shelf, table, wall, floor and structural furniture are never obstacles.",
+                "If an obstacle exists, identify its entire silhouette including handles, feet, appendages, cable, reflection and contact shadow. Return one padded normalized box enclosing all of it without swallowing the support structure.",
+                "Be conservative: ambiguous or severely occluded targets must be marked unclear.",
+              ].join(" "),
+            },
+            {
+              type: "input_image",
+              image_url: `data:${contentType};base64,${sceneBuffer.toString("base64")}`,
+              detail: "original",
+            },
+          ],
+        },
+      ],
+      text: {
+        verbosity: "low",
+        format: {
+          type: "json_schema",
+          name: "scene_obstacle_inspection",
+          strict: true,
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              imageClear: { type: "boolean" },
+              clarityScore: { type: "number", minimum: 0, maximum: 1 },
+              targetVisible: { type: "boolean" },
+              supportVisible: { type: "boolean" },
+              obstacleAtPoint: { type: "boolean" },
+              obstacleName: { type: "string", maxLength: 100 },
+              obstacleXMin: { type: "number", minimum: 0, maximum: 1 },
+              obstacleYMin: { type: "number", minimum: 0, maximum: 1 },
+              obstacleXMax: { type: "number", minimum: 0, maximum: 1 },
+              obstacleYMax: { type: "number", minimum: 0, maximum: 1 },
+              evidence: { type: "string", maxLength: 240 },
+            },
+            required: [
+              "imageClear",
+              "clarityScore",
+              "targetVisible",
+              "supportVisible",
+              "obstacleAtPoint",
+              "obstacleName",
+              "obstacleXMin",
+              "obstacleYMin",
+              "obstacleXMax",
+              "obstacleYMax",
+              "evidence",
+            ],
+          },
+        },
+      },
+    },
+    75_000,
+  );
+  if (!response.ok) {
+    throw new RenderError(
+      `Analyse de la zone impossible (${response.status}). Réessayez.`,
+      502,
+    );
+  }
+  const result = JSON.parse(await responseOutputText(response)) as {
+    imageClear: boolean;
+    clarityScore: number;
+    targetVisible: boolean;
+    supportVisible: boolean;
+    obstacleAtPoint: boolean;
+    obstacleName: string;
+    obstacleXMin: number;
+    obstacleYMin: number;
+    obstacleXMax: number;
+    obstacleYMax: number;
+    evidence: string;
+  };
+  const obstacleBox = result.obstacleAtPoint
+    ? normalizeBox({
+        xMin: result.obstacleXMin,
+        yMin: result.obstacleYMin,
+        xMax: result.obstacleXMax,
+        yMax: result.obstacleYMax,
+      })
+    : null;
+  const boxIsUsable =
+    obstacleBox &&
+    obstacleBox.xMax - obstacleBox.xMin >= 0.015 &&
+    obstacleBox.yMax - obstacleBox.yMin >= 0.015;
+  return {
+    imageClear: Boolean(result.imageClear),
+    clarityScore: clamp(Number(result.clarityScore), 0, 1),
+    targetVisible: Boolean(result.targetVisible),
+    supportVisible: Boolean(result.supportVisible),
+    obstacleAtPoint: Boolean(result.obstacleAtPoint),
+    obstacleName: result.obstacleAtPoint
+      ? String(result.obstacleName || "objet existant").slice(0, 100)
+      : null,
+    obstacleBox: boxIsUsable ? obstacleBox : null,
+    evidence: String(result.evidence).slice(0, 240),
+  };
+}
+
+async function openAIRemoveObstacle(
+  sceneBuffer: Buffer,
+  inspection: SceneInspection,
+  requestedSize: RenderDocument["requestedSize"],
+  idempotencyKey: string,
+): Promise<Buffer> {
+  if (!inspection.obstacleBox) throw imageUnclearError();
+  const metadata = await sharp(sceneBuffer).metadata();
+  const width = metadata.width;
+  const height = metadata.height;
+  if (!width || !height) throw imageUnclearError();
+  const mask = await createNormalizedMask(
+    width,
+    height,
+    inspection.obstacleBox,
+  );
+  const basePng = await sharp(sceneBuffer).rotate().png().toBuffer();
+  const body = new FormData();
+  body.append("model", serverConfig.openaiModel);
+  body.append(
+    "image[]",
+    new Blob([toArrayBuffer(basePng)], { type: "image/png" }),
+    "room-with-obstacle.png",
+  );
+  body.append(
+    "mask",
+    new Blob([toArrayBuffer(mask)], { type: "image/png" }),
+    "obstacle-mask.png",
+  );
+  body.append("quality", "medium");
+  body.append("size", requestedSize);
+  body.append("background", "opaque");
+  body.append("output_format", "webp");
+  body.append("output_compression", "92");
+  body.append(
+    "prompt",
+    [
+      `Layer 1 cleanup only. Completely remove the ${inspection.obstacleName ?? "removable object"} inside the transparent mask, including its appendages, cable, reflections and old contact shadow.`,
+      "Reconstruct the now-hidden support surface, rear wall, shelf back and local texture from the surrounding visual evidence.",
+      "Do not add the catalog product or any replacement object. The target must be genuinely empty after this layer.",
+      "Preserve the exact camera, crop, furniture geometry, lighting, grain and every unmasked pixel. Avoid smears, duplicated edges, hallucinated decor and broken shelf lines.",
+    ].join(" "),
+  );
+  const response = await fetch(`${serverConfig.openaiBaseUrl}/images/edits`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${serverConfig.openaiApiKey}`,
+      "Idempotency-Key": idempotencyKey,
+    },
+    body,
+    signal: AbortSignal.timeout(145_000),
+  });
+  if (!response.ok) {
+    throw new RenderError(
+      `Suppression de l’obstacle impossible (${response.status}). Réessayez.`,
+      502,
+    );
+  }
+  const payload = (await response.json()) as {
+    data?: Array<{ b64_json?: string }>;
+  };
+  const encoded = payload.data?.[0]?.b64_json;
+  if (!encoded) throw new RenderError("Le nettoyage de l’image a échoué.", 502);
+  return Buffer.from(encoded, "base64");
+}
+
+async function createNormalizedMask(
+  width: number,
+  height: number,
+  box: NormalizedBox,
+): Promise<Buffer> {
+  const data = Buffer.alloc(width * height * 4, 255);
+  const boxWidth = (box.xMax - box.xMin) * width;
+  const boxHeight = (box.yMax - box.yMin) * height;
+  const padding = Math.max(
+    12,
+    Math.round(Math.min(boxWidth, boxHeight) * 0.12),
+  );
+  const minX = Math.max(0, Math.floor(box.xMin * width) - padding);
+  const maxX = Math.min(width, Math.ceil(box.xMax * width) + padding);
+  const minY = Math.max(0, Math.floor(box.yMin * height) - padding);
+  const maxY = Math.min(height, Math.ceil(box.yMax * height) + padding);
+  for (let y = minY; y < maxY; y += 1) {
+    for (let x = minX; x < maxX; x += 1) {
+      data[(y * width + x) * 4 + 3] = 0;
+    }
+  }
+  return sharp(data, { raw: { width, height, channels: 4 } })
+    .png()
+    .toBuffer();
+}
+
+async function openAICleanedPlacement(
+  sceneBuffer: Buffer,
+  contentType: string,
+  scene: SceneDocument,
+  product: ProductDocument,
+  input: PlacementInput,
+  surfaceType: string,
+  inspection: SceneInspection,
+): Promise<ResolvedPlacement> {
+  const anchor = requireUserAnchor(input);
+  const response = await fetchOpenAIResponse(
+    {
+      model: serverConfig.openaiVisionModel,
+      store: false,
+      service_tier: serverConfig.openaiServiceTier,
+      reasoning: { effort: "high" },
+      max_output_tokens: 3_000,
+      input: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: [
+                "Layer 2. Re-analyze this room image from scratch after any obstacle cleanup. Return a physically feasible product placement, not a visual guess.",
+                `The user's normalized point is x=${anchor.x.toFixed(4)}, y=${anchor.y.toFixed(4)} and indicates lateral intent only. Required support: ${surfaceType}.`,
+                `Exact product dimensions: width ${product.widthCm} cm, height ${product.heightCm} cm, depth ${product.depthCm} cm. Product: ${product.name}; ${product.description}; material ${product.material}.`,
+                "Move y vertically when needed: yNormalized must be the real bottom contact plane on the support, never the raw point if the point is too high.",
+                "Infer apparent scale from shelf/table perspective, converging lines, camera zoom, nearby known-size objects, support depth and the product's real dimensions. A close-up support requires a larger apparent product than a distant support.",
+                "fit bounds must describe the entire clear volume that the product silhouette may occupy: side boundaries, upper shelf/niche boundary and bottom support plane. Never include space through a shelf top or beyond a side wall.",
+                "The product must rest on the support, fit laterally, stay below the upper boundary and remain plausibly sized relative to objects around it. Mark placement_too_small if those conditions cannot all be met without making the product implausibly small.",
+                "Mark image_unclear if perspective or support boundaries cannot be read reliably. Do not force an answer.",
+              ].join(" "),
+            },
+            {
+              type: "input_image",
+              image_url: `data:${contentType};base64,${sceneBuffer.toString("base64")}`,
+              detail: "original",
+            },
+          ],
+        },
+      ],
+      text: {
+        verbosity: "low",
+        format: {
+          type: "json_schema",
+          name: "cleaned_scene_placement",
+          strict: true,
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              feasible: { type: "boolean" },
+              imageClear: { type: "boolean" },
+              clarityScore: { type: "number", minimum: 0, maximum: 1 },
+              errorCode: {
+                type: "string",
+                enum: ["none", "placement_too_small", "image_unclear"],
+              },
+              xNormalized: { type: "number", minimum: 0, maximum: 1 },
+              yNormalized: { type: "number", minimum: 0, maximum: 1 },
+              scale: { type: "number", minimum: 0.02, maximum: 0.8 },
+              rotationDegrees: { type: "number", minimum: -20, maximum: 20 },
+              lightingDirection: {
+                type: "string",
+                enum: ["left", "right", "front", "back", "diffuse"],
+              },
+              lightingTemperature: {
+                type: "string",
+                enum: ["warm", "neutral", "cool"],
+              },
+              confidence: { type: "number", minimum: 0, maximum: 1 },
+              rationale: { type: "string", maxLength: 260 },
+              fitXMin: { type: "number", minimum: 0, maximum: 1 },
+              fitYMin: { type: "number", minimum: 0, maximum: 1 },
+              fitXMax: { type: "number", minimum: 0, maximum: 1 },
+              fitYMax: { type: "number", minimum: 0, maximum: 1 },
+              surfaceXMin: { type: "number", minimum: 0, maximum: 1 },
+              surfaceYMin: { type: "number", minimum: 0, maximum: 1 },
+              surfaceXMax: { type: "number", minimum: 0, maximum: 1 },
+              surfaceYMax: { type: "number", minimum: 0, maximum: 1 },
+              apparentDistance: {
+                type: "string",
+                enum: ["close", "medium", "far"],
+              },
+              framing: {
+                type: "string",
+                enum: ["close-up", "normal", "wide"],
+              },
+              occlusion: {
+                type: "string",
+                enum: ["none", "front-edge", "partial"],
+              },
+              perspectiveEvidence: { type: "string", maxLength: 200 },
+            },
+            required: [
+              "feasible",
+              "imageClear",
+              "clarityScore",
+              "errorCode",
+              "xNormalized",
+              "yNormalized",
+              "scale",
+              "rotationDegrees",
+              "lightingDirection",
+              "lightingTemperature",
+              "confidence",
+              "rationale",
+              "fitXMin",
+              "fitYMin",
+              "fitXMax",
+              "fitYMax",
+              "surfaceXMin",
+              "surfaceYMin",
+              "surfaceXMax",
+              "surfaceYMax",
+              "apparentDistance",
+              "framing",
+              "occlusion",
+              "perspectiveEvidence",
+            ],
+          },
+        },
+      },
+    },
+    80_000,
+  );
+  if (!response.ok) {
+    throw new RenderError(
+      `Analyse du placement impossible (${response.status}). Réessayez.`,
+      502,
+    );
+  }
+  const result = JSON.parse(await responseOutputText(response)) as {
+    feasible: boolean;
+    imageClear: boolean;
+    clarityScore: number;
+    errorCode: "none" | "placement_too_small" | "image_unclear";
+    xNormalized: number;
+    yNormalized: number;
+    scale: number;
+    rotationDegrees: number;
+    lightingDirection: string;
+    lightingTemperature: string;
+    confidence: number;
+    rationale: string;
+    fitXMin: number;
+    fitYMin: number;
+    fitXMax: number;
+    fitYMax: number;
+    surfaceXMin: number;
+    surfaceYMin: number;
+    surfaceXMax: number;
+    surfaceYMax: number;
+    apparentDistance: "close" | "medium" | "far";
+    framing: "close-up" | "normal" | "wide";
+    occlusion: "none" | "front-edge" | "partial";
+    perspectiveEvidence: string;
+  };
+  if (
+    !result.imageClear ||
+    result.clarityScore < 0.55 ||
+    result.errorCode === "image_unclear"
+  ) {
+    throw imageUnclearError();
+  }
+  if (!result.feasible || result.errorCode === "placement_too_small") {
+    throw placementTooSmallError();
+  }
+  const fitBounds = normalizeBox({
+    xMin: result.fitXMin,
+    yMin: result.fitYMin,
+    xMax: result.fitXMax,
+    yMax: result.fitYMax,
+  });
+  if (
+    fitBounds.xMax - fitBounds.xMin < 0.02 ||
+    fitBounds.yMax - fitBounds.yMin < 0.02
+  ) {
+    throw placementTooSmallError();
+  }
+  return {
+    ...input,
+    mode: "guided",
+    surfaceType,
+    xNormalized: clamp(Number(result.xNormalized), 0.02, 0.98),
+    yNormalized: clamp(Number(result.yNormalized), 0.02, 0.98),
+    scale: clamp(Number(result.scale), 0.02, 0.75),
+    rotationDegrees: clamp(Number(result.rotationDegrees), -20, 20),
+    lighting: {
+      direction: result.lightingDirection,
+      temperature: result.lightingTemperature,
+      hardness: "soft",
+    },
+    confidence: clamp(Number(result.confidence), 0, 1),
+    rationale: String(result.rationale).slice(0, 260),
+    operation: inspection.obstacleAtPoint ? "replace" : "place",
+    occupiedObject: inspection.obstacleName,
+    replacementBox: inspection.obstacleBox,
+    obstacleRemoved: inspection.obstacleAtPoint,
+    fitBounds,
+    perspective: {
+      distance: result.apparentDistance,
+      framing: result.framing,
+      surfaceBounds: normalizeBox({
+        xMin: result.surfaceXMin,
+        yMin: result.surfaceYMin,
+        xMax: result.surfaceXMax,
+        yMax: result.surfaceYMax,
+      }),
+      occlusion: result.occlusion,
+      evidence: String(result.perspectiveEvidence).slice(0, 200),
+    },
+    source: "openai-vision",
+  };
 }
 
 async function openAIPlacement(
@@ -707,6 +1353,7 @@ async function compose(
   scene: SceneDocument,
   product: ProductDocument,
   input: ResolvedRenderInput,
+  sourceSceneBuffer?: Buffer,
 ): Promise<Composition> {
   const [sceneAsset, cutoutAsset] = await Promise.all([
     readAsset(db, scene.assetId),
@@ -715,7 +1362,8 @@ async function compose(
   if (!sceneAsset || !cutoutAsset) {
     throw new RenderError("Fichier source introuvable", 404);
   }
-  const sceneMetadata = await sharp(sceneAsset.buffer).metadata();
+  const sceneBuffer = sourceSceneBuffer ?? sceneAsset.buffer;
+  const sceneMetadata = await sharp(sceneBuffer).metadata();
   const sceneWidth = sceneMetadata.width ?? scene.widthPx;
   const sceneHeight = sceneMetadata.height ?? scene.heightPx;
   const targetWidth = Math.max(
@@ -754,7 +1402,7 @@ async function compose(
       <ellipse cx="${left + width / 2}" cy="${top + height * 0.97}" rx="${width * 0.38}" ry="${Math.max(7, height * 0.035)}" fill="#120d08" fill-opacity=".28"/>
     </svg>`);
   const shadow = await sharp(shadowSvg).blur(10).png().toBuffer();
-  const buffer = await sharp(sceneAsset.buffer)
+  const buffer = await sharp(sceneBuffer)
     .rotate()
     .composite([
       { input: shadow, blend: "over" },
@@ -845,6 +1493,7 @@ async function generateAndReview(
   input: ResolvedRenderInput,
   requestedSize: RenderDocument["requestedSize"],
   deadlineMs: number,
+  sourceSceneBuffer?: Buffer,
 ) {
   const perEditCostUsd = estimatedImageEditCost(requestedSize);
   if (perEditCostUsd > serverConfig.openaiMaxCostUsd) {
@@ -895,7 +1544,7 @@ async function generateAndReview(
     };
     const scaleWasCorrected = correctedPlacement !== input.placement;
     const repairComposition = scaleWasCorrected
-      ? await compose(db, scene, product, repairInput)
+      ? await compose(db, scene, product, repairInput, sourceSceneBuffer)
       : composition;
     const repair = await openAIEdit(
       db,
@@ -1200,7 +1849,9 @@ async function openAIEdit(
         : "Image 1 is an exact deterministic composition containing the catalog product at the analyzed position and scale.",
       "Image 1 contains the complete room context and the deterministic placement. Image 2 is the exact product identity reference.",
       input.placement.operation === "replace"
-        ? `Operation: REPLACE. Completely erase the old ${input.placement.occupiedObject ?? "object"} in the analyzed target bounds ${JSON.stringify(input.placement.replacementBox)}. Remove its full silhouette, appendages, base, cable, reflections and old contact shadow. Reconstruct the shelf back, wall, support surface and texture from the visible context surrounding the target in Image 1 before integrating exactly one catalog product.`
+        ? input.placement.obstacleRemoved
+          ? `Operation: REPLACE, cleanup already completed in the preceding layer. The old ${input.placement.occupiedObject ?? "object"} is absent from Image 1. Never recreate any part of it, its cable, reflection or shadow. Integrate exactly one catalog product into the now-empty zone.`
+          : `Operation: REPLACE. Completely erase the old ${input.placement.occupiedObject ?? "object"} in the analyzed target bounds ${JSON.stringify(input.placement.replacementBox)}. Remove its full silhouette, appendages, base, cable, reflections and old contact shadow. Reconstruct the shelf back, wall, support surface and texture from the visible context surrounding the target in Image 1 before integrating exactly one catalog product.`
         : "Operation: PLACE on empty space. Integrate exactly one catalog product without removing or changing nearby objects.",
       "Change only the local masked target. Preserve the room geometry, camera angle, lens perspective, depth-of-field, crop, furniture, decor and every pixel outside the mask.",
       "Keep exactly one catalog product at the composed position, scale and pose. Preserve its silhouette, proportions, colors, labels and design from Image 2, while naturally re-rendering its material, highlights, surface texture and edge lighting so it belongs to the photograph instead of looking pasted on.",
@@ -1271,6 +1922,24 @@ function isTimeoutError(reason: unknown): boolean {
     reason instanceof Error &&
     (reason.name === "TimeoutError" || reason.name === "AbortError")
   );
+}
+
+async function responseOutputText(response: Response): Promise<string> {
+  const payload = (await response.json()) as {
+    output?: Array<{
+      content?: Array<{ type?: string; text?: string }>;
+    }>;
+  };
+  const outputText = payload.output
+    ?.flatMap((item) => item.content ?? [])
+    .find((item) => item.type === "output_text")?.text;
+  if (!outputText) {
+    throw new RenderError(
+      "L’analyse visuelle n’a retourné aucun résultat.",
+      502,
+    );
+  }
+  return outputText;
 }
 
 async function fetchOpenAIResponse(

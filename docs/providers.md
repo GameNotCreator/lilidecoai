@@ -7,7 +7,9 @@ Le pipeline TypeScript dans `apps/web/lib/server/rendering.ts` reçoit :
 - la photo normalisée de la pièce ;
 - le cutout du produit ;
 - le point de contact et le support choisis par l’utilisateur ;
-- l’échelle, la rotation et la lumière proposées par le modèle de vision ;
+- l’inspection séparée de l’obstacle au point choisi ;
+- l’image nettoyée quand un objet doit être remplacé ;
+- la seconde analyse de perspective, d’échelle et de volume disponible ;
 - la composition déterministe ;
 - le masque de modification ;
 - une clé d’idempotence.
@@ -19,10 +21,13 @@ durée, statut, score qualité et erreur sûre.
 
 L’appel serveur utilise :
 
-- `POST /v1/responses` avec `gpt-5.6-sol` en mode Fast pour analyser la pièce
-  et retourner un placement structuré ;
+- deux appels structurés à `POST /v1/responses` avec `gpt-5.6-sol` en mode Fast :
+  le premier détecte l’obstacle et la lisibilité, le second relit l’image
+  nettoyée et calcule le contact, l’échelle et les limites ;
 - `POST /v1/images/edits` ;
 - le modèle `gpt-image-2` par défaut ;
+- une première retouche locale `medium` uniquement lorsqu’un obstacle doit être
+  effacé, sans ajout de produit ;
 - les images `composition`, `product` et le masque ;
 - un format de sortie WebP ;
 - une taille adaptée au ratio de la pièce ;
@@ -34,11 +39,10 @@ générateur gardent donc leur précision d'origine. Si le compte OpenAI ne perm
 pas le mode Fast, le pipeline retente automatiquement l'analyse en traitement
 standard.
 
-Sur Vercel, la route renvoie la composition de prévisualisation dès que le
-placement est analysé, puis poursuit la génération haute fidélité avec `after`.
-Le client interroge ensuite le rendu toutes les trois secondes et remplace
-automatiquement la prévisualisation par l'image contrôlée. Le temps de calcul
-final reste identique, mais l'utilisateur n'attend plus devant un écran bloqué.
+Sur Vercel, la route renvoie immédiatement un rendu `processing`, puis exécute
+les couches avec `after`. Le client affiche l’étape active, interroge le rendu
+toutes les trois secondes et montre successivement l’image nettoyée, la
+prévisualisation placée puis l’image contrôlée.
 
 La composition contenant déjà le produit est l’image principale. Le masque
 limite la retouche à la zone cible et protège tous les pixels extérieurs, tout en
@@ -54,7 +58,9 @@ un placement automatique de secours et le rendu local Sharp sont utilisés.
 - coût et durée enregistrés par tentative ;
 - débit d’un crédit uniquement après succès ;
 - messages d’erreur nettoyés ;
-- validation structurée du placement et repli local en cas d’échec de la vision ;
+- refus explicite d’une image illisible ou d’un emplacement trop petit ;
+- validation géométrique déterministe de la boîte projetée du produit dans le
+  volume libre retourné par l’analyse ;
 - un seul exemplaire du produit dans le résultat final.
 
 ## Ajouter un provider

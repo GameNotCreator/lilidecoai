@@ -95,6 +95,7 @@ export interface RenderDocument {
   model: string | null;
   requestedSize: "1024x1024" | "1536x1024" | "1024x1536";
   resultAssetId?: string;
+  error?: string;
   qualityScore: number | null;
   creditCharged: boolean;
   placement: Record<string, unknown>;

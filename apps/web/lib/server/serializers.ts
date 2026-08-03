@@ -48,6 +48,7 @@ export function renderResponse(render: RenderDocument) {
     model: render.model,
     requestedSize: render.requestedSize,
     resultUrl: assetUrl(render.resultAssetId),
+    error: render.error ?? null,
     qualityScore: render.qualityScore,
     creditCharged: render.creditCharged,
     placement: render.placement,

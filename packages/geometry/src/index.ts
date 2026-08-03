@@ -28,6 +28,31 @@ export interface SurfaceCalibration {
   corners: Quad;
 }
 
+export interface NormalizedBounds {
+  xMin: number;
+  yMin: number;
+  xMax: number;
+  yMax: number;
+}
+
+export interface PlacementFitInput {
+  imageWidth: number;
+  imageHeight: number;
+  productWidthCm: number;
+  productHeightCm: number;
+  xNormalized: number;
+  yNormalized: number;
+  scale: number;
+  fitBounds: NormalizedBounds;
+  marginRatio?: number;
+}
+
+export interface PlacementFitResult {
+  fits: boolean;
+  productBounds: NormalizedBounds;
+  violations: Array<"left" | "right" | "top" | "bottom">;
+}
+
 export class GeometryError extends Error {
   constructor(
     message: string,
@@ -60,7 +85,10 @@ export function pixelsToCm(
   pixelsPerCentimeter: number,
 ): number {
   if (pixels < 0 || !Number.isFinite(pixels)) {
-    throw new GeometryError("pixels must be finite and non-negative", "INVALID_DIMENSION");
+    throw new GeometryError(
+      "pixels must be finite and non-negative",
+      "INVALID_DIMENSION",
+    );
   }
   assertPositive(pixelsPerCentimeter, "pixelsPerCentimeter");
   return pixels / pixelsPerCentimeter;
@@ -102,9 +130,16 @@ export function polygonArea(points: readonly Point[]): number {
   );
 }
 
-export function pointInPolygon(point: Point, polygon: readonly Point[]): boolean {
+export function pointInPolygon(
+  point: Point,
+  polygon: readonly Point[],
+): boolean {
   let inside = false;
-  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index++) {
+  for (
+    let index = 0, previous = polygon.length - 1;
+    index < polygon.length;
+    previous = index++
+  ) {
     const currentPoint = polygon[index] as Point;
     const previousPoint = polygon[previous] as Point;
     const crosses =
@@ -175,8 +210,7 @@ export function solveHomography(source: Quad, target: Quad): Matrix3 {
 }
 
 export function projectPoint(matrix: Matrix3, point: Point): Point {
-  const denominator =
-    matrix[6] * point.x + matrix[7] * point.y + matrix[8];
+  const denominator = matrix[6] * point.x + matrix[7] * point.y + matrix[8];
   if (Math.abs(denominator) < 1e-9) {
     throw new GeometryError("Point projects to infinity", "SINGULAR_MATRIX");
   }
@@ -212,6 +246,46 @@ export function selectOutputSize(
   if (ratio > 1.15) return "1536x1024";
   if (ratio < 0.87) return "1024x1536";
   return "1024x1024";
+}
+
+/**
+ * Validates a placement using the catalog aspect ratio and the room image
+ * aspect ratio. `scale` is the product width divided by the full image width;
+ * x is the horizontal centre and y is the bottom contact point.
+ */
+export function validatePlacementFit(
+  input: PlacementFitInput,
+): PlacementFitResult {
+  assertPositive(input.imageWidth, "imageWidth");
+  assertPositive(input.imageHeight, "imageHeight");
+  assertPositive(input.productWidthCm, "productWidthCm");
+  assertPositive(input.productHeightCm, "productHeightCm");
+  assertPositive(input.scale, "scale");
+
+  const margin = Math.max(0, Math.min(input.marginRatio ?? 0.01, 0.1));
+  const productHeightNormalized =
+    input.scale *
+    (input.productHeightCm / input.productWidthCm) *
+    (input.imageWidth / input.imageHeight);
+  const productBounds: NormalizedBounds = {
+    xMin: input.xNormalized - input.scale / 2,
+    xMax: input.xNormalized + input.scale / 2,
+    yMin: input.yNormalized - productHeightNormalized,
+    yMax: input.yNormalized,
+  };
+  const fitBounds: NormalizedBounds = {
+    xMin: Math.max(0, Math.min(input.fitBounds.xMin, input.fitBounds.xMax)),
+    xMax: Math.min(1, Math.max(input.fitBounds.xMin, input.fitBounds.xMax)),
+    yMin: Math.max(0, Math.min(input.fitBounds.yMin, input.fitBounds.yMax)),
+    yMax: Math.min(1, Math.max(input.fitBounds.yMin, input.fitBounds.yMax)),
+  };
+  const violations: PlacementFitResult["violations"] = [];
+  if (productBounds.xMin < fitBounds.xMin + margin) violations.push("left");
+  if (productBounds.xMax > fitBounds.xMax - margin) violations.push("right");
+  if (productBounds.yMin < fitBounds.yMin + margin) violations.push("top");
+  if (productBounds.yMax > fitBounds.yMax - margin) violations.push("bottom");
+
+  return { fits: violations.length === 0, productBounds, violations };
 }
 
 function gaussianSolve(matrix: number[][], vector: number[]): number[] {
@@ -261,7 +335,9 @@ function gaussianSolve(matrix: number[][], vector: number[]): number[] {
 
 function assertPositive(value: number, name: string): void {
   if (!Number.isFinite(value) || value <= 0) {
-    throw new GeometryError(`${name} must be finite and positive`, "INVALID_DIMENSION");
+    throw new GeometryError(
+      `${name} must be finite and positive`,
+      "INVALID_DIMENSION",
+    );
   }
 }
-

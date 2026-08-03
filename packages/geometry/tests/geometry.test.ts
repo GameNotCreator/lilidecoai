@@ -9,6 +9,7 @@ import {
   projectPoint,
   rotatePoint,
   selectOutputSize,
+  validatePlacementFit,
 } from "../src/index";
 
 describe("unit conversions", () => {
@@ -81,6 +82,53 @@ describe("placement utilities", () => {
     expect(pointInPolygon({ x: 150, y: 50 }, polygon)).toBe(false);
   });
 
+  it("accepts a product that stays inside the available support volume", () => {
+    const result = validatePlacementFit({
+      imageWidth: 1600,
+      imageHeight: 1000,
+      productWidthCm: 20,
+      productHeightCm: 30,
+      xNormalized: 0.5,
+      yNormalized: 0.72,
+      scale: 0.12,
+      fitBounds: { xMin: 0.35, yMin: 0.38, xMax: 0.65, yMax: 0.74 },
+    });
+    expect(result.fits).toBe(true);
+    expect(result.productBounds.yMax).toBe(0.72);
+  });
+
+  it("rejects a product that would cross the top of a niche", () => {
+    const result = validatePlacementFit({
+      imageWidth: 1600,
+      imageHeight: 1000,
+      productWidthCm: 18,
+      productHeightCm: 50,
+      xNormalized: 0.5,
+      yNormalized: 0.65,
+      scale: 0.14,
+      fitBounds: { xMin: 0.35, yMin: 0.35, xMax: 0.65, yMax: 0.67 },
+    });
+    expect(result.fits).toBe(false);
+    expect(result.violations).toContain("top");
+  });
+
+  it("rejects a placement when the horizontal space is too narrow", () => {
+    const result = validatePlacementFit({
+      imageWidth: 1200,
+      imageHeight: 1200,
+      productWidthCm: 30,
+      productHeightCm: 30,
+      xNormalized: 0.5,
+      yNormalized: 0.7,
+      scale: 0.2,
+      fitBounds: { xMin: 0.44, yMin: 0.3, xMax: 0.56, yMax: 0.72 },
+    });
+    expect(result.fits).toBe(false);
+    expect(result.violations).toEqual(
+      expect.arrayContaining(["left", "right"]),
+    );
+  });
+
   it("rotates around an anchor", () => {
     expect(rotatePoint({ x: 10, y: 0 }, { x: 0, y: 0 }, 90)).toEqual({
       x: expect.closeTo(0, 8),
@@ -94,4 +142,3 @@ describe("placement utilities", () => {
     expect(selectOutputSize(1000, 950)).toBe("1024x1024");
   });
 });
-

@@ -56,6 +56,7 @@ export const renderSchema = z.object({
   model: z.string().nullable(),
   requestedSize: z.string(),
   resultUrl: z.string().nullable(),
+  error: z.string().nullable().optional(),
   qualityScore: z.coerce.number().nullable(),
   creditCharged: z.boolean(),
   placement: z.record(z.string(), z.unknown()).optional(),

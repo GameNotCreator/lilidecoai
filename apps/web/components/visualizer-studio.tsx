@@ -33,6 +33,42 @@ interface Scene {
   analysis: Record<string, unknown>;
 }
 
+const pipelineCopy: Record<string, { title: string; detail: string }> = {
+  inspecting_scene: {
+    title: "Analyse de la zone…",
+    detail: "Nous vérifions le support et détectons ce qui occupe le point.",
+  },
+  removing_obstacle: {
+    title: "Suppression de l’obstacle…",
+    detail: "L’objet présent est retiré et le fond est reconstruit proprement.",
+  },
+  analyzing_cleaned_scene: {
+    title: "Nouvelle lecture de l’espace…",
+    detail:
+      "La perspective et les limites sont recalculées sur l’image nettoyée.",
+  },
+  validating_fit: {
+    title: "Vérification de la taille…",
+    detail: "Nous contrôlons que l’objet repose bien et ne dépasse nulle part.",
+  },
+  composing_preview: {
+    title: "Placement de l’objet…",
+    detail: "La position et l’échelle validées sont appliquées à votre photo.",
+  },
+  refining_final: {
+    title: "Finition photoréaliste…",
+    detail: "Les ombres, la lumière et les textures sont harmonisées.",
+  },
+};
+
+function currentPipelineCopy(render: Render) {
+  const stage =
+    typeof render.placement?.pipelineStage === "string"
+      ? render.placement.pipelineStage
+      : "inspecting_scene";
+  return pipelineCopy[stage] ?? pipelineCopy.inspecting_scene!;
+}
+
 export function VisualizerStudio({
   embedded = false,
   catalogSession = false,
@@ -118,7 +154,8 @@ export function VisualizerStudio({
         }
         if (nextRender.status === "failed") {
           setError(
-            "La finition haute qualité n’a pas abouti. Votre aperçu rapide reste visible.",
+            nextRender.error ??
+              "Le rendu n’a pas abouti. Choisissez un autre endroit ou une autre photo.",
           );
           return;
         }
@@ -458,33 +495,62 @@ export function VisualizerStudio({
           </div>
         )}
 
-        {step === 3 && scene && render?.resultUrl && (
+        {step === 3 && scene && render && (
           <div className="result-layout">
             <div className="compare-frame">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={render.resultUrl} alt="Rendu avec le produit intégré" />
-              <div
-                className="before-layer"
-                style={{
-                  clipPath: `polygon(0 0, ${beforePercent}% 0, ${beforePercent}% 100%, 0 100%)`,
-                }}
-              >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={scene.imageUrl} alt="Photo avant intégration" />
-              </div>
-              <span className="before-label">Avant</span>
-              <span className="after-label">Après</span>
-              <input
-                aria-label="Comparer avant et après"
-                className="compare-range"
-                type="range"
-                min="0"
-                max="100"
-                value={beforePercent}
-                onChange={(event) =>
-                  setBeforePercent(Number(event.target.value))
-                }
-              />
+              {render.resultUrl ? (
+                <>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={render.resultUrl}
+                    alt="Rendu avec le produit intégré"
+                  />
+                  <div
+                    className="before-layer"
+                    style={{
+                      clipPath: `polygon(0 0, ${beforePercent}% 0, ${beforePercent}% 100%, 0 100%)`,
+                    }}
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={scene.imageUrl} alt="Photo avant intégration" />
+                  </div>
+                  <span className="before-label">Avant</span>
+                  <span className="after-label">Après</span>
+                  <input
+                    aria-label="Comparer avant et après"
+                    className="compare-range"
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={beforePercent}
+                    onChange={(event) =>
+                      setBeforePercent(Number(event.target.value))
+                    }
+                  />
+                </>
+              ) : (
+                <div className="pipeline-waiting-visual">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={scene.imageUrl} alt="Photo en cours d’analyse" />
+                  <div className="pipeline-waiting-overlay">
+                    {render.status === "failed" ? (
+                      <>
+                        <strong>Rendu interrompu</strong>
+                        <span>
+                          {render.error ??
+                            "Choisissez un autre endroit ou une photo plus claire."}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <LoaderCircle className="spin" size={34} />
+                        <strong>{currentPipelineCopy(render).title}</strong>
+                        <span>{currentPipelineCopy(render).detail}</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
             <div className="result-summary card">
               <Badge
@@ -494,28 +560,29 @@ export function VisualizerStudio({
                   <LoaderCircle className="spin refining-icon" size={14} />
                 )}
                 {render.status === "processing"
-                  ? "Finition haute qualité en cours"
+                  ? currentPipelineCopy(render).title
                   : render.status === "failed"
-                    ? "Aperçu rapide disponible"
+                    ? "Placement impossible"
                     : "Rendu contrôlé"}
               </Badge>
               <h2>
                 {render.status === "processing"
-                  ? "Votre aperçu est déjà prêt."
+                  ? "Nous avançons étape par étape."
                   : render.status === "failed"
-                    ? "Votre aperçu reste disponible."
+                    ? "Nous préférons vous arrêter ici."
                     : "Voilà le résultat."}
               </h2>
               <p className="muted">
                 {render.status === "processing"
-                  ? "Vous pouvez déjà vérifier le placement. La version photoréaliste se remplacera automatiquement ici, sans nouvelle action."
+                  ? currentPipelineCopy(render).detail
                   : render.status === "failed"
-                    ? "La finition n’a pas abouti, mais vous pouvez vérifier le placement et réessayer sans reprendre la photo."
+                    ? (render.error ??
+                      "Choisissez un autre endroit ou fournissez une photo plus claire.")
                     : typeof render.placement?.rationale === "string"
                       ? render.placement.rationale
                       : "Placement, échelle et lumière choisis automatiquement à partir de la pièce et des dimensions du produit."}
               </p>
-              {render.status === "succeeded" && (
+              {render.status === "succeeded" && render.resultUrl && (
                 <div className="score-row">
                   <span>Score de fidélité</span>
                   <strong>
@@ -523,7 +590,7 @@ export function VisualizerStudio({
                   </strong>
                 </div>
               )}
-              {render.status === "succeeded" && (
+              {render.status === "succeeded" && render.resultUrl && (
                 <div className="result-actions">
                   <a
                     className="button"
