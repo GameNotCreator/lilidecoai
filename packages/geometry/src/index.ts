@@ -283,7 +283,11 @@ export function validatePlacementFit(
   if (productBounds.xMin < fitBounds.xMin + margin) violations.push("left");
   if (productBounds.xMax > fitBounds.xMax - margin) violations.push("right");
   if (productBounds.yMin < fitBounds.yMin + margin) violations.push("top");
-  if (productBounds.yMax > fitBounds.yMax - margin) violations.push("bottom");
+  // The bottom edge is the contact plane: exact equality is expected. Keep a
+  // small tolerance for model rounding instead of forcing the object to float.
+  if (productBounds.yMax > fitBounds.yMax + Math.max(margin, 0.002)) {
+    violations.push("bottom");
+  }
 
   return { fits: violations.length === 0, productBounds, violations };
 }

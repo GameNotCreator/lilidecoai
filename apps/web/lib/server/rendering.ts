@@ -758,8 +758,7 @@ async function openAIRemoveObstacle(
   body.append("quality", "medium");
   body.append("size", requestedSize);
   body.append("background", "opaque");
-  body.append("output_format", "webp");
-  body.append("output_compression", "92");
+  body.append("output_format", "png");
   body.append(
     "prompt",
     [
@@ -789,7 +788,38 @@ async function openAIRemoveObstacle(
   };
   const encoded = payload.data?.[0]?.b64_json;
   if (!encoded) throw new RenderError("Le nettoyage de l’image a échoué.", 502);
-  return Buffer.from(encoded, "base64");
+  return compositeGeneratedInsideMask(
+    basePng,
+    Buffer.from(encoded, "base64"),
+    mask,
+    width,
+    height,
+  );
+}
+
+async function compositeGeneratedInsideMask(
+  original: Buffer,
+  generated: Buffer,
+  openAIMask: Buffer,
+  width: number,
+  height: number,
+): Promise<Buffer> {
+  const editableAlpha = await sharp(openAIMask)
+    .extractChannel(3)
+    .negate()
+    .blur(1.2)
+    .png()
+    .toBuffer();
+  const localRepair = await sharp(generated)
+    .resize({ width, height, fit: "fill" })
+    .removeAlpha()
+    .joinChannel(editableAlpha)
+    .png()
+    .toBuffer();
+  return sharp(original)
+    .composite([{ input: localRepair, blend: "over" }])
+    .png()
+    .toBuffer();
 }
 
 async function createNormalizedMask(

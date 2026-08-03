@@ -97,6 +97,22 @@ describe("placement utilities", () => {
     expect(result.productBounds.yMax).toBe(0.72);
   });
 
+  it("accepts exact contact with the support bottom plane", () => {
+    const result = validatePlacementFit({
+      imageWidth: 1536,
+      imageHeight: 1024,
+      productWidthCm: 30,
+      productHeightCm: 50,
+      xNormalized: 0.52,
+      yNormalized: 0.668,
+      scale: 0.15,
+      fitBounds: { xMin: 0.4, yMin: 0.2, xMax: 0.64, yMax: 0.668 },
+      marginRatio: 0.006,
+    });
+    expect(result.fits).toBe(true);
+    expect(result.violations).not.toContain("bottom");
+  });
+
   it("rejects a product that would cross the top of a niche", () => {
     const result = validatePlacementFit({
       imageWidth: 1600,
