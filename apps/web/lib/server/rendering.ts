@@ -616,7 +616,7 @@ async function openAIInspectScene(
       store: false,
       service_tier: serverConfig.openaiServiceTier,
       reasoning: { effort: "high" },
-      max_output_tokens: 2_500,
+      max_output_tokens: 6_000,
       input: [
         {
           role: "user",
@@ -858,130 +858,152 @@ async function openAICleanedPlacement(
   inspection: SceneInspection,
 ): Promise<ResolvedPlacement> {
   const anchor = requireUserAnchor(input);
-  const response = await fetchOpenAIResponse(
-    {
-      model: serverConfig.openaiVisionModel,
-      store: false,
-      service_tier: serverConfig.openaiServiceTier,
-      reasoning: { effort: "high" },
-      max_output_tokens: 3_000,
-      input: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "input_text",
-              text: [
-                "Layer 2. Re-analyze this room image from scratch after any obstacle cleanup. Return a physically feasible product placement, not a visual guess.",
-                `The user's normalized point is x=${anchor.x.toFixed(4)}, y=${anchor.y.toFixed(4)} and indicates lateral intent only. Required support: ${surfaceType}.`,
-                `Exact product dimensions: width ${product.widthCm} cm, height ${product.heightCm} cm, depth ${product.depthCm} cm. Product: ${product.name}; ${product.description}; material ${product.material}.`,
-                "Move y vertically when needed: yNormalized must be the real bottom contact plane on the support, never the raw point if the point is too high.",
-                "Infer apparent scale from shelf/table perspective, converging lines, camera zoom, nearby known-size objects, support depth and the product's real dimensions. A close-up support requires a larger apparent product than a distant support.",
-                "fit bounds must describe the entire clear volume that the product silhouette may occupy: side boundaries, upper shelf/niche boundary and bottom support plane. Never include space through a shelf top or beyond a side wall.",
-                "The product must rest on the support, fit laterally, stay below the upper boundary and remain plausibly sized relative to objects around it. Mark placement_too_small if those conditions cannot all be met without making the product implausibly small.",
-                "Mark image_unclear if perspective or support boundaries cannot be read reliably. Do not force an answer.",
-              ].join(" "),
-            },
-            {
-              type: "input_image",
-              image_url: `data:${contentType};base64,${sceneBuffer.toString("base64")}`,
-              detail: "original",
-            },
-          ],
-        },
-      ],
-      text: {
-        verbosity: "low",
-        format: {
-          type: "json_schema",
-          name: "cleaned_scene_placement",
-          strict: true,
-          schema: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              feasible: { type: "boolean" },
-              imageClear: { type: "boolean" },
-              clarityScore: { type: "number", minimum: 0, maximum: 1 },
-              errorCode: {
-                type: "string",
-                enum: ["none", "placement_too_small", "image_unclear"],
-              },
-              xNormalized: { type: "number", minimum: 0, maximum: 1 },
-              yNormalized: { type: "number", minimum: 0, maximum: 1 },
-              scale: { type: "number", minimum: 0.02, maximum: 0.8 },
-              rotationDegrees: { type: "number", minimum: -20, maximum: 20 },
-              lightingDirection: {
-                type: "string",
-                enum: ["left", "right", "front", "back", "diffuse"],
-              },
-              lightingTemperature: {
-                type: "string",
-                enum: ["warm", "neutral", "cool"],
-              },
-              confidence: { type: "number", minimum: 0, maximum: 1 },
-              rationale: { type: "string", maxLength: 260 },
-              fitXMin: { type: "number", minimum: 0, maximum: 1 },
-              fitYMin: { type: "number", minimum: 0, maximum: 1 },
-              fitXMax: { type: "number", minimum: 0, maximum: 1 },
-              fitYMax: { type: "number", minimum: 0, maximum: 1 },
-              surfaceXMin: { type: "number", minimum: 0, maximum: 1 },
-              surfaceYMin: { type: "number", minimum: 0, maximum: 1 },
-              surfaceXMax: { type: "number", minimum: 0, maximum: 1 },
-              surfaceYMax: { type: "number", minimum: 0, maximum: 1 },
-              apparentDistance: {
-                type: "string",
-                enum: ["close", "medium", "far"],
-              },
-              framing: {
-                type: "string",
-                enum: ["close-up", "normal", "wide"],
-              },
-              occlusion: {
-                type: "string",
-                enum: ["none", "front-edge", "partial"],
-              },
-              perspectiveEvidence: { type: "string", maxLength: 200 },
-            },
-            required: [
-              "feasible",
-              "imageClear",
-              "clarityScore",
-              "errorCode",
-              "xNormalized",
-              "yNormalized",
-              "scale",
-              "rotationDegrees",
-              "lightingDirection",
-              "lightingTemperature",
-              "confidence",
-              "rationale",
-              "fitXMin",
-              "fitYMin",
-              "fitXMax",
-              "fitYMax",
-              "surfaceXMin",
-              "surfaceYMin",
-              "surfaceXMax",
-              "surfaceYMax",
-              "apparentDistance",
-              "framing",
-              "occlusion",
-              "perspectiveEvidence",
-            ],
+  const requestBody: Record<string, unknown> = {
+    model: serverConfig.openaiVisionModel,
+    store: false,
+    service_tier: serverConfig.openaiServiceTier,
+    reasoning: { effort: "high" },
+    max_output_tokens: 8_000,
+    input: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: [
+              "Layer 2. Re-analyze this room image from scratch after any obstacle cleanup. Return a physically feasible product placement, not a visual guess.",
+              `The user's normalized point is x=${anchor.x.toFixed(4)}, y=${anchor.y.toFixed(4)} and indicates lateral intent only. Required support: ${surfaceType}.`,
+              `Exact product dimensions: width ${product.widthCm} cm, height ${product.heightCm} cm, depth ${product.depthCm} cm. Product: ${product.name}; ${product.description}; material ${product.material}.`,
+              "Move y vertically when needed: yNormalized must be the real bottom contact plane on the support, never the raw point if the point is too high.",
+              "Infer apparent scale from shelf/table perspective, converging lines, camera zoom, nearby known-size objects, support depth and the product's real dimensions. A close-up support requires a larger apparent product than a distant support.",
+              "fit bounds must describe the entire clear volume that the product silhouette may occupy: side boundaries, upper shelf/niche boundary and bottom support plane. Never include space through a shelf top or beyond a side wall.",
+              "The product must rest on the support, fit laterally, stay below the upper boundary and remain plausibly sized relative to objects around it. Mark placement_too_small if those conditions cannot all be met without making the product implausibly small.",
+              "Mark image_unclear if perspective or support boundaries cannot be read reliably. Do not force an answer.",
+            ].join(" "),
           },
+          {
+            type: "input_image",
+            image_url: `data:${contentType};base64,${sceneBuffer.toString("base64")}`,
+            detail: "original",
+          },
+        ],
+      },
+    ],
+    text: {
+      verbosity: "low",
+      format: {
+        type: "json_schema",
+        name: "cleaned_scene_placement",
+        strict: true,
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            feasible: { type: "boolean" },
+            imageClear: { type: "boolean" },
+            clarityScore: { type: "number", minimum: 0, maximum: 1 },
+            errorCode: {
+              type: "string",
+              enum: ["none", "placement_too_small", "image_unclear"],
+            },
+            xNormalized: { type: "number", minimum: 0, maximum: 1 },
+            yNormalized: { type: "number", minimum: 0, maximum: 1 },
+            scale: { type: "number", minimum: 0.02, maximum: 0.8 },
+            rotationDegrees: { type: "number", minimum: -20, maximum: 20 },
+            lightingDirection: {
+              type: "string",
+              enum: ["left", "right", "front", "back", "diffuse"],
+            },
+            lightingTemperature: {
+              type: "string",
+              enum: ["warm", "neutral", "cool"],
+            },
+            confidence: { type: "number", minimum: 0, maximum: 1 },
+            rationale: { type: "string", maxLength: 260 },
+            fitXMin: { type: "number", minimum: 0, maximum: 1 },
+            fitYMin: { type: "number", minimum: 0, maximum: 1 },
+            fitXMax: { type: "number", minimum: 0, maximum: 1 },
+            fitYMax: { type: "number", minimum: 0, maximum: 1 },
+            surfaceXMin: { type: "number", minimum: 0, maximum: 1 },
+            surfaceYMin: { type: "number", minimum: 0, maximum: 1 },
+            surfaceXMax: { type: "number", minimum: 0, maximum: 1 },
+            surfaceYMax: { type: "number", minimum: 0, maximum: 1 },
+            apparentDistance: {
+              type: "string",
+              enum: ["close", "medium", "far"],
+            },
+            framing: {
+              type: "string",
+              enum: ["close-up", "normal", "wide"],
+            },
+            occlusion: {
+              type: "string",
+              enum: ["none", "front-edge", "partial"],
+            },
+            perspectiveEvidence: { type: "string", maxLength: 200 },
+          },
+          required: [
+            "feasible",
+            "imageClear",
+            "clarityScore",
+            "errorCode",
+            "xNormalized",
+            "yNormalized",
+            "scale",
+            "rotationDegrees",
+            "lightingDirection",
+            "lightingTemperature",
+            "confidence",
+            "rationale",
+            "fitXMin",
+            "fitYMin",
+            "fitXMax",
+            "fitYMax",
+            "surfaceXMin",
+            "surfaceYMin",
+            "surfaceXMax",
+            "surfaceYMax",
+            "apparentDistance",
+            "framing",
+            "occlusion",
+            "perspectiveEvidence",
+          ],
         },
       },
     },
-    80_000,
-  );
+  };
+  let response = await fetchOpenAIResponse(requestBody, 90_000);
   if (!response.ok) {
     throw new RenderError(
       `Analyse du placement impossible (${response.status}). Réessayez.`,
       502,
     );
   }
-  const result = JSON.parse(await responseOutputText(response)) as {
+  let outputText: string;
+  try {
+    outputText = await responseOutputText(response);
+  } catch (reason) {
+    console.warn(
+      "First cleaned-scene analysis returned no JSON; retrying",
+      reason,
+    );
+    response = await fetchOpenAIResponse(
+      {
+        ...requestBody,
+        reasoning: { effort: "medium" },
+        max_output_tokens: 8_000,
+      },
+      70_000,
+    );
+    if (!response.ok) {
+      throw new RenderError(
+        `Nouvelle analyse du placement impossible (${response.status}). Réessayez.`,
+        502,
+      );
+    }
+    outputText = await responseOutputText(response);
+  }
+  const result = JSON.parse(outputText) as {
     feasible: boolean;
     imageClear: boolean;
     clarityScore: number;
@@ -1700,7 +1722,7 @@ async function openAIQualityReview(
       store: false,
       service_tier: serverConfig.openaiServiceTier,
       reasoning: { effort: "medium" },
-      max_output_tokens: 2_000,
+      max_output_tokens: 5_000,
       input: [
         {
           role: "user",
