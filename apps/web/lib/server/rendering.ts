@@ -657,6 +657,13 @@ function placementTooSmallError(): RenderError {
   );
 }
 
+function renderQualityError(): RenderError {
+  return new RenderError(
+    "Le rendu n’est pas assez réaliste. Choisissez un emplacement plus dégagé ou fournissez une image plus claire.",
+    422,
+  );
+}
+
 async function openAIInspectScene(
   sceneBuffer: Buffer,
   contentType: string,
@@ -1540,7 +1547,9 @@ async function createEditMask(
   placement: ResolvedPlacement,
 ): Promise<Buffer> {
   const data = Buffer.alloc(width * height * 4, 255);
-  const paddingRatio = placement.operation === "replace" ? 0.14 : 0.08;
+  const needsObstacleCleanup =
+    placement.operation === "replace" && !placement.obstacleRemoved;
+  const paddingRatio = needsObstacleCleanup ? 0.14 : 0.08;
   const padding = Math.max(
     8,
     Math.round(Math.min(box.width, box.height) * paddingRatio),
@@ -1550,7 +1559,7 @@ async function createEditMask(
   let minY = Math.max(0, box.top - padding);
   let maxY = Math.min(height, box.top + box.height + padding);
 
-  if (placement.operation === "replace" && placement.replacementBox) {
+  if (needsObstacleCleanup && placement.replacementBox) {
     const replacementPadding = Math.max(10, Math.round(padding * 1.25));
     minX = Math.max(
       0,
@@ -1677,6 +1686,18 @@ async function generateAndReview(
       repaired = true;
       finalPlacement = correctedPlacement;
     }
+  }
+
+  if (
+    !qualityReview.accepted ||
+    qualityReview.score < 0.72 ||
+    !qualityReview.photorealistic ||
+    qualityReview.duplicateProduct ||
+    qualityReview.artifactsPresent ||
+    (input.placement.operation === "replace" &&
+      !qualityReview.replacementComplete)
+  ) {
+    throw renderQualityError();
   }
 
   return {
@@ -2010,8 +2031,16 @@ async function openAIEdit(
   if (!encoded) {
     throw new RenderError("OpenAI n’a retourné aucune image", 502);
   }
+  const generatedBuffer = Buffer.from(encoded, "base64");
+  const locallyComposited = await compositeGeneratedInsideMask(
+    baseBuffer,
+    generatedBuffer,
+    maskPng,
+    baseWidth,
+    baseHeight,
+  );
   return {
-    buffer: Buffer.from(encoded, "base64"),
+    buffer: locallyComposited,
     provider: "openai",
     model: serverConfig.openaiModel,
     estimatedCostUsd,
