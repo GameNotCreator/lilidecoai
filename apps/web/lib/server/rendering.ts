@@ -323,7 +323,7 @@ async function runLayeredRender(
     });
   }
 
-  const placement = await openAICleanedPlacement(
+  const analyzedPlacement = await openAICleanedPlacement(
     workingScene,
     workingContentType,
     scene,
@@ -331,6 +331,11 @@ async function runLayeredRender(
     input.placement,
     surfaceType,
     inspection,
+  );
+  const placement = adjustPlacementInsideFitBounds(
+    analyzedPlacement,
+    scene,
+    product,
   );
   await setStage("validating_fit", placement);
   const fit = validatePlacementFit({
@@ -387,6 +392,54 @@ async function runLayeredRender(
     startedAt,
     workingScene,
   );
+}
+
+function adjustPlacementInsideFitBounds(
+  placement: ResolvedPlacement,
+  scene: SceneDocument,
+  product: ProductDocument,
+): ResolvedPlacement {
+  const bounds = placement.fitBounds ?? placement.perspective.surfaceBounds;
+  const availableWidth = bounds.xMax - bounds.xMin;
+  const availableHeight = bounds.yMax - bounds.yMin;
+  const normalizedHeightPerScale =
+    (product.heightCm / product.widthCm) * (scene.widthPx / scene.heightPx);
+  const maximumScale = Math.min(
+    availableWidth,
+    availableHeight / normalizedHeightPerScale,
+    0.75,
+  );
+  if (
+    !Number.isFinite(maximumScale) ||
+    maximumScale <= 0 ||
+    maximumScale < placement.scale * 0.78
+  ) {
+    throw placementTooSmallError();
+  }
+
+  const scale = Math.min(placement.scale, maximumScale * 0.995);
+  const minimumCenter = bounds.xMin + scale / 2;
+  const maximumCenter = bounds.xMax - scale / 2;
+  if (minimumCenter > maximumCenter) throw placementTooSmallError();
+  const xNormalized = clamp(
+    placement.xNormalized,
+    minimumCenter,
+    maximumCenter,
+  );
+  const yNormalized = bounds.yMax;
+  const adjusted =
+    Math.abs(scale - placement.scale) > 0.001 ||
+    Math.abs(xNormalized - placement.xNormalized) > 0.001 ||
+    Math.abs(yNormalized - placement.yNormalized) > 0.001;
+  return {
+    ...placement,
+    scale,
+    xNormalized,
+    yNormalized,
+    rationale: adjusted
+      ? `${placement.rationale} Position et taille ajustées aux limites réelles du support.`
+      : placement.rationale,
+  };
 }
 
 async function finalizeRender(

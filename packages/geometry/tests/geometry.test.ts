@@ -113,6 +113,22 @@ describe("placement utilities", () => {
     expect(result.violations).not.toContain("bottom");
   });
 
+  it("accepts side contact within the analysis rounding tolerance", () => {
+    const result = validatePlacementFit({
+      imageWidth: 1536,
+      imageHeight: 1024,
+      productWidthCm: 40,
+      productHeightCm: 60,
+      xNormalized: 0.5135,
+      yNormalized: 0.68,
+      scale: 0.187,
+      fitBounds: { xMin: 0.42, yMin: 0.2, xMax: 0.607, yMax: 0.68 },
+      marginRatio: 0.006,
+    });
+    expect(result.fits).toBe(true);
+    expect(result.violations).not.toContain("right");
+  });
+
   it("rejects a product that would cross the top of a niche", () => {
     const result = validatePlacementFit({
       imageWidth: 1600,

@@ -280,9 +280,11 @@ export function validatePlacementFit(
     yMax: Math.min(1, Math.max(input.fitBounds.yMin, input.fitBounds.yMax)),
   };
   const violations: PlacementFitResult["violations"] = [];
-  if (productBounds.xMin < fitBounds.xMin + margin) violations.push("left");
-  if (productBounds.xMax > fitBounds.xMax - margin) violations.push("right");
-  if (productBounds.yMin < fitBounds.yMin + margin) violations.push("top");
+  // `margin` is a rounding tolerance around the analyzed bounds. Exact contact
+  // with a side or upper limit is valid; a true overflow is not.
+  if (productBounds.xMin < fitBounds.xMin - margin) violations.push("left");
+  if (productBounds.xMax > fitBounds.xMax + margin) violations.push("right");
+  if (productBounds.yMin < fitBounds.yMin - margin) violations.push("top");
   // The bottom edge is the contact plane: exact equality is expected. Keep a
   // small tolerance for model rounding instead of forcing the object to float.
   if (productBounds.yMax > fitBounds.yMax + Math.max(margin, 0.002)) {
