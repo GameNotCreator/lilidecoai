@@ -44,6 +44,12 @@ APP_SESSION_SECRET
 CRON_SECRET
 DEMO_MODE=false
 CLOUDINARY_URL
+GOOGLE_AI_API_KEY
+GOOGLE_PREVIEW_IMAGE_MODEL=gemini-3.1-flash-image
+GOOGLE_FINAL_IMAGE_MODEL=gemini-3-pro-image
+IMAGE_PIPELINE_MODE=google_hybrid
+OPENAI_IMAGE_ENABLED=false
+AI_MOCK_MODE=false
 ```
 
 Optionnelles :
@@ -57,6 +63,9 @@ OPENAI_QUALITY=high
 OPENAI_MAX_COST_USD=0.25
 CLOUDINARY_UPLOAD_FOLDER=lilidecoai
 MAX_UPLOAD_BYTES=4000000
+GOOGLE_IMAGE_TIMEOUT_MS=240000
+GOOGLE_IMAGE_MAX_RETRIES=1
+GOOGLE_IMAGE_MAX_COST_USD=0.45
 ```
 
 Vercel limite les requêtes de Functions à 4,5 Mo. L’interface accepte des
@@ -87,5 +96,10 @@ Smoke tests :
 3. créer et préparer un produit, puis confirmer sa présence dans Cloudinary ;
 4. envoyer une pièce puis produire un rendu local ;
 5. rejouer la même clé d’idempotence et vérifier l’absence de double débit ;
-6. activer OpenAI sur Preview avant Production ;
+6. valider Gemini en Preview Vercel, puis en Production ;
 7. appeler `/api/cron/purge` avec `Authorization: Bearer $CRON_SECRET`.
+
+Avant le premier déploiement de cette version, inspecter la migration avec
+`npm.cmd run migrate:image-pipeline`, puis l’appliquer explicitement avec
+`npm.cmd run migrate:image-pipeline -- --apply`. Le script ne supprime aucun
+champ et ne journalise jamais l’URI MongoDB.

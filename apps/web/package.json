@@ -6,11 +6,13 @@
     "dev": "cross-env NEXT_IGNORE_INCORRECT_LOCKFILE=1 next dev",
     "build": "cross-env NEXT_IGNORE_INCORRECT_LOCKFILE=1 next build",
     "start": "next start",
+    "test": "vitest run",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@lili/analytics": "*",
+    "@lili/ai-router": "*",
     "@lili/geometry": "*",
     "@lili/types": "*",
     "@lili/ui": "*",
@@ -38,6 +40,7 @@
     "eslint": "^9.39.5",
     "eslint-config-next": "16.2.12",
     "tailwindcss": "4.3.3",
-    "typescript": "6.0.3"
+    "typescript": "6.0.3",
+    "vitest": "^4.0.18"
   }
 }

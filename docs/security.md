@@ -2,7 +2,7 @@
 
 ## Mesures présentes
 
-- secrets MongoDB, OpenAI et Cloudinary accessibles uniquement côté serveur ;
+- secrets MongoDB, Google, OpenAI et Cloudinary accessibles uniquement côté serveur ;
 - session signée dans un cookie `HttpOnly`, `SameSite=Lax` et `Secure` en
   production ;
 - session widget partitionnée, limitée à un produit et à ses propres scènes et
@@ -18,7 +18,10 @@
 - clés d’idempotence uniques pour rendus et crédits ;
 - débit atomique empêchant un solde négatif ;
 - analytics sans contenu d’image ;
-- clé OpenAI jamais exposée au navigateur.
+- clés Google et OpenAI jamais exposées au navigateur ;
+- détection du type réel, réencodage et limites strictes sur les images ;
+- limitation de débit MongoDB sur analyse, segmentation et rendu ;
+- aucune URL distante fournie par le client n’est récupérée par le pipeline.
 
 Le mode `DEMO_MODE=true` utilise une organisation partagée et ne doit jamais
 être activé sur un site public réel.

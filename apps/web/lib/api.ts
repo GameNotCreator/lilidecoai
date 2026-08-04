@@ -10,6 +10,8 @@ export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
 let publicSessionToken = "";
 let publicSessionKey = "";
 let publicSessionPromise: Promise<void> | null = null;
+let guestSessionPromise: Promise<void> | null = null;
+let guestSessionId = "";
 
 const headers = {
   "X-Organization-Id": "00000000-0000-4000-8000-000000000001",
@@ -64,11 +66,24 @@ export async function establishPublicSession(
 
 export async function establishGuestEditorSession(): Promise<void> {
   if (publicSessionToken && publicSessionKey === "guest-editor") return;
-  const session = await api<{ accessToken: string }>("/v1/auth/guest", {
-    method: "POST",
-  });
-  publicSessionToken = session.accessToken;
   publicSessionKey = "guest-editor";
+  if (guestSessionPromise) return guestSessionPromise;
+  if (!guestSessionId) {
+    const stored = window.sessionStorage.getItem("lili_guest_editor_id");
+    guestSessionId = stored ?? crypto.randomUUID();
+    window.sessionStorage.setItem("lili_guest_editor_id", guestSessionId);
+  }
+  guestSessionPromise = api<{ accessToken: string }>("/v1/auth/guest", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: guestSessionId }),
+  })
+    .then((session) => {
+      publicSessionToken = session.accessToken;
+    })
+    .finally(() => {
+      guestSessionPromise = null;
+    });
+  return guestSessionPromise;
 }
 
 export async function getProducts(): Promise<Product[]> {

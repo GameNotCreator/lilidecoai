@@ -1,14 +1,29 @@
 import "server-only";
 
 import { selectOutputSize, validatePlacementFit } from "@lili/geometry";
+import {
+  PROMPT_VERSION,
+  PromptBuilder,
+  type ImageEditingRequest,
+  type ImageReference,
+  type OutputQuality,
+  type RenderMode,
+  type SceneAnalysisResult,
+  type SurfaceType,
+} from "@lili/ai-router";
 import type { Db } from "mongodb";
 import sharp from "sharp";
 
 import { readAsset, storeAsset } from "./assets";
-import { serverConfig } from "./config";
+import { paidImageProviderConfigured, serverConfig } from "./config";
 import { captureCredit } from "./credits";
 import { collections } from "./mongodb";
 import { renderResponse } from "./serializers";
+import {
+  inspectImagesWithGoogle,
+  selectEditingProvider,
+  selectSceneAnalysisProvider,
+} from "./ai";
 import type { ProductDocument, RenderDocument, SceneDocument } from "./types";
 
 interface PlacementInput {
@@ -27,6 +42,8 @@ interface PlacementInput {
     temperature?: string;
     hardness?: string;
   };
+  targetPoint?: { x: number; y: number };
+  targetMaskAssetId?: string;
 }
 
 interface NormalizedBox {
@@ -60,7 +77,7 @@ interface ResolvedPlacement extends PlacementInput {
   obstacleRemoved?: boolean;
   pipelineStage?: string;
   perspective: PerspectiveAnalysis;
-  source: "manual" | "openai-vision" | "automatic-fallback";
+  source: "manual" | "google-vision" | "openai-vision" | "automatic-fallback";
 }
 
 interface SceneInspection {
@@ -78,6 +95,20 @@ interface RenderInput {
   placement: PlacementInput;
   idempotencyKey: string;
   quality?: string;
+  mode?: RenderMode;
+  placementPoint?: { x: number; y: number };
+  targetPoint?: { x: number; y: number };
+  targetMaskId?: string;
+  targetMaskAssetId?: string;
+  surfaceType?: string;
+  dimensionsCm?: { width: number; height: number; depth: number; unit: "cm" };
+  anchorType?: string;
+  material?: string;
+  lighting?: Record<string, unknown>;
+  calibration?: Record<string, unknown>;
+  outputQuality?: OutputQuality;
+  preserveBackground?: boolean;
+  userInstructions?: string;
 }
 
 interface ResolvedRenderInput extends Omit<RenderInput, "placement"> {
@@ -105,6 +136,7 @@ interface QualityReview {
   duplicateProduct: boolean;
   artifactsPresent: boolean;
   feedback: string;
+  checks?: Array<{ name: string; score: number; reason: string }>;
 }
 
 export type DeferRenderTask = (task: () => Promise<void>) => void;
@@ -142,6 +174,13 @@ export async function createRender(
   const renderId = crypto.randomUUID();
   const now = new Date();
   const requestedSize = selectOutputSize(scene.widthPx, scene.heightPx);
+  const mode = input.mode ?? "insert";
+  const outputQuality = input.outputQuality ?? "final";
+  const placementPoint = input.placementPoint ?? {
+    x: Number(input.placement.xNormalized ?? 0.5),
+    y: Number(input.placement.yNormalized ?? 0.7),
+  };
+  const selectedProvider = selectEditingProvider(mode, outputQuality);
   const render: RenderDocument = {
     id: renderId,
     organizationId,
@@ -152,6 +191,46 @@ export async function createRender(
       : {}),
     idempotencyKey: input.idempotencyKey,
     status: "processing",
+    pipelineState: "uploaded",
+    mode,
+    outputQuality,
+    surfaceType: input.surfaceType ?? input.placement.surfaceType,
+    placementPoint,
+    ...(input.targetPoint ? { targetPoint: input.targetPoint } : {}),
+    ...(input.targetMaskId ? { targetMaskId: input.targetMaskId } : {}),
+    ...(input.targetMaskAssetId
+      ? { targetMaskAssetId: input.targetMaskAssetId }
+      : {}),
+    ...(input.targetMaskAssetId ? { targetMaskConfirmedAt: now } : {}),
+    dimensionsCm: input.dimensionsCm ?? {
+      width: product.widthCm,
+      height: product.heightCm,
+      depth: product.depthCm,
+      unit: "cm",
+    },
+    lighting: input.lighting ??
+      input.placement.lighting ?? { mode: "automatic" },
+    ...(input.calibration ? { calibration: input.calibration } : {}),
+    productViews: (product.views ?? []).map((view) => ({
+      assetId: view.assetId,
+      type: view.type,
+      widthPx: view.widthPx,
+      heightPx: view.heightPx,
+      validationStatus: view.validationStatus,
+    })),
+    modelChain: [
+      {
+        provider: selectedProvider.route.provider,
+        model: selectedProvider.provider.model,
+        role: outputQuality,
+      },
+    ],
+    attemptCount: 0,
+    estimatedCostUsd: 0,
+    promptVersion: PROMPT_VERSION,
+    preserveBackground: input.preserveBackground ?? true,
+    userInstructions: input.userInstructions ?? "",
+    degradedMode: selectedProvider.route.degradedMode,
     provider: null,
     model: null,
     requestedSize,
@@ -165,14 +244,15 @@ export async function createRender(
   await c.renders.insertOne(render);
 
   const startedAt = Date.now();
-  if (serverConfig.openaiApiKey && deferTask) {
+  if (paidImageProviderConfigured() && deferTask) {
     const placement = {
       ...input.placement,
       pipelineStage: "inspecting_scene",
     };
     const update = {
-      provider: "openai",
-      model: serverConfig.openaiModel,
+      provider: selectedProvider.route.provider,
+      model: selectedProvider.provider.model,
+      pipelineState: "analyzing_scene" as const,
       placement,
       updatedAt: new Date(),
     };
@@ -246,6 +326,19 @@ async function runLayeredRender(
   requestedSize: RenderDocument["requestedSize"],
   startedAt: number,
 ): Promise<void> {
+  if (serverConfig.googleApiKey && !serverConfig.aiMockMode) {
+    await runGoogleLayeredRender(
+      db,
+      organizationId,
+      render,
+      scene,
+      product,
+      input,
+      requestedSize,
+      startedAt,
+    );
+    return;
+  }
   const c = collections(db);
   const sceneAsset = await readAsset(db, scene.assetId);
   if (!sceneAsset) throw new RenderError("Photo de pièce introuvable", 404);
@@ -394,6 +487,535 @@ async function runLayeredRender(
   );
 }
 
+async function runGoogleLayeredRender(
+  db: Db,
+  organizationId: string,
+  render: RenderDocument,
+  scene: SceneDocument,
+  product: ProductDocument,
+  input: RenderInput,
+  requestedSize: RenderDocument["requestedSize"],
+  startedAt: number,
+): Promise<void> {
+  const c = collections(db);
+  const sceneAsset = await readAsset(db, scene.assetId);
+  if (!sceneAsset) throw new RenderError("Photo de pièce introuvable", 404);
+  const mode = input.mode ?? "insert";
+  const outputQuality = input.outputQuality ?? "final";
+  const anchor = requireUserAnchor(input.placement);
+  const surfaceType = providerSurfaceType(
+    input.surfaceType ?? input.placement.surfaceType ?? product.placementType,
+    mode,
+  );
+  const setStage = async (
+    pipelineState: NonNullable<RenderDocument["pipelineState"]>,
+    pipelineStage: string,
+    placement: Record<string, unknown> = {},
+  ) => {
+    await assertRenderActive(db, render.id);
+    await c.renders.updateOne(
+      { id: render.id },
+      {
+        $set: {
+          pipelineState,
+          placement: { ...input.placement, ...placement, pipelineStage },
+          updatedAt: new Date(),
+        },
+      },
+    );
+  };
+
+  await setStage("analyzing_scene", "analyzing_scene");
+  const initialAnalysis = await analyzeSceneWithGoogle(
+    sceneAsset.buffer,
+    sceneAsset.asset.contentType,
+    scene,
+    product,
+    anchor,
+    surfaceType,
+    input.calibration,
+  );
+  await recordProviderAttempt(
+    db,
+    render,
+    initialAnalysis.providerResult,
+    "analyzing_scene",
+    PROMPT_VERSION,
+    false,
+    1,
+  );
+  if (initialAnalysis.clarityScore < 0.55) throw imageUnclearError();
+
+  const segmentation = input.targetMaskId
+    ? await c.segmentations.findOne({
+        id: input.targetMaskId,
+        organizationId,
+        sceneId: scene.id,
+        status: "confirmed",
+      })
+    : null;
+  const obstacle = nearestObstacle(initialAnalysis, anchor);
+  if (mode === "insert" && obstacle && obstacle.confidence >= 0.58) {
+    throw new RenderError(
+      "Un objet occupe ce point. Choisissez « Remplacer un élément existant » pour le retirer proprement.",
+      422,
+    );
+  }
+  if (mode === "replace" && (!segmentation || !input.targetMaskAssetId)) {
+    throw new RenderError(
+      "Confirmez le masque de l’objet avant de lancer le remplacement.",
+      422,
+    );
+  }
+
+  let workingScene = sceneAsset.buffer;
+  let workingContentType = sceneAsset.asset.contentType;
+  if (mode === "replace" && segmentation && input.targetMaskAssetId) {
+    await setStage("removing_target", "removing_target", {
+      operation: "replace",
+      occupiedObject: segmentation.label,
+      replacementBox: segmentation.box,
+      targetMaskAssetId: input.targetMaskAssetId,
+    });
+    workingScene = await removeConfirmedTargetWithGoogle(
+      db,
+      organizationId,
+      render,
+      scene,
+      input,
+      requestedSize,
+      sceneAsset.buffer,
+      sceneAsset.asset.contentType,
+      input.targetMaskAssetId,
+      segmentation.label,
+    );
+    workingContentType = "image/webp";
+  }
+
+  await setStage("analyzing_scene", "analyzing_cleaned_scene", {
+    operation: mode === "replace" ? "replace" : "place",
+    obstacleRemoved: mode === "replace",
+  });
+  const cleanAnalysis = await analyzeSceneWithGoogle(
+    workingScene,
+    workingContentType,
+    scene,
+    product,
+    anchor,
+    surfaceType,
+    input.calibration,
+  );
+  await recordProviderAttempt(
+    db,
+    render,
+    cleanAnalysis.providerResult,
+    "analyzing_cleaned_scene",
+    PROMPT_VERSION,
+    false,
+    1,
+  );
+  if (cleanAnalysis.clarityScore < 0.55) throw imageUnclearError();
+
+  await setStage("computing_geometry", "computing_geometry");
+  const computedPlacement = placementFromSceneAnalysis(
+    scene,
+    product,
+    input,
+    cleanAnalysis,
+    surfaceType,
+    segmentation,
+  );
+  const placement = adjustPlacementInsideFitBounds(
+    computedPlacement,
+    scene,
+    product,
+  );
+  const fit = validatePlacementFit({
+    imageWidth: scene.widthPx,
+    imageHeight: scene.heightPx,
+    productWidthCm: product.widthCm,
+    productHeightCm: product.heightCm,
+    xNormalized: placement.xNormalized,
+    yNormalized: placement.yNormalized,
+    scale: placement.scale,
+    fitBounds: placement.fitBounds ?? placement.perspective.surfaceBounds,
+    marginRatio: 0.006,
+  });
+  if (!fit.fits) throw placementTooSmallError();
+
+  await setStage("building_prompt", "building_prompt", placement);
+  const resolvedInput: ResolvedRenderInput = {
+    ...input,
+    placement: { ...placement, pipelineStage: "composing_preview" },
+  };
+  const composition = await compose(
+    db,
+    scene,
+    product,
+    resolvedInput,
+    workingScene,
+  );
+  const previewAsset = await storeAsset(db, {
+    organizationId,
+    kind: "render",
+    buffer: composition.buffer,
+    contentType: "image/webp",
+    expiresAt: scene.expiresAt,
+  });
+  const generationState =
+    outputQuality === "preview" ? "generating_preview" : "generating_final";
+  resolvedInput.placement.pipelineStage = generationState;
+  await c.renders.updateOne(
+    { id: render.id },
+    {
+      $set: {
+        pipelineState: generationState,
+        resultAssetId: previewAsset.id,
+        placement: resolvedInput.placement,
+        updatedAt: new Date(),
+      },
+    },
+  );
+  await finalizeRender(
+    db,
+    organizationId,
+    render,
+    scene,
+    product,
+    composition,
+    resolvedInput,
+    requestedSize,
+    startedAt,
+    workingScene,
+  );
+}
+
+async function analyzeSceneWithGoogle(
+  buffer: Buffer,
+  contentType: string,
+  scene: SceneDocument,
+  product: ProductDocument,
+  anchor: { x: number; y: number },
+  surfaceType: SurfaceType,
+  calibration?: Record<string, unknown>,
+): Promise<SceneAnalysisResult> {
+  const provider = selectSceneAnalysisProvider();
+  return provider.analyze({
+    room: {
+      data: new Uint8Array(buffer),
+      mimeType: contentType as "image/jpeg" | "image/png" | "image/webp",
+      role: "room_original",
+    },
+    placementPoint: anchor,
+    surfaceType,
+    productDimensionsCm: {
+      width: product.widthCm,
+      height: product.heightCm,
+      depth: product.depthCm,
+    },
+    ...(calibration ? { calibration } : {}),
+  });
+}
+
+async function removeConfirmedTargetWithGoogle(
+  db: Db,
+  organizationId: string,
+  render: RenderDocument,
+  scene: SceneDocument,
+  input: RenderInput,
+  requestedSize: RenderDocument["requestedSize"],
+  source: Buffer,
+  sourceContentType: string,
+  maskAssetId: string,
+  label: string,
+): Promise<Buffer> {
+  const maskAsset = await readAsset(db, maskAssetId);
+  if (!maskAsset) throw new RenderError("Masque confirmé introuvable", 404);
+  const { provider, route } = selectEditingProvider("replace", "final");
+  const prompt = [
+    "CLEANUP LAYER ONLY. Image 1 is the untouched original room. Image 2 is the user-confirmed target mask.",
+    `Remove the complete selected ${label}, including every foot, handle, appendage, cable, reflection and old contact shadow inside the confirmed mask.`,
+    "Reconstruct the hidden wall, floor, shelf, support plane, texture and lighting from surrounding evidence.",
+    "Do not insert the catalog product yet. Do not invent decor. Preserve camera, crop, architecture, furniture and every area outside the mask.",
+    "The result must be the same photograph with only the selected object cleanly removed.",
+  ].join("\n");
+  const request: ImageEditingRequest = {
+    scene: new Uint8Array(source),
+    productCutout: new Uint8Array(source),
+    composition: new Uint8Array(source),
+    protectionMask: new Uint8Array(maskAsset.buffer),
+    prompt,
+    quality: "high",
+    size: requestedSize,
+    lighting: {
+      direction: "automatic",
+      temperature: "neutral",
+      hardness: "balanced",
+    },
+    placement: {
+      x: Number(input.placement.xNormalized ?? 0.5),
+      y: Number(input.placement.yNormalized ?? 0.7),
+    },
+    idempotencyKey: `${input.idempotencyKey}-cleanup`,
+    references: [
+      {
+        data: new Uint8Array(source),
+        mimeType: sourceContentType as
+          "image/jpeg" | "image/png" | "image/webp",
+        role: "room_original",
+      },
+      {
+        data: new Uint8Array(maskAsset.buffer),
+        mimeType: "image/png",
+        role: "target_mask",
+      },
+    ],
+    mode: "replace",
+    outputQuality: "final",
+    targetMask: {
+      data: new Uint8Array(maskAsset.buffer),
+      mimeType: "image/png",
+      role: "target_mask",
+    },
+    preserveBackground: true,
+  };
+  const result = await provider.edit(request);
+  await collections(db).renderAttempts.insertOne({
+    id: crypto.randomUUID(),
+    organizationId,
+    renderId: render.id,
+    provider: result.provider,
+    model: result.model,
+    requestId: result.requestId,
+    stage: "removing_target",
+    attemptNumber: result.attemptCount,
+    promptVersion: PROMPT_VERSION,
+    status: result.status,
+    latencyMs: result.durationMs,
+    estimatedCostUsd: result.estimatedCostUsd,
+    safety: result.safety as unknown as Record<string, unknown>,
+    ...(result.error
+      ? {
+          error: result.error.message.slice(0, 500),
+          errorCode: result.error.code,
+          retryable: result.error.retryable,
+        }
+      : {}),
+    degradedMode: route.degradedMode,
+    createdAt: new Date(),
+  });
+  if (result.status === "failed" || !result.images[0]) {
+    throw new RenderError(
+      result.error?.message ?? "La suppression de l’objet a échoué.",
+      result.error?.httpStatus ?? 502,
+    );
+  }
+  const cleaned = await compositeInsideConfirmedMask(
+    source,
+    Buffer.from(result.images[0].data),
+    maskAsset.buffer,
+    scene.widthPx,
+    scene.heightPx,
+  );
+  const stored = await storeAsset(db, {
+    organizationId,
+    kind: "render",
+    buffer: await sharp(cleaned).webp({ quality: 94 }).toBuffer(),
+    contentType: "image/webp",
+    expiresAt: scene.expiresAt,
+  });
+  await collections(db).renders.updateOne(
+    { id: render.id },
+    {
+      $set: {
+        resultAssetId: stored.id,
+        estimatedCostUsd: result.estimatedCostUsd,
+        attemptCount: result.attemptCount,
+        updatedAt: new Date(),
+      },
+    },
+  );
+  return cleaned;
+}
+
+function placementFromSceneAnalysis(
+  scene: SceneDocument,
+  product: ProductDocument,
+  input: RenderInput,
+  analysis: SceneAnalysisResult,
+  surfaceType: SurfaceType,
+  segmentation: {
+    label: string;
+    box: NormalizedBox;
+  } | null,
+): ResolvedPlacement {
+  const anchor = requireUserAnchor(input.placement);
+  const candidates = analysis.surfaces.filter(
+    (surface) =>
+      surface.type === surfaceType ||
+      (surfaceType === "existing_object" && surface.type !== "wall"),
+  );
+  const selectedSurface =
+    candidates.find((surface) => pointInPolygon(anchor, surface.polygon)) ??
+    candidates.sort((a, b) => b.confidence - a.confidence)[0] ??
+    analysis.surfaces.sort((a, b) => b.confidence - a.confidence)[0];
+  const surfaceBounds = selectedSurface
+    ? boundsFromPolygon(selectedSurface.polygon)
+    : defaultPerspective().surfaceBounds;
+  const calibratedPixelsPerCm = analysis.scale.pixelsPerCentimeter;
+  const widthFromCalibration = calibratedPixelsPerCm
+    ? (product.widthCm * calibratedPixelsPerCm) / scene.widthPx
+    : null;
+  const distanceScale =
+    analysis.depth === "close" ? 0.22 : analysis.depth === "far" ? 0.095 : 0.15;
+  const productScaleFactor = Math.sqrt(Math.max(0.35, product.widthCm / 50));
+  const scale = clamp(
+    widthFromCalibration ?? distanceScale * productScaleFactor,
+    0.045,
+    0.68,
+  );
+  const bottomContact =
+    surfaceType === "wall" || surfaceType === "ceiling"
+      ? anchor.y
+      : surfaceBounds.yMax;
+  const operation = input.mode === "replace" ? "replace" : "place";
+  return {
+    ...input.placement,
+    mode: input.mode ?? "insert",
+    surfaceType,
+    xNormalized: anchor.x,
+    yNormalized: bottomContact,
+    scale,
+    rotationDegrees: clamp(input.placement.rotationDegrees ?? 0, -20, 20),
+    confidence: Math.min(
+      analysis.clarityScore,
+      selectedSurface?.confidence ?? 0.55,
+    ),
+    rationale:
+      analysis.scale.status === "calibrated"
+        ? "Dimensions calibrées et perspective calculée à partir de la référence réelle."
+        : "Dimensions estimées à partir de la profondeur, du support et des éléments visibles.",
+    operation,
+    occupiedObject: segmentation?.label ?? null,
+    replacementBox: segmentation?.box ?? null,
+    fitBounds: surfaceBounds,
+    obstacleRemoved: operation === "replace",
+    perspective: {
+      distance: analysis.depth,
+      framing:
+        analysis.depth === "close"
+          ? "close-up"
+          : analysis.depth === "far"
+            ? "wide"
+            : "normal",
+      surfaceBounds,
+      occlusion: "none",
+      evidence: `Scene ${analysis.roomType}; horizon ${analysis.horizonY.toFixed(2)}; scale ${analysis.scale.status}.`,
+    },
+    source: "google-vision",
+  };
+}
+
+function providerSurfaceType(value: string, mode: RenderMode): SurfaceType {
+  if (mode === "replace") return "existing_object";
+  const mapping: Record<string, SurfaceType> = {
+    table: "tabletop",
+    tabletop: "tabletop",
+    nightstand: "tabletop",
+    shelf: "shelf",
+    niche: "niche",
+    wall: "wall",
+    floor: "floor",
+    rug: "rug_zone",
+    rug_zone: "rug_zone",
+    ceiling: "ceiling",
+    existing_object: "existing_object",
+  };
+  return mapping[value] ?? "floor";
+}
+
+function nearestObstacle(
+  analysis: SceneAnalysisResult,
+  point: { x: number; y: number },
+) {
+  return analysis.obstacles
+    .filter(
+      (obstacle) =>
+        point.x >= obstacle.box.xMin &&
+        point.x <= obstacle.box.xMax &&
+        point.y >= obstacle.box.yMin &&
+        point.y <= obstacle.box.yMax,
+    )
+    .sort((a, b) => b.confidence - a.confidence)[0];
+}
+
+function pointInPolygon(
+  point: { x: number; y: number },
+  polygon: Array<{ x: number; y: number }>,
+): boolean {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const a = polygon[i];
+    const b = polygon[j];
+    if (!a || !b) continue;
+    const intersects =
+      a.y > point.y !== b.y > point.y &&
+      point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y || 1e-9) + a.x;
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+function boundsFromPolygon(
+  polygon: Array<{ x: number; y: number }>,
+): NormalizedBox {
+  if (polygon.length < 3) return defaultPerspective().surfaceBounds;
+  return normalizeBox({
+    xMin: Math.min(...polygon.map((point) => point.x)),
+    yMin: Math.min(...polygon.map((point) => point.y)),
+    xMax: Math.max(...polygon.map((point) => point.x)),
+    yMax: Math.max(...polygon.map((point) => point.y)),
+  });
+}
+
+async function compositeInsideConfirmedMask(
+  original: Buffer,
+  generated: Buffer,
+  overlayMask: Buffer,
+  width: number,
+  height: number,
+): Promise<Buffer> {
+  const alpha = await sharp(overlayMask)
+    .resize({ width, height, fit: "fill" })
+    .ensureAlpha()
+    .extractChannel(3)
+    .threshold(8)
+    .blur(1)
+    .png()
+    .toBuffer();
+  const localEdit = await sharp(generated)
+    .resize({ width, height, fit: "fill" })
+    .removeAlpha()
+    .joinChannel(alpha)
+    .png()
+    .toBuffer();
+  return sharp(original)
+    .resize({ width, height, fit: "fill" })
+    .composite([{ input: localEdit, blend: "over" }])
+    .webp({ quality: 94 })
+    .toBuffer();
+}
+
+async function assertRenderActive(db: Db, renderId: string): Promise<void> {
+  const render = await collections(db).renders.findOne(
+    { id: renderId },
+    { projection: { status: 1 } },
+  );
+  if (render?.status === "cancelled") {
+    throw new RenderError("Rendu annulé", 409);
+  }
+}
+
 function adjustPlacementInsideFitBounds(
   placement: ResolvedPlacement,
   scene: SceneDocument,
@@ -455,9 +1077,10 @@ async function finalizeRender(
   sourceSceneBuffer?: Buffer,
 ) {
   const c = collections(db);
-  const generated = serverConfig.openaiApiKey
+  const generated = paidImageProviderConfigured()
     ? await generateAndReview(
         db,
+        render,
         scene,
         product,
         composition,
@@ -483,6 +1106,7 @@ async function finalizeRender(
           feedback: "Composition déterministe de test.",
         } satisfies QualityReview,
         repaired: false,
+        attemptCount: 1,
         finalPlacement: input.placement,
       };
   const finalBuffer =
@@ -507,12 +1131,37 @@ async function finalizeRender(
     qualityReview: generated.qualityReview,
     repaired: generated.repaired,
   };
+  const currentUsage = await c.renders.findOne(
+    { id: render.id },
+    { projection: { estimatedCostUsd: 1, attemptCount: 1 } },
+  );
+  const totalEstimatedCostUsd =
+    (currentUsage?.estimatedCostUsd ?? 0) + generated.estimatedCostUsd;
+  const totalAttempts =
+    (currentUsage?.attemptCount ?? 0) + (generated.attemptCount ?? 1);
+  const usedAttempts = await c.renderAttempts
+    .find({ renderId: render.id, organizationId })
+    .sort({ createdAt: 1 })
+    .project({ provider: 1, model: 1, stage: 1 })
+    .toArray();
+  const modelChain = usedAttempts.map((attempt) => ({
+    provider: attempt.provider,
+    model: attempt.model,
+    role: String(attempt.stage ?? "render"),
+  }));
   const update = {
     status: "succeeded" as const,
+    pipelineState: "completed" as const,
     provider: generated.provider,
     model: generated.model,
     resultAssetId: resultAsset.id,
     qualityScore: generated.qualityReview.score,
+    qualityChecks: generated.qualityReview.checks ?? [],
+    estimatedCostUsd: totalEstimatedCostUsd,
+    attemptCount: totalAttempts,
+    latencyMs: Date.now() - startedAt,
+    selectedResultAssetId: resultAsset.id,
+    modelChain,
     placement: finalPlacement,
     creditCharged,
     updatedAt: new Date(),
@@ -530,6 +1179,9 @@ async function finalizeRender(
     status: "succeeded",
     latencyMs: Date.now() - startedAt,
     estimatedCostUsd: generated.estimatedCostUsd,
+    stage: "completed",
+    attemptNumber: totalAttempts,
+    promptVersion: PROMPT_VERSION,
     createdAt: new Date(),
   });
   return renderResponse({ ...render, ...update });
@@ -544,12 +1196,23 @@ async function recordRenderFailure(
 ): Promise<void> {
   const c = collections(db);
   const message = error instanceof Error ? error.message : "Rendu impossible";
-  await c.renders.updateOne(
+  const current = await c.renders.findOne(
     { id: renderId },
+    { projection: { status: 1, mode: 1, outputQuality: 1 } },
+  );
+  if (current?.status === "cancelled") return;
+  const selected = selectEditingProvider(
+    current?.mode ?? "insert",
+    current?.outputQuality ?? "final",
+  );
+  await c.renders.updateOne(
+    { id: renderId, status: { $ne: "cancelled" } },
     {
       $set: {
         status: "failed",
+        pipelineState: "failed",
         error: message.slice(0, 500),
+        latencyMs: Date.now() - startedAt,
         updatedAt: new Date(),
       },
     },
@@ -558,10 +1221,11 @@ async function recordRenderFailure(
     id: crypto.randomUUID(),
     organizationId,
     renderId,
-    provider: serverConfig.openaiApiKey ? "openai" : "mock",
-    model: serverConfig.openaiApiKey
-      ? serverConfig.openaiModel
-      : "deterministic-compositor",
+    provider: selected.route.provider,
+    model: selected.provider.model,
+    stage: "failed",
+    attemptNumber: 1,
+    promptVersion: PROMPT_VERSION,
     status: "failed",
     latencyMs: Date.now() - startedAt,
     estimatedCostUsd: 0,
@@ -605,7 +1269,7 @@ async function resolvePlacement(
   const surfaceType = normalizeSurfaceType(
     input.surfaceType ?? product.placementType,
   );
-  if (serverConfig.openaiApiKey) {
+  if (serverConfig.openAIImageEnabled && serverConfig.openaiApiKey) {
     try {
       return await openAIPlacement(db, scene, product, input, surfaceType);
     } catch (reason) {
@@ -1418,7 +2082,7 @@ function fallbackPlacement(
       temperature: light?.temperature ?? "neutral",
       hardness: "soft",
     },
-    confidence: serverConfig.openaiApiKey ? 0.58 : 0.46,
+    confidence: paidImageProviderConfigured() ? 0.58 : 0.46,
     rationale: userAnchor
       ? "Point choisi manuellement, avec échelle et lumière adaptées automatiquement au support."
       : "Placement automatique basé sur le type de support, les dimensions du produit et la perspective de la pièce.",
@@ -1601,6 +2265,7 @@ async function createEditMask(
 
 async function generateAndReview(
   db: Db,
+  render: RenderDocument,
   scene: SceneDocument,
   product: ProductDocument,
   composition: Composition,
@@ -1609,6 +2274,18 @@ async function generateAndReview(
   deadlineMs: number,
   sourceSceneBuffer?: Buffer,
 ) {
+  if (serverConfig.googleApiKey && !serverConfig.aiMockMode) {
+    return generateAndReviewGoogle(
+      db,
+      render,
+      scene,
+      product,
+      composition,
+      input,
+      requestedSize,
+      sourceSceneBuffer,
+    );
+  }
   const perEditCostUsd = estimatedImageEditCost(requestedSize);
   if (perEditCostUsd > serverConfig.openaiMaxCostUsd) {
     throw new RenderError("Plafond de coût OpenAI dépassé", 422);
@@ -1705,8 +2382,528 @@ async function generateAndReview(
     estimatedCostUsd: totalEstimatedCostUsd,
     qualityReview,
     repaired,
+    attemptCount: repaired ? 2 : 1,
     finalPlacement,
   };
+}
+
+async function generateAndReviewGoogle(
+  db: Db,
+  render: RenderDocument,
+  scene: SceneDocument,
+  product: ProductDocument,
+  composition: Composition,
+  input: ResolvedRenderInput,
+  requestedSize: RenderDocument["requestedSize"],
+  cleanedSceneBuffer?: Buffer,
+) {
+  const mode: RenderMode =
+    input.placement.operation === "replace" ? "replace" : "insert";
+  const outputQuality: OutputQuality = input.outputQuality ?? "final";
+  const sourceAsset = await readAsset(db, scene.assetId);
+  if (!sourceAsset) throw new RenderError("Photo de pièce introuvable", 404);
+  const productReferences = await loadProductReferences(db, product);
+  const maskPng = await compositionMaskPng(composition);
+  const maskReference: ImageReference = {
+    data: new Uint8Array(maskPng),
+    mimeType: "image/png",
+    role: "target_mask",
+  };
+  const baseReferences: ImageReference[] = [
+    {
+      data: new Uint8Array(sourceAsset.buffer),
+      mimeType: sourceAsset.asset.contentType as
+        "image/jpeg" | "image/png" | "image/webp",
+      role: "room_original",
+    },
+    ...productReferences,
+    maskReference,
+    ...(cleanedSceneBuffer && mode === "replace"
+      ? [
+          {
+            data: new Uint8Array(cleanedSceneBuffer),
+            mimeType: "image/webp" as const,
+            role: "intermediate" as const,
+          },
+        ]
+      : []),
+    {
+      data: new Uint8Array(composition.buffer),
+      mimeType: "image/webp",
+      role: "composition",
+    },
+  ];
+  const buildPrompt = (repairFeedback?: string) =>
+    new PromptBuilder().build({
+      mode,
+      outputQuality,
+      imageRoles: baseReferences.map((reference) => reference.role),
+      product: {
+        name: product.name,
+        description: product.description,
+        material: product.material,
+        dimensionsCm: {
+          width: product.widthCm,
+          height: product.heightCm,
+          depth: product.depthCm,
+        },
+        anchorType:
+          product.anchor?.anchorType ?? input.anchorType ?? "bottom_center",
+        merchantInstructions: product.generationInstructions,
+      },
+      placement: {
+        point: {
+          x: input.placement.xNormalized,
+          y: input.placement.yNormalized,
+        },
+        ...(input.targetPoint ? { targetPoint: input.targetPoint } : {}),
+        surfaceType: providerSurfaceType(input.placement.surfaceType, mode),
+        geometry: {
+          scale: input.placement.scale,
+          rotationDegrees: input.placement.rotationDegrees,
+          perspective: input.placement.perspective,
+          fitBounds: input.placement.fitBounds,
+        },
+      },
+      lighting: input.lighting ?? input.placement.lighting,
+      calibration: input.calibration,
+      preserveBackground: input.preserveBackground ?? true,
+      userInstructions: input.userInstructions,
+      ...(repairFeedback ? { repairFeedback } : {}),
+    });
+  const { provider, route } = selectEditingProvider(mode, outputQuality);
+
+  const runGeneration = async (
+    attempt: number,
+    references: ImageReference[],
+    repairFeedback?: string,
+  ) => {
+    const prompt = buildPrompt(repairFeedback);
+    const request: ImageEditingRequest = {
+      scene: new Uint8Array(sourceAsset.buffer),
+      productCutout: productReferences[0]?.data ?? new Uint8Array(),
+      composition: new Uint8Array(composition.buffer),
+      protectionMask: new Uint8Array(maskPng),
+      prompt: prompt.text,
+      quality: outputQuality === "preview" ? "low" : "high",
+      size: requestedSize,
+      lighting: {
+        direction: String(input.placement.lighting?.direction ?? "automatic"),
+        temperature: normalizeTemperature(
+          input.placement.lighting?.temperature,
+        ),
+        hardness: normalizeHardness(input.placement.lighting?.hardness),
+      },
+      placement: {
+        x: input.placement.xNormalized,
+        y: input.placement.yNormalized,
+        scale: input.placement.scale,
+        surface: input.placement.surfaceType,
+      },
+      idempotencyKey:
+        attempt === 1
+          ? input.idempotencyKey
+          : `${input.idempotencyKey}-quality-retry`,
+      references,
+      mode,
+      outputQuality,
+      targetMask: maskReference,
+      preserveBackground: input.preserveBackground ?? true,
+    };
+    const result = await provider.edit(request);
+    await recordProviderAttempt(
+      db,
+      render,
+      result,
+      attempt === 1 ? `generating_${outputQuality}` : "retrying",
+      prompt.version,
+      route.degradedMode,
+      attempt,
+    );
+    if (result.status === "failed" || !result.images[0]) {
+      throw new RenderError(
+        result.error?.message ?? "La génération Google a échoué.",
+        result.error?.httpStatus ?? 502,
+      );
+    }
+    const locallyRestricted = await compositeGeneratedInsideMask(
+      composition.buffer,
+      Buffer.from(result.images[0].data),
+      maskPng,
+      composition.sceneWidth,
+      composition.sceneHeight,
+    );
+    return { result, buffer: locallyRestricted, prompt };
+  };
+
+  const first = await runGeneration(1, baseReferences);
+  await collections(db).renders.updateOne(
+    { id: render.id },
+    { $set: { pipelineState: "quality_check", updatedAt: new Date() } },
+  );
+  let selected = first;
+  let qualityReview = await reviewGoogleRender(
+    db,
+    render,
+    scene,
+    product,
+    first.buffer,
+    input.placement,
+    1,
+  );
+  let totalEstimatedCostUsd =
+    first.result.estimatedCostUsd + qualityReview.estimatedCostUsd;
+  let attemptCount = first.result.attemptCount;
+  let repaired = false;
+
+  const mayRetry =
+    outputQuality === "final" &&
+    shouldRepair(qualityReview.review, input.placement) &&
+    totalEstimatedCostUsd + first.result.estimatedCostUsd <=
+      serverConfig.googleMaxCostUsd;
+  if (mayRetry) {
+    await collections(db).renders.updateOne(
+      { id: render.id },
+      { $set: { pipelineState: "retrying", updatedAt: new Date() } },
+    );
+    const repairReferences = [
+      ...baseReferences.filter((reference) => reference.role !== "composition"),
+      {
+        data: new Uint8Array(first.buffer),
+        mimeType: "image/webp" as const,
+        role: "intermediate" as const,
+      },
+    ];
+    const repair = await runGeneration(
+      2,
+      repairReferences,
+      qualityReview.review.feedback,
+    );
+    const repairReview = await reviewGoogleRender(
+      db,
+      render,
+      scene,
+      product,
+      repair.buffer,
+      input.placement,
+      2,
+    );
+    totalEstimatedCostUsd +=
+      repair.result.estimatedCostUsd + repairReview.estimatedCostUsd;
+    attemptCount += repair.result.attemptCount;
+    if (repairReview.review.score >= qualityReview.review.score) {
+      selected = repair;
+      qualityReview = repairReview;
+      repaired = true;
+    }
+  }
+
+  const minimumScore = outputQuality === "preview" ? 0.58 : 0.72;
+  if (
+    qualityReview.review.score < minimumScore ||
+    (outputQuality === "final" &&
+      (!qualityReview.review.accepted ||
+        qualityReview.review.duplicateProduct ||
+        qualityReview.review.artifactsPresent ||
+        (mode === "replace" && !qualityReview.review.replacementComplete)))
+  ) {
+    throw renderQualityError();
+  }
+
+  return {
+    buffer: selected.buffer,
+    provider: selected.result.provider,
+    model: selected.result.model,
+    estimatedCostUsd: totalEstimatedCostUsd,
+    qualityReview: qualityReview.review,
+    repaired,
+    attemptCount,
+    finalPlacement: input.placement,
+  };
+}
+
+async function loadProductReferences(
+  db: Db,
+  product: ProductDocument,
+): Promise<ImageReference[]> {
+  const viewOrder = ["front", "three_quarter", "side", "back", "detail"];
+  const views = (product.views ?? [])
+    .filter((view) => view.validationStatus === "valid")
+    .sort((a, b) => viewOrder.indexOf(a.type) - viewOrder.indexOf(b.type))
+    .slice(0, 4);
+  const references: ImageReference[] = [];
+  for (const view of views) {
+    const asset = await readAsset(db, view.assetId);
+    if (!asset) continue;
+    references.push({
+      data: new Uint8Array(asset.buffer),
+      mimeType: asset.asset.contentType as
+        "image/jpeg" | "image/png" | "image/webp",
+      role: productViewRole(view.type),
+    });
+  }
+  if (references.length === 0 && product.cutoutAssetId) {
+    const cutout = await readAsset(db, product.cutoutAssetId);
+    if (cutout) {
+      references.push({
+        data: new Uint8Array(cutout.buffer),
+        mimeType: cutout.asset.contentType as
+          "image/jpeg" | "image/png" | "image/webp",
+        role: "product_front",
+      });
+    }
+  }
+  if (references.length === 0) {
+    throw new RenderError("Aucune vue produit valide n’est disponible.", 422);
+  }
+  return references;
+}
+
+function productViewRole(
+  type: NonNullable<ProductDocument["views"]>[number]["type"],
+): ImageReference["role"] {
+  const roles = {
+    front: "product_front",
+    three_quarter: "product_three_quarter",
+    side: "product_side",
+    back: "product_back",
+    detail: "product_detail",
+  } as const;
+  return roles[type];
+}
+
+async function compositionMaskPng(composition: Composition): Promise<Buffer> {
+  return sharp(composition.mask, {
+    raw: {
+      width: composition.sceneWidth,
+      height: composition.sceneHeight,
+      channels: 4,
+    },
+  })
+    .png()
+    .toBuffer();
+}
+
+async function reviewGoogleRender(
+  db: Db,
+  render: RenderDocument,
+  scene: SceneDocument,
+  product: ProductDocument,
+  generated: Buffer,
+  placement: ResolvedPlacement,
+  attempt: number,
+): Promise<{ review: QualityReview; estimatedCostUsd: number }> {
+  const [room, productReferences] = await Promise.all([
+    readAsset(db, scene.assetId),
+    loadProductReferences(db, product),
+  ]);
+  if (!room || !productReferences[0]) {
+    return { review: unavailableQualityReview(), estimatedCostUsd: 0 };
+  }
+  const checkNames = [
+    "product_present",
+    "no_duplicate",
+    "old_target_removed",
+    "background_preserved",
+    "product_similarity",
+    "aspect_ratio_plausible",
+    "surface_contact",
+    "perspective_consistent",
+    "shadows_consistent",
+    "no_melted_or_cut_parts",
+    "calibration_respected",
+  ];
+  const prompt = [
+    "Strict quality control for a purchase-decision interior product visualization.",
+    "Image 1 is the generated result. Image 2 is the untouched room. Image 3 is the principal catalog product view.",
+    `Mode: ${placement.operation}. Placement geometry: ${JSON.stringify({ x: placement.xNormalized, y: placement.yNormalized, scale: placement.scale, perspective: placement.perspective })}.`,
+    "Return JSON only: {accepted:boolean, overallScore:number, scaleCorrectionFactor:number, feedback:string, checks:[{name:string,score:number,reason:string}]}",
+    `Return exactly these checks: ${checkNames.join(", ")}. Every score is 0..1 and every reason must be concise and evidence-based.`,
+    "Reject duplicates, remnants of the old target, changes outside the edit region, identity drift, implausible scale/aspect, floating contact, wrong perspective/light/shadow, melted/cut parts or calibration mismatch.",
+  ].join("\n");
+  try {
+    const inspected = await inspectImagesWithGoogle(prompt, [
+      {
+        data: new Uint8Array(generated),
+        mimeType: "image/webp",
+        role: "intermediate",
+      },
+      {
+        data: new Uint8Array(room.buffer),
+        mimeType: room.asset.contentType as
+          "image/jpeg" | "image/png" | "image/webp",
+        role: "room_original",
+      },
+      productReferences[0],
+    ]);
+    await recordProviderAttempt(
+      db,
+      render,
+      inspected.providerResult,
+      "quality_check",
+      PROMPT_VERSION,
+      false,
+      attempt,
+    );
+    const rawChecks = Array.isArray(inspected.data.checks)
+      ? inspected.data.checks
+      : [];
+    const checks = checkNames.map((name) => {
+      const match = rawChecks.find(
+        (item) =>
+          item &&
+          typeof item === "object" &&
+          (item as Record<string, unknown>).name === name,
+      ) as Record<string, unknown> | undefined;
+      return {
+        name,
+        score: clamp(Number(match?.score ?? 0.65), 0, 1),
+        reason: String(match?.reason ?? "Contrôle conservateur.").slice(0, 240),
+      };
+    });
+    const score = clamp(
+      Number(
+        inspected.data.overallScore ??
+          checks.reduce((total, check) => total + check.score, 0) /
+            checks.length,
+      ),
+      0,
+      1,
+    );
+    const check = (name: string) =>
+      checks.find((item) => item.name === name)?.score ?? 0;
+    return {
+      review: {
+        accepted: Boolean(inspected.data.accepted) && score >= 0.72,
+        score,
+        replacementComplete: check("old_target_removed") >= 0.7,
+        scaleAndPerspectivePlausible:
+          check("aspect_ratio_plausible") >= 0.7 &&
+          check("perspective_consistent") >= 0.7,
+        scaleCorrectionFactor: clamp(
+          Number(inspected.data.scaleCorrectionFactor ?? 1),
+          0.65,
+          1.5,
+        ),
+        photorealistic:
+          check("surface_contact") >= 0.68 &&
+          check("shadows_consistent") >= 0.65,
+        duplicateProduct: check("no_duplicate") < 0.7,
+        artifactsPresent: check("no_melted_or_cut_parts") < 0.68,
+        feedback: String(
+          inspected.data.feedback ??
+            checks.sort((a, b) => a.score - b.score)[0]?.reason ??
+            "Améliorer l’intégration locale.",
+        ).slice(0, 300),
+        checks,
+      },
+      estimatedCostUsd: inspected.providerResult.estimatedCostUsd,
+    };
+  } catch (reason) {
+    await collections(db).renderAttempts.insertOne({
+      id: crypto.randomUUID(),
+      organizationId: render.organizationId,
+      renderId: render.id,
+      provider: "google",
+      model: serverConfig.googlePreviewImageModel,
+      stage: "quality_check",
+      attemptNumber: attempt,
+      promptVersion: PROMPT_VERSION,
+      status: "failed",
+      latencyMs: 0,
+      estimatedCostUsd: 0,
+      error: safeProviderMessage(reason),
+      errorCode: "quality_check_unavailable",
+      retryable: true,
+      createdAt: new Date(),
+    });
+    return { review: unavailableQualityReview(), estimatedCostUsd: 0 };
+  }
+}
+
+function unavailableQualityReview(): QualityReview {
+  const names = [
+    "product_present",
+    "no_duplicate",
+    "old_target_removed",
+    "background_preserved",
+    "product_similarity",
+    "aspect_ratio_plausible",
+    "surface_contact",
+    "perspective_consistent",
+    "shadows_consistent",
+    "no_melted_or_cut_parts",
+    "calibration_respected",
+  ];
+  return {
+    accepted: false,
+    score: 0.45,
+    replacementComplete: false,
+    scaleAndPerspectivePlausible: false,
+    scaleCorrectionFactor: 1,
+    photorealistic: false,
+    duplicateProduct: false,
+    artifactsPresent: false,
+    feedback:
+      "Le contrôle visuel n’a pas pu confirmer la qualité du rendu. Relancer avec une image plus claire.",
+    checks: names.map((name) => ({
+      name,
+      score: 0.45,
+      reason: "Contrôle indisponible : résultat non validé automatiquement.",
+    })),
+  };
+}
+
+function safeProviderMessage(reason: unknown): string {
+  if (!(reason instanceof Error)) return "Contrôle fournisseur indisponible.";
+  return reason.message
+    .replace(/[A-Za-z0-9_-]{32,}/g, "[redacted]")
+    .slice(0, 300);
+}
+
+async function recordProviderAttempt(
+  db: Db,
+  render: RenderDocument,
+  result: Awaited<
+    ReturnType<ReturnType<typeof selectEditingProvider>["provider"]["edit"]>
+  >,
+  stage: string,
+  promptVersion: string,
+  degradedMode: boolean,
+  attemptNumber: number,
+): Promise<void> {
+  await collections(db).renderAttempts.insertOne({
+    id: crypto.randomUUID(),
+    organizationId: render.organizationId,
+    renderId: render.id,
+    provider: result.provider,
+    model: result.model,
+    requestId: result.requestId,
+    stage,
+    attemptNumber,
+    promptVersion,
+    status: result.status,
+    latencyMs: result.durationMs,
+    estimatedCostUsd: result.estimatedCostUsd,
+    safety: result.safety as unknown as Record<string, unknown>,
+    ...(result.error
+      ? {
+          error: result.error.message.slice(0, 500),
+          errorCode: result.error.code,
+          retryable: result.error.retryable,
+        }
+      : {}),
+    degradedMode,
+    createdAt: new Date(),
+  });
+}
+
+function normalizeTemperature(value: unknown): "warm" | "neutral" | "cool" {
+  return value === "warm" || value === "cool" ? value : "neutral";
+}
+
+function normalizeHardness(value: unknown): "soft" | "balanced" | "hard" {
+  return value === "soft" || value === "hard" ? value : "balanced";
 }
 
 function shouldRepair(

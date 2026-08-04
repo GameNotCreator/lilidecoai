@@ -32,6 +32,14 @@ type ObjectType =
   | "clock"
   | "other";
 
+type ExtraViewType = "three_quarter" | "side" | "back";
+
+const extraViewChoices: Array<{ value: ExtraViewType; label: string }> = [
+  { value: "three_quarter", label: "Vue trois-quarts" },
+  { value: "side", label: "Vue de côté" },
+  { value: "back", label: "Vue arrière" },
+];
+
 const objectTypes: Array<{
   value: ObjectType;
   label: string;
@@ -103,6 +111,9 @@ export function ProductCreateForm({
 }) {
   const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
+  const [extraViews, setExtraViews] = useState<
+    Partial<Record<ExtraViewType, File>>
+  >({});
   const [preview, setPreview] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -174,10 +185,24 @@ export function ProductCreateForm({
       setPhase("Envoi de l’image");
       const upload = new FormData();
       upload.set("file", preparedFile);
+      upload.set("viewType", "front");
       await api(`/v1/products/${product.id}/assets`, {
         method: "POST",
         body: upload,
       });
+      for (const choice of extraViewChoices) {
+        const extraFile = extraViews[choice.value];
+        if (!extraFile) continue;
+        setPhase(`Envoi : ${choice.label.toLowerCase()}`);
+        const preparedView = await prepareImageForUpload(extraFile);
+        const viewUpload = new FormData();
+        viewUpload.set("file", preparedView);
+        viewUpload.set("viewType", choice.value);
+        await api(`/v1/products/${product.id}/assets`, {
+          method: "POST",
+          body: viewUpload,
+        });
+      }
       setPhase("Détourage automatique");
       await api(`/v1/products/${product.id}/prepare`, { method: "POST" });
       setPhase("Finalisation");
@@ -240,8 +265,8 @@ export function ProductCreateForm({
           <div className="simple-section-title">
             <span>1</span>
             <div>
-              <h2>Ajoutez le PNG</h2>
-              <p>De face, bien éclairé, sans autre objet autour.</p>
+              <h2>Ajoutez 1 à 4 vues</h2>
+              <p>Commencez par une vue de face, bien éclairée.</p>
             </div>
           </div>
           <label
@@ -299,6 +324,53 @@ export function ProductCreateForm({
               />
             </label>
           )}
+          <div className="product-extra-views">
+            <div>
+              <strong>Angles supplémentaires</strong>
+              <span>Facultatifs, mais utiles pour un rendu fidèle.</span>
+            </div>
+            <div className="product-extra-view-grid">
+              {extraViewChoices.map((choice) => (
+                <label
+                  className={
+                    extraViews[choice.value]
+                      ? "product-extra-view selected"
+                      : "product-extra-view"
+                  }
+                  key={choice.value}
+                >
+                  <ImagePlus size={20} />
+                  <span>
+                    <strong>{choice.label}</strong>
+                    <small>
+                      {extraViews[choice.value]?.name ?? "Ajouter un PNG"}
+                    </small>
+                  </span>
+                  <input
+                    type="file"
+                    accept="image/png,.png"
+                    aria-label={choice.label}
+                    disabled={!editorReady || busy}
+                    onChange={(event) => {
+                      const selected = event.target.files?.[0];
+                      setExtraViews((current) => {
+                        const next = { ...current };
+                        if (selected) next[choice.value] = selected;
+                        else delete next[choice.value];
+                        return next;
+                      });
+                    }}
+                  />
+                </label>
+              ))}
+            </div>
+            {file && Object.keys(extraViews).length === 0 && (
+              <p className="product-view-warning" role="status">
+                Certains angles non visibles seront estimés par l’intelligence
+                artificielle.
+              </p>
+            )}
+          </div>
         </section>
 
         <section className="object-form-section object-details-section">

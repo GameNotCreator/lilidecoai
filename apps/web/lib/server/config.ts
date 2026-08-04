@@ -18,11 +18,39 @@ function uploadLimit(): number {
   return Math.min(requested, 4_000_000);
 }
 
+const googleApiKey =
+  clean(process.env.GOOGLE_AI_API_KEY) ?? clean(process.env.GEMINI_API_KEY);
+const openAIEnabled = clean(process.env.OPENAI_IMAGE_ENABLED) === "true";
+const explicitMockMode = clean(process.env.AI_MOCK_MODE);
+
 export const serverConfig = {
   mongodbUri:
     clean(process.env.MONGODB_URI) ?? "mongodb://127.0.0.1:27017/lilidecoai",
   mongodbDb: clean(process.env.MONGODB_DB) ?? "lilidecoai",
   demoMode: clean(process.env.DEMO_MODE) !== "false",
+  googleApiKey,
+  googlePreviewImageModel:
+    clean(process.env.GOOGLE_PREVIEW_IMAGE_MODEL) ?? "gemini-3.1-flash-image",
+  googleFinalImageModel:
+    clean(process.env.GOOGLE_FINAL_IMAGE_MODEL) ?? "gemini-3-pro-image",
+  googleApiBaseUrl:
+    clean(process.env.GOOGLE_AI_BASE_URL) ??
+    "https://generativelanguage.googleapis.com/v1",
+  googleTimeoutMs: Number(
+    clean(process.env.GOOGLE_IMAGE_TIMEOUT_MS) ?? "240000",
+  ),
+  googleMaxRetries: Math.min(
+    2,
+    Math.max(0, Number(clean(process.env.GOOGLE_IMAGE_MAX_RETRIES) ?? "1")),
+  ),
+  googleMaxCostUsd: Number(
+    clean(process.env.GOOGLE_IMAGE_MAX_COST_USD) ?? "0.45",
+  ),
+  imagePipelineMode: clean(process.env.IMAGE_PIPELINE_MODE) ?? "google_hybrid",
+  openAIImageEnabled: openAIEnabled,
+  aiMockMode:
+    explicitMockMode === "true" ||
+    (explicitMockMode !== "false" && !googleApiKey && !openAIEnabled),
   openaiApiKey: clean(process.env.OPENAI_API_KEY),
   openaiModel: clean(process.env.OPENAI_MODEL) ?? "gpt-image-2",
   openaiVisionModel: clean(process.env.OPENAI_VISION_MODEL) ?? "gpt-5.6-sol",
@@ -51,6 +79,14 @@ export function assertProductionConfig(): void {
   if (!serverConfig.sessionSecret || serverConfig.sessionSecret.length < 32) {
     throw new Error("APP_SESSION_SECRET must contain at least 32 characters");
   }
+}
+
+export function paidImageProviderConfigured(): boolean {
+  if (serverConfig.aiMockMode) return false;
+  return Boolean(
+    serverConfig.googleApiKey ||
+    (serverConfig.openAIImageEnabled && serverConfig.openaiApiKey),
+  );
 }
 
 export function cloudinaryStorageConfigured(): boolean {

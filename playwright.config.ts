@@ -9,7 +9,7 @@ export default defineConfig({
   retries: process.env.CI ? 1 : 0,
   reporter: [["html", { open: "never" }], ["list"]],
   use: {
-    baseURL: "http://127.0.0.1:3000",
+    baseURL: "http://127.0.0.1:3100",
     trace: "on-first-retry",
     screenshot: "only-on-failure",
   },
@@ -18,13 +18,17 @@ export default defineConfig({
     { name: "mobile", use: { ...devices["iPhone 14"] } },
   ],
   webServer: {
-    command: "npm run dev --workspace @visualizer/web",
-    port: 3000,
+    command: "npm run dev --workspace @visualizer/web -- --port 3100",
+    port: 3100,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
     env: {
       DEMO_MODE: "true",
+      AI_MOCK_MODE: "true",
+      GOOGLE_AI_API_KEY: "",
+      GEMINI_API_KEY: "",
       OPENAI_API_KEY: "",
+      OPENAI_IMAGE_ENABLED: "false",
       MONGODB_URI:
         process.env.MONGODB_URI ?? "mongodb://127.0.0.1:27017/lilidecoai_e2e",
       MONGODB_DB: "lilidecoai_e2e",

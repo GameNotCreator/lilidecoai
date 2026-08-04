@@ -1,6 +1,7 @@
 "use client";
 
-import { type MouseEvent, useEffect, useMemo, useState } from "react";
+import type { Product, Render } from "@lili/types";
+import { Badge, Button } from "@lili/ui";
 import {
   ArrowLeft,
   ArrowRight,
@@ -8,13 +9,14 @@ import {
   Download,
   ImagePlus,
   LoaderCircle,
+  RefreshCw,
   Share2,
   ShoppingBag,
   Sparkles,
   Upload,
 } from "lucide-react";
-import type { Product, Render } from "@lili/types";
-import { Badge, Button } from "@lili/ui";
+import { type MouseEvent, useEffect, useMemo, useState } from "react";
+
 import {
   api,
   establishGuestEditorSession,
@@ -23,6 +25,7 @@ import {
   getRender,
 } from "@/lib/api";
 import { prepareImageForUpload } from "@/lib/client-image";
+import { MaskEditor } from "./mask-editor";
 
 interface Scene {
   id: string;
@@ -33,40 +36,89 @@ interface Scene {
   analysis: Record<string, unknown>;
 }
 
+interface Segmentation {
+  id: string;
+  status: "proposed" | "confirmed";
+  label: string;
+  confidence: number;
+  box: { xMin: number; yMin: number; xMax: number; yMax: number };
+  maskUrl: string;
+}
+
 const pipelineCopy: Record<string, { title: string; detail: string }> = {
+  uploaded: {
+    title: "Photo reçue…",
+    detail: "Nous préparons une copie sécurisée de votre pièce.",
+  },
+  analyzing_scene: {
+    title: "Analyse de la pièce…",
+    detail: "Perspective, support, lumière et obstacles sont étudiés.",
+  },
   inspecting_scene: {
     title: "Analyse de la zone…",
-    detail: "Nous vérifions le support et détectons ce qui occupe le point.",
+    detail: "Nous vérifions le support et ce qui occupe le point.",
+  },
+  segmenting_target: {
+    title: "Sélection de l’objet…",
+    detail: "Nous isolons précisément l’élément que vous avez touché.",
+  },
+  removing_target: {
+    title: "Suppression de l’ancien objet…",
+    detail: "Le fond caché est reconstruit avant d’ajouter le nouveau produit.",
   },
   removing_obstacle: {
-    title: "Suppression de l’obstacle…",
-    detail: "L’objet présent est retiré et le fond est reconstruit proprement.",
+    title: "Suppression de l’ancien objet…",
+    detail: "Le fond caché est reconstruit avant d’ajouter le nouveau produit.",
   },
   analyzing_cleaned_scene: {
     title: "Nouvelle lecture de l’espace…",
-    detail:
-      "La perspective et les limites sont recalculées sur l’image nettoyée.",
+    detail: "La perspective est recalculée sur la zone maintenant dégagée.",
+  },
+  computing_geometry: {
+    title: "Calcul des dimensions…",
+    detail: "La taille et le contact sont adaptés à la perspective réelle.",
   },
   validating_fit: {
     title: "Vérification de la taille…",
-    detail: "Nous contrôlons que l’objet repose bien et ne dépasse nulle part.",
+    detail: "Nous contrôlons que le produit tient entièrement dans la zone.",
+  },
+  building_prompt: {
+    title: "Préparation du rendu…",
+    detail: "Toutes les vues et contraintes du produit sont assemblées.",
   },
   composing_preview: {
-    title: "Placement de l’objet…",
-    detail: "La position et l’échelle validées sont appliquées à votre photo.",
+    title: "Placement du produit…",
+    detail: "La position et l’échelle calculées sont appliquées à la photo.",
+  },
+  generating_preview: {
+    title: "Création de l’aperçu…",
+    detail: "Nano Banana 2 compose une prévisualisation rapide.",
+  },
+  generating_final: {
+    title: "Création du rendu final…",
+    detail: "Nano Banana Pro affine matière, lumière et perspective.",
   },
   refining_final: {
     title: "Finition photoréaliste…",
     detail: "Les ombres, la lumière et les textures sont harmonisées.",
   },
+  quality_check: {
+    title: "Contrôle du réalisme…",
+    detail: "Fidélité, doublons, contact et décor sont vérifiés.",
+  },
+  retrying: {
+    title: "Correction ciblée…",
+    detail: "Une anomalie précise est corrigée une dernière fois.",
+  },
 };
 
 function currentPipelineCopy(render: Render) {
   const stage =
-    typeof render.placement?.pipelineStage === "string"
+    render.pipelineState ??
+    (typeof render.placement?.pipelineStage === "string"
       ? render.placement.pipelineStage
-      : "inspecting_scene";
-  return pipelineCopy[stage] ?? pipelineCopy.inspecting_scene!;
+      : "analyzing_scene");
+  return pipelineCopy[stage] ?? pipelineCopy.analyzing_scene!;
 }
 
 export function VisualizerStudio({
@@ -84,16 +136,27 @@ export function VisualizerStudio({
   const [products, setProducts] = useState<Product[]>([]);
   const [productId, setProductId] = useState(initialProductId ?? "");
   const [scene, setScene] = useState<Scene | null>(null);
-  const [surface, setSurface] = useState("table");
+  const [surface, setSurface] = useState("tabletop");
+  const [renderMode, setRenderMode] = useState<"insert" | "replace">("insert");
+  const [outputQuality, setOutputQuality] = useState<"preview" | "final">(
+    "preview",
+  );
   const [placementPoint, setPlacementPoint] = useState<{
     x: number;
     y: number;
   } | null>(null);
+  const [targetPoint, setTargetPoint] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
+  const [segmentation, setSegmentation] = useState<Segmentation | null>(null);
   const [render, setRender] = useState<Render | null>(null);
   const [beforePercent, setBeforePercent] = useState(48);
   const [credits, setCredits] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [uploadStatus, setUploadStatus] = useState("Choisir une photo");
+  const [userInstructions, setUserInstructions] = useState("");
+  const [feedbackSent, setFeedbackSent] = useState(false);
   const [error, setError] = useState("");
 
   const product = useMemo(
@@ -125,13 +188,13 @@ export function VisualizerStudio({
         const selected = availableProducts.find(
           (item) => item.id === nextProductId,
         );
-        if (selected) setSurface(selected.placementType);
+        if (selected) setSurface(toSurfaceType(selected.placementType));
         setCredits(wallet.balance);
       })
       .catch((reason: unknown) =>
         setError(reason instanceof Error ? reason.message : "API indisponible"),
       );
-  }, [catalogSession, embedded, initialProductId, merchantSlug]);
+  }, [catalogSession, initialProductId, merchantSlug]);
 
   useEffect(() => {
     if (!pendingRenderId) return;
@@ -155,24 +218,24 @@ export function VisualizerStudio({
         if (nextRender.status === "failed") {
           setError(
             nextRender.error ??
-              "Le rendu n’a pas abouti. Choisissez un autre endroit ou une autre photo.",
+              "Le rendu n’a pas abouti. Choisissez une autre zone ou une photo plus claire.",
           );
           return;
         }
-        timer = setTimeout(refreshRender, 3_000);
+        timer = setTimeout(refreshRender, 2_500);
       } catch {
         if (cancelled) return;
         consecutiveFailures += 1;
         if (consecutiveFailures >= 5) {
           setError(
-            "La finition continue en arrière-plan. Vérifiez le résultat dans quelques instants.",
+            "Le rendu continue en arrière-plan. Revenez dans quelques instants.",
           );
         }
         timer = setTimeout(refreshRender, 4_000);
       }
     }
 
-    timer = setTimeout(refreshRender, 2_000);
+    timer = setTimeout(refreshRender, 1_500);
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
@@ -185,7 +248,7 @@ export function VisualizerStudio({
     try {
       setUploadStatus("Optimisation…");
       const preparedFile = await prepareImageForUpload(file);
-      setUploadStatus("Envoi et analyse…");
+      setUploadStatus("Envoi sécurisé…");
       const form = new FormData();
       form.set("file", preparedFile);
       form.set("consent", "true");
@@ -193,11 +256,10 @@ export function VisualizerStudio({
         method: "POST",
         body: form,
       });
-      const analysed = await api<Scene>(`/v1/scenes/${created.id}/analyse`, {
-        method: "POST",
-      });
-      setScene(analysed);
+      setScene(created);
       setPlacementPoint(null);
+      setTargetPoint(null);
+      setSegmentation(null);
       setStep(2);
       await recordEvent("room_uploaded");
     } catch (reason) {
@@ -210,32 +272,103 @@ export function VisualizerStudio({
     }
   }
 
+  function pointFromEvent(event: MouseEvent<HTMLButtonElement>) {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)),
+      y: Math.max(0, Math.min(1, (event.clientY - bounds.top) / bounds.height)),
+    };
+  }
+
+  function placeMarker(event: MouseEvent<HTMLButtonElement>) {
+    const point = pointFromEvent(event);
+    setPlacementPoint(point);
+    if (renderMode === "replace") {
+      setTargetPoint(point);
+      void segmentTarget(point);
+    }
+    void recordEvent("placement_point_selected");
+  }
+
+  async function segmentTarget(point: { x: number; y: number }) {
+    if (!scene) return;
+    setBusy(true);
+    setError("");
+    setSegmentation(null);
+    try {
+      const result = await api<Segmentation>(`/v1/scenes/${scene.id}/segment`, {
+        method: "POST",
+        body: JSON.stringify({ point }),
+      });
+      setSegmentation(result);
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Impossible d’isoler cet objet.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmMask(mask: Blob) {
+    if (!scene || !segmentation) return;
+    setBusy(true);
+    setError("");
+    try {
+      const form = new FormData();
+      form.set(
+        "file",
+        new File([mask], "corrected-mask.png", { type: "image/png" }),
+      );
+      const confirmed = await api<Segmentation>(
+        `/v1/scenes/${scene.id}/segments/${segmentation.id}/confirm`,
+        { method: "POST", body: form },
+      );
+      setSegmentation(confirmed);
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Confirmation du masque impossible.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function generate() {
     if (!scene || !product || !placementPoint) return;
     setBusy(true);
     setError("");
     try {
-      const payload = {
-        placement: {
-          sceneId: scene.id,
-          productId: product.id,
-          mode: "guided",
-          surfaceType: surface,
-          xNormalized: placementPoint.x,
-          yNormalized: placementPoint.y,
-        },
-        idempotencyKey: `web-${crypto.randomUUID()}`,
-        quality: "high",
-        fidelityMode: "catalog",
-      };
-      const result = await api<Render>("/v1/renders", {
+      const result = await api<Render>(`/v1/renders/${outputQuality}`, {
         method: "POST",
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          mode: renderMode,
+          placement: {
+            sceneId: scene.id,
+            productId: product.id,
+            mode: renderMode,
+            surfaceType: renderMode === "replace" ? "existing_object" : surface,
+            xNormalized: placementPoint.x,
+            yNormalized: placementPoint.y,
+          },
+          placementPoint,
+          ...(targetPoint ? { targetPoint } : {}),
+          ...(segmentation?.status === "confirmed"
+            ? { targetMaskId: segmentation.id }
+            : {}),
+          surfaceType: renderMode === "replace" ? "existing_object" : surface,
+          idempotencyKey: `web-${crypto.randomUUID()}`,
+          outputQuality,
+          quality: outputQuality === "preview" ? "low" : "high",
+          preserveBackground: true,
+          userInstructions,
+        }),
       });
       setRender(result);
-      if (result.creditCharged) {
-        setCredits((value) => (value === null ? value : value - 1));
-      }
       setStep(3);
       await recordEvent(
         result.status === "succeeded" ? "render_succeeded" : "render_requested",
@@ -247,18 +380,31 @@ export function VisualizerStudio({
     }
   }
 
-  function placeMarker(event: MouseEvent<HTMLButtonElement>) {
-    const bounds = event.currentTarget.getBoundingClientRect();
-    const x = Math.max(
-      0,
-      Math.min(1, (event.clientX - bounds.left) / bounds.width),
-    );
-    const y = Math.max(
-      0,
-      Math.min(1, (event.clientY - bounds.top) / bounds.height),
-    );
-    setPlacementPoint({ x, y });
-    void recordEvent("placement_point_selected");
+  async function retryRender() {
+    if (!render) return;
+    setBusy(true);
+    setError("");
+    try {
+      const retried = await api<Render>(`/v1/renders/${render.id}/retry`, {
+        method: "POST",
+      });
+      setRender(retried);
+    } catch (reason) {
+      setError(
+        reason instanceof Error ? reason.message : "Nouvel essai impossible",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function sendFeedback(rating: number) {
+    if (!render) return;
+    await api(`/v1/renders/${render.id}/feedback`, {
+      method: "POST",
+      body: JSON.stringify({ rating }),
+    });
+    setFeedbackSent(true);
   }
 
   async function recordEvent(event: string) {
@@ -268,7 +414,7 @@ export function VisualizerStudio({
         event,
         sessionId: "demo-session",
         productId: productId || null,
-        properties: { embedded, step },
+        properties: { embedded, step, renderMode, outputQuality },
       }),
     }).catch(() => undefined);
   }
@@ -282,17 +428,13 @@ export function VisualizerStudio({
         <div>
           <span className="eyebrow">Simple, rapide, sans installation</span>
           <h1>Voyez l’objet chez vous.</h1>
-          <p>
-            Choisissez une photo, indiquez l’endroit, puis laissez l’IA faire.
-          </p>
+          <p>Choisissez, touchez l’endroit, puis comparez le résultat.</p>
         </div>
-        <div className="studio-meta">
-          {!embedded && (
-            <span className="credit-pill" aria-label="Crédits disponibles">
-              <Sparkles size={14} /> {credits ?? "—"} crédits
-            </span>
-          )}
-        </div>
+        {!embedded && (
+          <span className="credit-pill" aria-label="Crédits disponibles">
+            <Sparkles size={14} /> {credits ?? "—"} crédits
+          </span>
+        )}
       </header>
 
       <nav className="studio-steps" aria-label="Étapes du visualiseur">
@@ -338,7 +480,7 @@ export function VisualizerStudio({
                     aria-pressed={item.id === productId}
                     onClick={() => {
                       setProductId(item.id);
-                      setSurface(item.placementType);
+                      setSurface(toSurfaceType(item.placementType));
                     }}
                   >
                     {item.cutoutUrl ? (
@@ -357,16 +499,10 @@ export function VisualizerStudio({
                   </button>
                 ))}
               </div>
-              {product?.imageSourceUrl && (
-                <p className="demo-image-credit">
-                  Image de test :{" "}
-                  <a
-                    href={product.imageSourceUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    {product.imageCredit ?? "Wikimedia Commons"}
-                  </a>
+              {product && product.views.length <= 1 && (
+                <p className="single-view-warning">
+                  Certains angles non visibles seront estimés par l’intelligence
+                  artificielle.
                 </p>
               )}
             </div>
@@ -397,73 +533,176 @@ export function VisualizerStudio({
         {step === 2 && scene && (
           <div className="studio-grid settings-grid">
             <p className="mobile-placement-hint">
-              Touchez la photo à l’endroit où poser l’objet.
+              {renderMode === "replace"
+                ? "Touchez précisément l’objet à remplacer."
+                : "Touchez l’endroit où poser le produit."}
             </p>
-            <button
-              type="button"
-              className="room-preview marker-placement"
-              aria-label="Placer le point rouge sur la pièce"
-              onClick={placeMarker}
-            >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={scene.imageUrl} alt="Pièce téléversée" />
-              {placementPoint && (
-                <span
-                  className="red-placement-dot"
-                  data-testid="placement-dot"
-                  style={{
-                    left: `${placementPoint.x * 100}%`,
-                    top: `${placementPoint.y * 100}%`,
-                  }}
-                />
-              )}
-            </button>
-            <div className="studio-panel">
+            {renderMode === "replace" && segmentation ? (
+              <MaskEditor
+                imageUrl={scene.imageUrl}
+                maskUrl={segmentation.maskUrl}
+                busy={busy}
+                confirmed={segmentation.status === "confirmed"}
+                onConfirm={confirmMask}
+                onReset={() => {
+                  setSegmentation(null);
+                  setPlacementPoint(null);
+                  setTargetPoint(null);
+                }}
+              />
+            ) : (
+              <button
+                type="button"
+                className="room-preview marker-placement"
+                aria-label={
+                  renderMode === "replace"
+                    ? "Sélectionner l’objet à remplacer"
+                    : "Placer le point rouge sur la pièce"
+                }
+                onClick={placeMarker}
+                disabled={busy}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={scene.imageUrl} alt="Pièce téléversée" />
+                {placementPoint && (
+                  <span
+                    className="red-placement-dot"
+                    data-testid="placement-dot"
+                    style={{
+                      left: `${placementPoint.x * 100}%`,
+                      top: `${placementPoint.y * 100}%`,
+                    }}
+                  />
+                )}
+                {busy && renderMode === "replace" && (
+                  <span className="segmenting-indicator">
+                    <LoaderCircle className="spin" size={20} /> Sélection en
+                    cours…
+                  </span>
+                )}
+              </button>
+            )}
+            <div className="studio-panel placement-panel">
               <span className="panel-index">Étape 2 sur 3</span>
               <h2>Indiquez l’endroit.</h2>
               <p className="muted">
-                Touchez la photo pour déplacer le point rouge, puis choisissez
-                ce qui se trouve dessous.
+                Commencez par choisir l’action, puis touchez la photo.
               </p>
-              <strong className="choice-label">L’objet sera posé sur :</strong>
-              <div className="choice-grid">
-                {["table", "nightstand", "shelf", "niche", "wall", "floor"].map(
-                  (value) => (
-                    <button
-                      key={value}
-                      className={surface === value ? "choice active" : "choice"}
-                      onClick={() => setSurface(value)}
-                    >
-                      {value === "table"
-                        ? "Table"
-                        : value === "nightstand"
-                          ? "Table de nuit"
-                          : value === "shelf"
-                            ? "Étagère"
-                            : value === "niche"
-                              ? "Niche"
-                              : value === "wall"
-                                ? "Mur"
-                                : "Sol"}
-                    </button>
-                  ),
-                )}
+              <div className="mode-cards simple-mode-cards">
+                <button
+                  type="button"
+                  className={
+                    renderMode === "insert" ? "mode-card active" : "mode-card"
+                  }
+                  onClick={() => resetPlacement("insert")}
+                >
+                  <ImagePlus size={21} />
+                  <span>
+                    <strong>Ajouter un objet</strong>
+                    <small>Choisissez un endroit vide.</small>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className={
+                    renderMode === "replace" ? "mode-card active" : "mode-card"
+                  }
+                  onClick={() => resetPlacement("replace")}
+                >
+                  <RefreshCw size={21} />
+                  <span>
+                    <strong>Remplacer un élément existant</strong>
+                    <small>Vous validerez la zone avant le rendu.</small>
+                  </span>
+                </button>
               </div>
-              <div className="divider" />
+
+              {renderMode === "insert" ? (
+                <>
+                  <strong className="choice-label">
+                    Le produit sera posé sur :
+                  </strong>
+                  <div className="choice-grid">
+                    {surfaceChoices.map(([value, label]) => (
+                      <button
+                        type="button"
+                        key={value}
+                        className={
+                          surface === value ? "choice active" : "choice"
+                        }
+                        onClick={() => setSurface(value)}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div className="mask-status-copy">
+                  <strong>
+                    {segmentation?.status === "confirmed"
+                      ? `${segmentation.label} prêt à être remplacé`
+                      : segmentation
+                        ? "Corrigez la zone rouge si nécessaire"
+                        : "Touchez l’objet dans la photo"}
+                  </strong>
+                  <small>Rien ne sera généré avant votre confirmation.</small>
+                </div>
+              )}
+
+              <div
+                className="quality-choice"
+                role="group"
+                aria-label="Qualité du rendu"
+              >
+                <button
+                  type="button"
+                  className={outputQuality === "preview" ? "active" : ""}
+                  onClick={() => setOutputQuality("preview")}
+                >
+                  <strong>Aperçu rapide</strong>
+                  <small>Nano Banana 2 · 1K</small>
+                </button>
+                <button
+                  type="button"
+                  className={outputQuality === "final" ? "active" : ""}
+                  onClick={() => setOutputQuality("final")}
+                >
+                  <strong>Rendu final</strong>
+                  <small>Nano Banana Pro · 2K</small>
+                </button>
+              </div>
+
+              <details className="user-render-note">
+                <summary>Ajouter une indication (facultatif)</summary>
+                <textarea
+                  value={userInstructions}
+                  maxLength={1500}
+                  rows={3}
+                  placeholder="Ex. conserver le rideau devant le meuble…"
+                  onChange={(event) => setUserInstructions(event.target.value)}
+                />
+              </details>
+
               <div className="auto-placement-note">
                 <Sparkles size={20} />
                 <span>
-                  <strong>L’IA s’occupe du reste</strong>
+                  <strong>L’IA mesure et place pour vous</strong>
                   <small>
-                    Elle adapte la taille à la distance et remplace
-                    automatiquement l’objet déjà présent sous votre point.
+                    Échelle, perspective, contact et lumière sont calculés
+                    automatiquement.
                   </small>
                 </span>
               </div>
               <Button
                 onClick={() => void generate()}
                 disabled={
-                  busy || credits === null || credits < 1 || !placementPoint
+                  busy ||
+                  credits === null ||
+                  credits < 1 ||
+                  !placementPoint ||
+                  (renderMode === "replace" &&
+                    segmentation?.status !== "confirmed")
                 }
               >
                 {busy ? (
@@ -471,13 +710,18 @@ export function VisualizerStudio({
                 ) : (
                   <Sparkles size={17} />
                 )}
-                {busy
-                  ? "Création de votre aperçu…"
-                  : !placementPoint
-                    ? "Touchez d’abord la photo"
+                {!placementPoint
+                  ? renderMode === "replace"
+                    ? "Touchez l’objet à remplacer"
+                    : "Touchez d’abord la photo"
+                  : renderMode === "replace" &&
+                      segmentation?.status !== "confirmed"
+                    ? "Confirmez d’abord le masque"
                     : credits === 0
                       ? "Aucun crédit disponible"
-                      : "Créer mon aperçu · 1 crédit"}
+                      : outputQuality === "preview"
+                        ? "Créer mon aperçu · 1 crédit"
+                        : "Créer le rendu final · 1 crédit"}
                 {!busy && <ArrowRight size={17} />}
               </Button>
               <button
@@ -486,6 +730,8 @@ export function VisualizerStudio({
                 onClick={() => {
                   setScene(null);
                   setPlacementPoint(null);
+                  setTargetPoint(null);
+                  setSegmentation(null);
                   setStep(1);
                 }}
               >
@@ -538,7 +784,7 @@ export function VisualizerStudio({
                         <strong>Rendu interrompu</strong>
                         <span>
                           {render.error ??
-                            "Choisissez un autre endroit ou une photo plus claire."}
+                            "Choisissez une autre zone ou une photo plus claire."}
                         </span>
                       </>
                     ) : (
@@ -576,19 +822,34 @@ export function VisualizerStudio({
                 {render.status === "processing"
                   ? currentPipelineCopy(render).detail
                   : render.status === "failed"
-                    ? (render.error ??
-                      "Choisissez un autre endroit ou fournissez une photo plus claire.")
+                    ? (render.error ?? "Essayez une autre zone.")
                     : typeof render.placement?.rationale === "string"
                       ? render.placement.rationale
-                      : "Placement, échelle et lumière choisis automatiquement à partir de la pièce et des dimensions du produit."}
+                      : "Placement, échelle et lumière calculés automatiquement."}
               </p>
-              {render.status === "succeeded" && render.resultUrl && (
-                <div className="score-row">
-                  <span>Score de fidélité</span>
-                  <strong>
-                    {Math.round(Number(render.qualityScore ?? 0) * 100)}%
-                  </strong>
-                </div>
+              {render.status === "succeeded" && (
+                <>
+                  <div className="score-row">
+                    <span>Score de fidélité</span>
+                    <strong>
+                      {Math.round(Number(render.qualityScore ?? 0) * 100)}%
+                    </strong>
+                  </div>
+                  <div className="render-facts">
+                    <span>
+                      {render.placement?.perspective &&
+                      typeof render.placement.perspective === "object" &&
+                      "scale" in render.placement.perspective
+                        ? "Dimensions calibrées"
+                        : "Dimensions estimées"}
+                    </span>
+                    <span>{render.model}</span>
+                    <span>
+                      Coût estimé $
+                      {Number(render.estimatedCostUsd ?? 0).toFixed(3)}
+                    </span>
+                  </div>
+                </>
               )}
               {render.status === "succeeded" && render.resultUrl && (
                 <div className="result-actions">
@@ -601,40 +862,59 @@ export function VisualizerStudio({
                   >
                     <ShoppingBag size={17} /> Acheter
                   </a>
-                  <>
-                    <a
-                      className="button secondary"
-                      href={render.resultUrl}
-                      download
-                      onClick={() => void recordEvent("result_downloaded")}
-                    >
-                      <Download size={17} /> Télécharger
-                    </a>
-                    <button
-                      className="button secondary"
-                      onClick={() => {
-                        void navigator.share?.({
-                          title: "Mon aperçu déco",
-                          url: render.resultUrl ?? undefined,
-                        });
-                        void recordEvent("result_shared");
-                      }}
-                    >
-                      <Share2 size={17} /> Partager
-                    </button>
-                  </>
+                  <a
+                    className="button secondary"
+                    href={render.resultUrl}
+                    download
+                    onClick={() => void recordEvent("result_downloaded")}
+                  >
+                    <Download size={17} /> Télécharger
+                  </a>
+                  <button
+                    className="button secondary"
+                    onClick={() => {
+                      void navigator.share?.({
+                        title: "Mon aperçu déco",
+                        url: render.resultUrl ?? undefined,
+                      });
+                      void recordEvent("result_shared");
+                    }}
+                  >
+                    <Share2 size={17} /> Partager
+                  </button>
+                </div>
+              )}
+              {render.status === "succeeded" && !feedbackSent && (
+                <div className="feedback-row">
+                  <span>Ce rendu vous aide à choisir ?</span>
+                  <button type="button" onClick={() => void sendFeedback(5)}>
+                    Oui
+                  </button>
+                  <button type="button" onClick={() => void sendFeedback(1)}>
+                    Non
+                  </button>
                 </div>
               )}
               {render.status !== "processing" && (
-                <button
-                  className="back-link"
-                  onClick={() => {
-                    setRender(null);
-                    setStep(2);
-                  }}
-                >
-                  <ArrowLeft size={15} /> Essayer un autre endroit
-                </button>
+                <div className="result-secondary-actions">
+                  <button
+                    className="back-link"
+                    type="button"
+                    onClick={() => void retryRender()}
+                  >
+                    <RefreshCw size={15} /> Nouvelle tentative
+                  </button>
+                  <button
+                    className="back-link"
+                    type="button"
+                    onClick={() => {
+                      setRender(null);
+                      setStep(2);
+                    }}
+                  >
+                    <ArrowLeft size={15} /> Essayer un autre endroit
+                  </button>
+                </div>
               )}
             </div>
           </div>
@@ -642,4 +922,26 @@ export function VisualizerStudio({
       </div>
     </section>
   );
+
+  function resetPlacement(mode: "insert" | "replace") {
+    setRenderMode(mode);
+    setSegmentation(null);
+    setTargetPoint(null);
+    setPlacementPoint(null);
+  }
+}
+
+const surfaceChoices: Array<[string, string]> = [
+  ["tabletop", "Table"],
+  ["shelf", "Étagère"],
+  ["niche", "Niche"],
+  ["wall", "Mur"],
+  ["floor", "Sol"],
+  ["rug_zone", "Zone tapis"],
+  ["ceiling", "Plafond"],
+];
+
+function toSurfaceType(value: string): string {
+  if (value === "table" || value === "nightstand") return "tabletop";
+  return value;
 }

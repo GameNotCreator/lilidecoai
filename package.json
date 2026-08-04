@@ -20,8 +20,9 @@
     "lint": "npm run lint --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test:unit",
-    "test:unit": "npm run test --workspace @lili/geometry && npm run test --workspace @lili/ai-router",
+    "test:unit": "npm run test --workspace @lili/geometry && npm run test --workspace @lili/ai-router && npm run test --workspace @lili/types && npm run test --workspace @visualizer/web",
     "test:e2e": "playwright test",
+    "migrate:image-pipeline": "node apps/web/scripts/migrate-image-pipeline.mjs",
     "format": "prettier --write ."
   },
   "devDependencies": {

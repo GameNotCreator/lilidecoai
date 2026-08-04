@@ -16,7 +16,7 @@ export interface OrganizationDocument {
 export interface AssetDocument {
   id: string;
   organizationId: string;
-  kind: "product" | "cutout" | "scene" | "render" | "mask";
+  kind: "product" | "product_view" | "cutout" | "scene" | "render" | "mask";
   contentType: string;
   bytes?: Binary;
   cloudinaryPublicId?: string;
@@ -26,6 +26,19 @@ export interface AssetDocument {
   size: number;
   createdAt: Date;
   expiresAt?: Date;
+}
+
+export type ProductViewType =
+  "front" | "three_quarter" | "side" | "back" | "detail";
+
+export interface ProductViewDocument {
+  id: string;
+  assetId: string;
+  type: ProductViewType;
+  widthPx: number;
+  heightPx: number;
+  validationStatus: "pending" | "valid" | "rejected";
+  createdAt: Date;
 }
 
 export interface ProductDocument {
@@ -49,6 +62,7 @@ export interface ProductDocument {
   status: "draft" | "processing" | "ready" | "archived";
   assetId?: string;
   cutoutAssetId?: string;
+  views?: ProductViewDocument[];
   anchor?: {
     anchorType: string;
     xNormalized: number;
@@ -90,7 +104,53 @@ export interface RenderDocument {
   productId: string;
   calibrationId?: string;
   idempotencyKey: string;
-  status: "queued" | "processing" | "succeeded" | "failed" | "deleted";
+  status:
+    "queued" | "processing" | "succeeded" | "failed" | "cancelled" | "deleted";
+  pipelineState?:
+    | "uploaded"
+    | "analyzing_scene"
+    | "segmenting_target"
+    | "awaiting_mask_confirmation"
+    | "computing_geometry"
+    | "removing_target"
+    | "building_prompt"
+    | "generating_preview"
+    | "generating_final"
+    | "quality_check"
+    | "retrying"
+    | "completed"
+    | "failed"
+    | "refunded";
+  mode?: "insert" | "replace";
+  outputQuality?: "preview" | "final";
+  surfaceType?: string;
+  placementPoint?: { x: number; y: number };
+  targetPoint?: { x: number; y: number };
+  targetMaskId?: string;
+  targetMaskAssetId?: string;
+  targetMaskConfirmedAt?: Date;
+  dimensionsCm?: { width: number; height: number; depth: number; unit: "cm" };
+  lighting?: Record<string, unknown>;
+  calibration?: Record<string, unknown>;
+  productViews?: Array<{
+    assetId: string;
+    type: ProductViewType;
+    widthPx: number;
+    heightPx: number;
+    validationStatus: "pending" | "valid" | "rejected";
+  }>;
+  modelChain?: Array<{ provider: string; model: string; role: string }>;
+  attemptCount?: number;
+  qualityChecks?: Array<{ name: string; score: number; reason: string }>;
+  latencyMs?: number;
+  estimatedCostUsd?: number;
+  promptVersion?: string;
+  selectedResultAssetId?: string;
+  feedback?: { rating?: number; comment?: string; createdAt: Date };
+  preserveBackground?: boolean;
+  userInstructions?: string;
+  degradedMode?: boolean;
+  cancelledAt?: Date;
   provider: string | null;
   model: string | null;
   requestedSize: "1024x1024" | "1536x1024" | "1024x1536";
@@ -111,10 +171,55 @@ export interface RenderAttemptDocument {
   provider: string;
   model: string;
   status: "succeeded" | "failed";
+  requestId?: string;
+  stage?: string;
+  attemptNumber?: number;
+  promptVersion?: string;
+  safety?: Record<string, unknown>;
+  errorCode?: string;
+  retryable?: boolean;
+  degradedMode?: boolean;
+  outputAssetIds?: string[];
   latencyMs: number;
   estimatedCostUsd: number;
   error?: string;
   createdAt: Date;
+}
+
+export interface SegmentationDocument {
+  id: string;
+  organizationId: string;
+  sceneId: string;
+  publicSessionId?: string;
+  point: { x: number; y: number };
+  maskAssetId: string;
+  label: string;
+  confidence: number;
+  box: { xMin: number; yMin: number; xMax: number; yMax: number };
+  status: "proposed" | "confirmed" | "rejected";
+  provider: string;
+  model: string;
+  createdAt: Date;
+  confirmedAt?: Date;
+}
+
+export interface RenderFeedbackDocument {
+  id: string;
+  organizationId: string;
+  renderId: string;
+  publicSessionId?: string;
+  rating: number;
+  comment?: string;
+  createdAt: Date;
+}
+
+export interface RateLimitDocument {
+  id: string;
+  organizationId: string;
+  action: string;
+  windowStartedAt: Date;
+  expiresAt: Date;
+  count: number;
 }
 
 export interface WalletDocument {

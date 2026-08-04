@@ -23,8 +23,8 @@ Ouvrir :
 - santé API : <http://localhost:3000/v1/health>
 
 Avec `DEMO_MODE=true`, un vase et un portefeuille de 12 crédits sont créés
-automatiquement dans MongoDB. Sans clé OpenAI, le pipeline de rendu local reste
-entièrement utilisable. Sans configuration Cloudinary en local, les images sont
+automatiquement dans MongoDB. Avec `AI_MOCK_MODE=true`, le pipeline complet
+reste testable sans appel payant. Sans configuration Cloudinary en local, les images sont
 stockées en binaire dans MongoDB.
 
 ## Architecture
@@ -55,8 +55,8 @@ tentatives de rendu, analytics et audits.
 5. Le modèle de vision conserve ce point et adapte l’échelle, la perspective et
    la lumière ; un placement local conserve le point si l’API est indisponible.
 6. Next.js crée une composition unique et un masque qui protège le produit.
-7. Le mode local finalise le rendu sans coût, ou GPT Image 2 harmonise lumière,
-   ombre et contact sans générer un second objet.
+7. Gemini Flash produit l’aperçu et Gemini Pro le rendu final ; OpenAI reste un
+   secours explicitement désactivé par défaut.
 8. Un crédit est débité uniquement après un rendu réussi.
 
 ## Vérification
@@ -76,7 +76,8 @@ npm.cmd run test:e2e
    situés hors de ce dossier.
 3. Ajouter `MONGODB_URI`, `MONGODB_DB`, `APP_SESSION_SECRET`, `CRON_SECRET` et
    la variable `CLOUDINARY_URL` copiée depuis Cloudinary.
-4. Ajouter `OPENAI_API_KEY` uniquement pour activer le rendu IA.
+4. Ajouter `GOOGLE_AI_API_KEY`, puis mettre `AI_MOCK_MODE=false`. Garder
+   `OPENAI_IMAGE_ENABLED=false` tant que le secours OpenAI n’est pas souhaité.
 5. Déployer, puis vérifier `/v1/health`.
 
 Les détails sont dans [docs/deployment.md](docs/deployment.md).

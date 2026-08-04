@@ -1,77 +1,72 @@
 # Architecture
 
-## Décision
-
-LiliDecoAI est une application full-stack Next.js :
-
-- les pages React, l’authentification et les API `/v1/*` vivent dans
-  `apps/web` ;
-- les Route Handlers Next.js s’exécutent comme fonctions Node.js sur Vercel ;
-- MongoDB est l’unique base de données ;
-- Cloudinary conserve les images avec le type `private` en production ;
-- Sharp assure normalisation, composition, masque et rendu local ;
-- OpenAI analyse la pièce puis GPT Image 2 harmonise le rendu, de façon
-  optionnelle et uniquement côté serveur.
-
-Il n’existe aucun processus Python, worker ou serveur API séparé.
+LiliDecoAI reste une application full-stack Next.js. Les pages React,
+l’authentification et les routes `/v1/*` vivent dans `apps/web` et sont
+hébergées ensemble sur Vercel. MongoDB est l’unique base ; Cloudinary stocke les
+images privées ; Sharp normalise et compose les images. Il n’existe ni FastAPI,
+ni Supabase, ni worker Python séparé.
 
 ## Flux de rendu
 
 ```mermaid
-flowchart LR
-    A["Photo produit"] --> B["Route Handler Next.js"]
-    B --> C["Sharp : normalisation et cutout"]
-    C --> D["Cloudinary private"]
-    E["Photo de pièce + consentement"] --> B
-    B --> F["MongoDB : scène et produit"]
-    F --> G["Point utilisateur + type de support"]
-    G --> H["Vision : échelle, perspective et lumière"]
-    H --> O["Sharp : composition et masque protégé"]
-    O --> I{"OPENAI_API_KEY ?"}
-    I -->|Non ou mode démo| J["Rendu local déterministe"]
-    I -->|Oui| K["GPT Image 2 edits"]
-    J --> M["Cloudinary + MongoDB"]
-    K --> M
-    M --> N["Débit atomique d’un crédit"]
+flowchart TD
+    A["1 à 4 vues produit"] --> N["Normalisation serveur"]
+    B["Photo de la pièce"] --> S["Analyse de scène"]
+    C["Point utilisateur"] --> S
+    S --> M{"Ajouter ou remplacer ?"}
+    M -->|"Ajouter"| G["Géométrie déterministe"]
+    M -->|"Remplacer"| K["Segmentation et correction du masque"]
+    K --> X["Confirmation utilisateur"]
+    X --> R["Suppression de la cible"]
+    R --> S2["Réanalyse de la scène nettoyée"]
+    S2 --> G
+    N --> G
+    G --> P["PromptBuilder versionné"]
+    P --> Q{"Qualité"}
+    Q -->|"Aperçu"| F["Gemini 3.1 Flash Image"]
+    Q -->|"Final"| H["Gemini 3 Pro Image"]
+    F --> V["Contrôle qualité"]
+    H --> V
+    V -->|"Correction ciblée, max. 1"| P
+    V -->|"Accepté"| D["Cloudinary et MongoDB"]
 ```
 
-Le client place un point rouge sur la photo et choisit le type de support. Le
-modèle de vision respecte ce point puis propose l’échelle, la rotation et la
-lumière à partir de la photo et des dimensions réelles. Si l’analyse distante
-échoue, un placement local borné conserve le point choisi.
-GPT Image ne peut modifier que le halo transparent autour du produit ; le produit
-déjà composé reste protégé.
+La photo originale de la pièce est toujours fournie au rendu premium. Une
+prévisualisation compressée n’est jamais sa seule référence. La géométrie,
+l’échelle, les coordonnées et le confinement au masque restent déterministes
+autant que possible ; le modèle génératif harmonise les pixels dans ces
+contraintes.
 
-## Données MongoDB
+## États et données
 
-Le client MongoDB est partagé entre invocations chaudes et utilise un pool
-borné. Des index uniques protègent les identifiants, les utilisateurs, les
-portefeuilles et les clés d’idempotence.
+Le client suit `uploaded`, `analyzing_scene`, `segmenting_target`,
+`awaiting_mask_confirmation`, `computing_geometry`, `removing_target`,
+`building_prompt`, `generating_preview`, `generating_final`, `quality_check`,
+`retrying`, `completed`, `failed` et `refunded`.
 
-Collections principales :
+MongoDB conserve notamment :
 
-- `organizations`, `users`, `products`, `assets`, `scenes`, `calibrations` ;
-- `renders`, `render_attempts` ;
-- `wallets`, `credit_transactions` ;
-- `analytics_events`, `audit_logs`.
+- `products` avec 1 à 4 vues validées et leurs rôles ;
+- `scenes`, analyse et durée de conservation ;
+- `segmentations` et masque confirmé ;
+- `renders`, mode, surface, points, dimensions, lumière, calibration, chaîne de
+  modèles, score, latence, coût et version de prompt ;
+- `render_attempts` pour chaque appel normalisé ;
+- `render_feedback`, crédits, analytics sans image et audits ;
+- `rate_limits` pour les quotas serveur.
 
-Toutes les requêtes métier incluent `organizationId`. Les photos temporaires ont
-une date d’expiration ; le cron Vercel supprime l’objet Cloudinary avant ses
-métadonnées MongoDB.
+Le script `npm run migrate:image-pipeline` est une simulation par défaut. Il
+ajoute les champs compatibles aux anciens documents seulement avec `-- --apply`
+et ne supprime aucune donnée.
 
-Le widget démarre par `/v1/visualizer/:merchantSlug/:productId`. Cette route
-émet une session anonyme signée limitée à ce produit et à un identifiant de
-session. Les scènes et rendus créés par un visiteur ne sont ensuite accessibles
-que depuis cette même session.
+## Limites connues
 
-## Limites assumées du MVP
-
-- une photo source peut peser jusqu’à 20 Mo ; le navigateur la réduit à 2 048 px
-  et sous 3,5 Mo avant de l’envoyer à la fonction Vercel ;
-- un seul objet est placé par rendu ;
-- le rendu OpenAI est synchrone et borné par la durée maximale de la fonction ;
-- le détourage local retire le fond connecté aux bords avec une transition
-  alpha douce et conserve mieux les parties claires internes ;
-- les objets transparents, réfléchissants ou déformables restent hors périmètre ;
-- le cron fourni est quotidien ; un plan Vercel permettant une fréquence plus
-  élevée peut réduire la fenêtre réelle de suppression.
+- Sans calibration réelle, l’échelle reste estimée et l’interface l’indique.
+- La segmentation compatible point/masque est interchangeable ; le backend
+  actuel propose un masque assisté à corriger, pas un modèle SAM local lourd.
+- Un rendu traite un produit à la fois ; une composition multi-produits se fait
+  par rendus successifs.
+- Les angles produit absents sont estimés et ne sont jamais présentés comme
+  parfaitement fidèles.
+- Les surfaces réfléchissantes, transparentes ou très occultées peuvent
+  nécessiter une nouvelle photo ou une correction de masque.

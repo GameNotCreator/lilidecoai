@@ -16,7 +16,10 @@ import type {
   ProductDocument,
   RenderAttemptDocument,
   RenderDocument,
+  RenderFeedbackDocument,
+  RateLimitDocument,
   SceneDocument,
+  SegmentationDocument,
   UserDocument,
   WalletDocument,
 } from "./types";
@@ -69,6 +72,9 @@ export function collections(db: Db) {
     calibrations: db.collection<CalibrationDocument>("calibrations"),
     renders: db.collection<RenderDocument>("renders"),
     renderAttempts: db.collection<RenderAttemptDocument>("render_attempts"),
+    segmentations: db.collection<SegmentationDocument>("segmentations"),
+    renderFeedback: db.collection<RenderFeedbackDocument>("render_feedback"),
+    rateLimits: db.collection<RateLimitDocument>("rate_limits"),
     wallets: db.collection<WalletDocument>("wallets"),
     creditTransactions: db.collection<CreditTransactionDocument>(
       "credit_transactions",
@@ -112,6 +118,11 @@ async function createIndexes(db: Db): Promise<void> {
       { unique: true },
     ),
     c.renderAttempts.createIndex({ organizationId: 1, createdAt: -1 }),
+    c.segmentations.createIndex({ organizationId: 1, id: 1 }, { unique: true }),
+    c.segmentations.createIndex({ sceneId: 1, createdAt: -1 }),
+    c.renderFeedback.createIndex({ organizationId: 1, renderId: 1 }),
+    c.rateLimits.createIndex({ id: 1 }, { unique: true }),
+    c.rateLimits.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
     c.wallets.createIndex({ organizationId: 1 }, { unique: true }),
     c.creditTransactions.createIndex(
       { organizationId: 1, idempotencyKey: 1 },

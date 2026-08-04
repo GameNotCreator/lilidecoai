@@ -105,9 +105,7 @@ test("landing and merchant dashboard expose the core promise", async ({
   await expect(page.getByText("Vase Sable")).toBeVisible();
 });
 
-test("public demo loads the multi-product guest catalog", async ({
-  page,
-}) => {
+test("public demo loads the multi-product guest catalog", async ({ page }) => {
   await page.goto("/demo");
   await expect(
     page.getByRole("heading", { name: /Voyez l’objet/i }),
@@ -162,10 +160,9 @@ test("guest access exposes the demo catalog but keeps admin protected", async ({
   expect((await request.get("/v1/admin/overview")).status()).toBe(403);
   expect(
     (
-      await request.patch(
-        "/v1/products/11111111-1111-4111-8111-111111111111",
-        { data: { name: "Interdit" } },
-      )
+      await request.patch("/v1/products/11111111-1111-4111-8111-111111111111", {
+        data: { name: "Interdit" },
+      })
     ).status(),
   ).toBe(404);
 
@@ -207,7 +204,7 @@ test("object form adapts dimensions to the selected object type", async ({
   ).toBeVisible();
 
   await page.getByRole("radio", { name: /Plante en pot/i }).check();
-  await page.locator('input[type="file"]').setInputFiles({
+  await page.getByLabel("Image PNG de l’objet").setInputFiles({
     name: "plante-invitee.png",
     mimeType: "image/png",
     buffer: await productFixture(),
@@ -235,7 +232,7 @@ test("a source photo over 4 MB is optimized before upload", async ({
   await page.goto("/demo");
   const largePhoto = await largeRoomFixture();
   expect(largePhoto.length).toBeGreaterThan(4_500_000);
-  await page.locator('input[type="file"]').setInputFiles({
+  await page.getByLabel("Photo de votre pièce").setInputFiles({
     name: "piece-telephone.png",
     mimeType: "image/png",
     buffer: largePhoto,
@@ -251,8 +248,13 @@ test("required customer journey reaches a successful mock render", async ({
 }) => {
   test.setTimeout(120_000);
   await page.goto("/app/products/new");
-  await page.locator('input[type="file"]').setInputFiles({
+  await page.getByLabel("Image PNG de l’objet").setInputFiles({
     name: "vase-e2e.png",
+    mimeType: "image/png",
+    buffer: await productFixture(),
+  });
+  await page.getByLabel("Vue trois-quarts").setInputFiles({
+    name: "vase-e2e-trois-quarts.png",
     mimeType: "image/png",
     buffer: await productFixture(),
   });
@@ -280,12 +282,16 @@ test("required customer journey reaches a successful mock render", async ({
       id: string;
       name: string;
       generationInstructions: string;
+      views: Array<{ type: string }>;
     }>;
     return products.find((product) => product.name === name);
   }, productName);
   const productId = createdProduct?.id;
   expect(productId).toBeTruthy();
   expect(createdProduct?.generationInstructions).toContain("ombre douce");
+  expect(createdProduct?.views.map((view) => view.type)).toEqual(
+    expect.arrayContaining(["front", "three_quarter"]),
+  );
 
   await page.goto(`/app/products/${productId}`);
   await expect(page.getByRole("heading", { name: productName })).toBeVisible();
@@ -316,7 +322,7 @@ test("required customer journey reaches a successful mock render", async ({
   expect(viewerAccess.productIds).toEqual([productId]);
   expect(viewerAccess.mutationStatus).toBe(403);
 
-  await page.locator('input[type="file"]').setInputFiles({
+  await page.getByLabel("Photo de votre pièce").setInputFiles({
     name: "piece-e2e.png",
     mimeType: "image/png",
     buffer: await roomFixture(),
@@ -335,4 +341,53 @@ test("required customer journey reaches a successful mock render", async ({
     page.getByRole("heading", { name: "Voilà le résultat." }),
   ).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole("link", { name: "Acheter" })).toBeVisible();
+});
+
+test("replacement waits for an editable confirmed mask", async ({ page }) => {
+  test.setTimeout(90_000);
+  let uploadAuthorization = "";
+  let segmentAuthorization = "";
+  page.on("request", (request) => {
+    const pathname = new URL(request.url()).pathname;
+    if (request.method() === "POST" && pathname === "/v1/scenes") {
+      uploadAuthorization = request.headers().authorization ?? "";
+    }
+    if (request.method() === "POST" && pathname.endsWith("/segment")) {
+      segmentAuthorization = request.headers().authorization ?? "";
+    }
+  });
+  await page.goto("/demo");
+  const roomUpload = page.getByLabel("Photo de votre pièce");
+  await expect(roomUpload).toBeEnabled();
+  await roomUpload.setInputFiles({
+    name: "piece-remplacement.png",
+    mimeType: "image/png",
+    buffer: await roomFixture(),
+  });
+  await page
+    .getByRole("button", { name: /Remplacer un élément existant/i })
+    .click();
+  const segmentationResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname.endsWith("/segment"),
+  );
+  await page
+    .getByRole("button", { name: "Sélectionner l’objet à remplacer" })
+    .click({ position: { x: 320, y: 230 } });
+  const segmentation = await segmentationResponse;
+  const segmentationBody = await segmentation.text();
+  expect(segmentAuthorization).toBe(uploadAuthorization);
+  expect(segmentation.status(), segmentationBody).toBe(201);
+
+  await expect(page.getByLabel("Corriger le masque de l’objet")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /Confirmer le masque/i }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: /Confirmer le masque/i }).click();
+  await expect(page.getByText(/prêt à être remplacé/i)).toBeVisible();
+  await page.getByRole("button", { name: /Créer mon aperçu/i }).click();
+  await expect(
+    page.getByRole("heading", { name: "Voilà le résultat." }),
+  ).toBeVisible({ timeout: 30_000 });
 });

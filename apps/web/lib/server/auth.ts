@@ -11,13 +11,7 @@ import { DEMO_ORGANIZATION_ID, DEMO_USER_ID } from "./types";
 export interface Tenant {
   organizationId: string;
   userId: string;
-  role:
-    | "owner"
-    | "admin"
-    | "member"
-    | "viewer"
-    | "guest"
-    | "platform_admin";
+  role: "owner" | "admin" | "member" | "viewer" | "guest" | "platform_admin";
   publicProductId?: string;
   publicSessionId?: string;
 }
@@ -126,11 +120,14 @@ export async function createPublicSession(
   };
 }
 
-export async function createGuestSession(existing?: Tenant): Promise<{
+export async function createGuestSession(
+  existing?: Tenant,
+  requestedSessionId?: string,
+): Promise<{
   token: string;
   cookie: string;
 }> {
-  const sessionId = crypto.randomUUID();
+  const sessionId = requestedSessionId ?? crypto.randomUUID();
   const tenant: Tenant =
     existing?.role === "guest"
       ? existing

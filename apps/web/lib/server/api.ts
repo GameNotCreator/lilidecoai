@@ -1,12 +1,18 @@
 import "server-only";
 
 import { calibrateSegment, calibrateSurface, type Quad } from "@lili/geometry";
+import {
+  renderRequestSchema,
+  sceneAnalysisRequestSchema,
+  segmentationRequestSchema,
+} from "@lili/types";
 import type { Db } from "mongodb";
 import sharp from "sharp";
 import { z } from "zod";
 
 import {
   ApiInputError,
+  assetUrl,
   createCutout,
   deleteAsset,
   normalizeImage,
@@ -28,6 +34,8 @@ import {
 import { cloudinaryStorageConfigured, serverConfig } from "./config";
 import { CreditError, getCredits } from "./credits";
 import { collections, database, pingMongo } from "./mongodb";
+import { selectSceneAnalysisProvider, selectSegmentationProvider } from "./ai";
+import { enforceRateLimit } from "./rate-limit";
 import { createRender, RenderError, type DeferRenderTask } from "./rendering";
 import { productResponse, renderResponse, sceneResponse } from "./serializers";
 import { ensureDemoCredits, ensureDemoSeed } from "./seed";
@@ -76,31 +84,6 @@ const productCreateSchema = z.object({
   buyUrl: z.url().nullable().optional(),
 });
 
-const renderCreateSchema = z.object({
-  placement: z.object({
-    sceneId: z.string().uuid(),
-    productId: z.string().uuid(),
-    calibrationId: z.string().uuid().optional(),
-    mode: z.string().max(20).optional(),
-    surfaceType: z
-      .enum(["table", "nightstand", "shelf", "niche", "wall", "floor"])
-      .optional(),
-    xNormalized: z.number().min(0).max(1).optional(),
-    yNormalized: z.number().min(0).max(1).optional(),
-    scale: z.number().min(0.04).max(0.75).optional(),
-    rotationDegrees: z.number().min(-180).max(180).optional(),
-    lighting: z
-      .object({
-        direction: z.string().max(30).optional(),
-        temperature: z.string().max(30).optional(),
-        hardness: z.string().max(30).optional(),
-      })
-      .optional(),
-  }),
-  idempotencyKey: z.string().min(1).max(160),
-  quality: z.string().max(30).optional(),
-});
-
 export async function dispatchApi(
   request: Request,
   path: string[],
@@ -116,6 +99,16 @@ export async function dispatchApi(
           : "mongodb-fallback",
         authentication: serverConfig.demoMode ? "demo" : "required",
         runtime: "nextjs-vercel",
+        imagePipeline: {
+          mode: serverConfig.imagePipelineMode,
+          mockMode: serverConfig.aiMockMode,
+          googleConfigured: Boolean(serverConfig.googleApiKey),
+          previewModel: serverConfig.googlePreviewImageModel,
+          finalModel: serverConfig.googleFinalImageModel,
+          openAIEnabled: Boolean(
+            serverConfig.openAIImageEnabled && serverConfig.openaiApiKey,
+          ),
+        },
       });
     }
 
@@ -200,9 +193,13 @@ async function handleAuth(
   if (path[0] === "guest" && request.method === "POST") {
     await ensureDemoSeed(db);
     await ensureDemoCredits(db);
+    const guestInput = z
+      .object({ sessionId: z.string().uuid().optional() })
+      .parse(await request.json().catch(() => ({})));
     const currentTenant = await tenantForRequest(request).catch(() => null);
     const session = await createGuestSession(
       currentTenant?.role === "guest" ? currentTenant : undefined,
+      guestInput.sessionId,
     );
     return Response.json(
       { authenticated: true, role: "guest", accessToken: session.token },
@@ -354,20 +351,55 @@ async function handleProducts(
   }
   if (path[1] === "assets" && request.method === "POST") {
     const file = await uploadedFile(request);
+    const viewType = z
+      .enum(["front", "three_quarter", "side", "back", "detail"])
+      .parse(file.fields.viewType ?? "front");
+    const currentViews = product.views ?? [];
+    if (
+      currentViews.length >= 4 &&
+      !currentViews.some((view) => view.type === viewType)
+    ) {
+      throw new ApiInputError("Maximum 4 vues par produit");
+    }
     await validateImage(file.buffer, file.contentType);
     const normalized = await normalizeImage(file.buffer);
+    const metadata = await sharp(normalized).metadata();
     const asset = await storeAsset(db, {
       organizationId: tenant.organizationId,
-      kind: "product",
+      kind: viewType === "front" ? "product" : "product_view",
       buffer: normalized,
       contentType: "image/webp",
     });
-    if (product.assetId) await deleteAsset(db, product.assetId);
+    const previousView = currentViews.find((view) => view.type === viewType);
+    if (previousView?.assetId) await deleteAsset(db, previousView.assetId);
+    if (
+      viewType === "front" &&
+      product.assetId &&
+      product.assetId !== previousView?.assetId
+    ) {
+      await deleteAsset(db, product.assetId);
+    }
+    const view = {
+      id: previousView?.id ?? crypto.randomUUID(),
+      assetId: asset.id,
+      type: viewType,
+      widthPx: metadata.width ?? 0,
+      heightPx: metadata.height ?? 0,
+      validationStatus: "valid" as const,
+      createdAt: previousView?.createdAt ?? new Date(),
+    };
+    const views = [
+      ...currentViews.filter((candidate) => candidate.type !== viewType),
+      view,
+    ];
+    const nextAssetId =
+      viewType === "front" ? asset.id : (product.assetId ?? asset.id);
     await c.products.updateOne(
       { id: product.id },
       {
         $set: {
-          assetId: asset.id,
+          assetId: nextAssetId,
+          views,
           status: "processing",
           updatedAt: new Date(),
         },
@@ -376,7 +408,8 @@ async function handleProducts(
     return Response.json(
       productResponse({
         ...product,
-        assetId: asset.id,
+        assetId: nextAssetId,
+        views,
         status: "processing",
         updatedAt: new Date(),
       }),
@@ -490,27 +523,164 @@ async function handleScenes(
     return Response.json(sceneResponse(scene));
   }
   if (path[1] === "analyse" && request.method === "POST") {
-    const analysis = {
-      orientation: scene.widthPx >= scene.heightPx ? "landscape" : "portrait",
-      horizonY: 0.44,
-      light: {
-        direction: "left",
-        temperature: "neutral",
-        confidence: 0.72,
+    await enforceRateLimit(
+      db,
+      tenant.organizationId,
+      "scene-analysis",
+      30,
+      300_000,
+    );
+    const body = await request.json().catch(() => ({}));
+    const input = sceneAnalysisRequestSchema.parse(body);
+    const sceneAsset = await readAsset(db, scene.assetId);
+    if (!sceneAsset) return error("Photo de pièce introuvable", 404);
+    const provider = selectSceneAnalysisProvider();
+    const analysis = await provider.analyze({
+      room: {
+        data: new Uint8Array(sceneAsset.buffer),
+        mimeType: sceneAsset.asset.contentType as
+          "image/jpeg" | "image/png" | "image/webp",
+        role: "room_original",
       },
-      surfaces: [
-        { type: "table", confidence: 0.86 },
-        { type: "wall", confidence: 0.74 },
-        { type: "floor", confidence: 0.62 },
-      ],
-    };
+      placementPoint: input.placementPoint,
+      surfaceType: input.surfaceType,
+      productDimensionsCm: {
+        width: input.dimensionsCm.width,
+        height: input.dimensionsCm.height,
+        depth: input.dimensionsCm.depth,
+      },
+      ...(input.calibration
+        ? { calibration: input.calibration as Record<string, unknown> }
+        : {}),
+    });
+    const analysisDocument = analysis as unknown as Record<string, unknown>;
     await c.scenes.updateOne(
       { id: scene.id },
-      { $set: { analysis, status: "analysed" } },
+      { $set: { analysis: analysisDocument, status: "analysed" } },
     );
     return Response.json(
-      sceneResponse({ ...scene, analysis, status: "analysed" }),
+      sceneResponse({
+        ...scene,
+        analysis: analysisDocument,
+        status: "analysed",
+      }),
     );
+  }
+  if (path[1] === "segment" && request.method === "POST") {
+    await enforceRateLimit(
+      db,
+      tenant.organizationId,
+      "segmentation",
+      30,
+      300_000,
+    );
+    const input = segmentationRequestSchema.parse(await request.json());
+    const sceneAsset = await readAsset(db, scene.assetId);
+    if (!sceneAsset) return error("Photo de pièce introuvable", 404);
+    const provider = selectSegmentationProvider();
+    const segmented = await provider.segment({
+      room: {
+        data: new Uint8Array(sceneAsset.buffer),
+        mimeType: sceneAsset.asset.contentType as
+          "image/jpeg" | "image/png" | "image/webp",
+        role: "room_original",
+      },
+      point: input.point,
+      positivePoints: input.positivePoints,
+      negativePoints: input.negativePoints,
+    });
+    const maskAsset = await storeAsset(db, {
+      organizationId: tenant.organizationId,
+      kind: "mask",
+      buffer: Buffer.from(segmented.mask.data),
+      contentType: "image/png",
+      expiresAt: scene.expiresAt,
+    });
+    const segmentation = {
+      id: crypto.randomUUID(),
+      organizationId: tenant.organizationId,
+      sceneId: scene.id,
+      ...(tenant.publicSessionId
+        ? { publicSessionId: tenant.publicSessionId }
+        : {}),
+      point: input.point,
+      maskAssetId: maskAsset.id,
+      label: segmented.label,
+      confidence: segmented.confidence,
+      box: segmented.box,
+      status: "proposed" as const,
+      provider: segmented.providerResult.provider,
+      model: segmented.providerResult.model,
+      createdAt: new Date(),
+    };
+    await c.segmentations.insertOne(segmentation);
+    return Response.json(
+      {
+        id: segmentation.id,
+        status: segmentation.status,
+        label: segmentation.label,
+        confidence: segmentation.confidence,
+        box: segmentation.box,
+        maskUrl: assetUrl(segmentation.maskAssetId),
+        provider: segmentation.provider,
+        model: segmentation.model,
+      },
+      { status: 201 },
+    );
+  }
+  if (
+    path[1] === "segments" &&
+    path[3] === "confirm" &&
+    request.method === "POST"
+  ) {
+    const segmentation = await c.segmentations.findOne({
+      id: path[2],
+      sceneId: scene.id,
+      organizationId: tenant.organizationId,
+      ...(tenant.publicSessionId
+        ? { publicSessionId: tenant.publicSessionId }
+        : {}),
+    });
+    if (!segmentation) return error("Masque introuvable", 404);
+    let maskAssetId = segmentation.maskAssetId;
+    if (request.headers.get("content-type")?.includes("multipart/form-data")) {
+      const uploaded = await uploadedFile(request);
+      await validateImage(uploaded.buffer, uploaded.contentType);
+      const corrected = await sharp(uploaded.buffer, { failOn: "error" })
+        .rotate()
+        .resize({ width: scene.widthPx, height: scene.heightPx, fit: "fill" })
+        .ensureAlpha()
+        .png()
+        .toBuffer();
+      const maskAsset = await storeAsset(db, {
+        organizationId: tenant.organizationId,
+        kind: "mask",
+        buffer: corrected,
+        contentType: "image/png",
+        expiresAt: scene.expiresAt,
+      });
+      maskAssetId = maskAsset.id;
+    }
+    const confirmedAt = new Date();
+    await c.segmentations.updateOne(
+      { id: segmentation.id },
+      {
+        $set: {
+          maskAssetId,
+          status: "confirmed",
+          confirmedAt,
+        },
+      },
+    );
+    return Response.json({
+      id: segmentation.id,
+      status: "confirmed",
+      label: segmentation.label,
+      confidence: segmentation.confidence,
+      box: segmentation.box,
+      maskUrl: assetUrl(maskAssetId),
+      confirmedAt: confirmedAt.toISOString(),
+    });
   }
   if (path[1] === "surfaces" && request.method === "POST") {
     const surface = {
@@ -611,8 +781,20 @@ async function handleRenders(
       .toArray();
     return Response.json(renders.map(renderResponse));
   }
-  if (path.length === 0 && request.method === "POST") {
-    const input = renderCreateSchema.parse(await request.json());
+  const qualityEndpoint =
+    path.length === 1 && (path[0] === "preview" || path[0] === "final")
+      ? path[0]
+      : null;
+  if (
+    request.method === "POST" &&
+    (path.length === 0 || qualityEndpoint !== null)
+  ) {
+    await enforceRateLimit(db, tenant.organizationId, "render", 12, 600_000);
+    const body = (await request.json()) as Record<string, unknown>;
+    const input = renderRequestSchema.parse({
+      ...body,
+      ...(qualityEndpoint ? { outputQuality: qualityEndpoint } : {}),
+    });
     if (tenant.publicSessionId) {
       if (
         tenant.publicProductId &&
@@ -627,10 +809,50 @@ async function handleRenders(
       });
       if (!ownedScene) throw new AuthError("Scène non autorisée", 403);
     }
+    const placementPoint = input.placementPoint ?? {
+      x: input.placement.xNormalized as number,
+      y: input.placement.yNormalized as number,
+    };
+    let targetMaskAssetId: string | undefined;
+    if (input.mode === "replace") {
+      const segmentation = await c.segmentations.findOne({
+        id: input.targetMaskId,
+        organizationId: tenant.organizationId,
+        sceneId: input.placement.sceneId,
+        status: "confirmed",
+        ...(tenant.publicSessionId
+          ? { publicSessionId: tenant.publicSessionId }
+          : {}),
+      });
+      if (!segmentation) {
+        throw new ApiInputError(
+          "Le masque doit être confirmé avant le remplacement.",
+        );
+      }
+      targetMaskAssetId = segmentation.maskAssetId;
+    }
+    const normalizedInput = {
+      ...input,
+      placementPoint,
+      ...(targetMaskAssetId ? { targetMaskAssetId } : {}),
+      placement: {
+        ...input.placement,
+        mode: input.mode,
+        surfaceType:
+          input.surfaceType ??
+          input.placement.surfaceType ??
+          (input.mode === "replace" ? "existing_object" : undefined),
+        xNormalized: placementPoint.x,
+        yNormalized: placementPoint.y,
+        ...(input.targetPoint ? { targetPoint: input.targetPoint } : {}),
+        ...(targetMaskAssetId ? { targetMaskAssetId } : {}),
+        lighting: input.lighting,
+      },
+    };
     const result = await createRender(
       db,
       tenant.organizationId,
-      input,
+      normalizedInput,
       tenant.publicSessionId,
       deferRenderTask,
     );
@@ -655,9 +877,61 @@ async function handleRenders(
     );
     return new Response(null, { status: 204 });
   }
+  if (path[1] === "cancel" && request.method === "POST") {
+    if (render.status === "succeeded" || render.status === "failed") {
+      return Response.json(renderResponse(render));
+    }
+    const update = {
+      status: "cancelled" as const,
+      pipelineState: "refunded" as const,
+      cancelledAt: new Date(),
+      updatedAt: new Date(),
+    };
+    await c.renders.updateOne({ id: render.id }, { $set: update });
+    return Response.json(renderResponse({ ...render, ...update }));
+  }
+  if (path[1] === "feedback" && request.method === "POST") {
+    const feedback = z
+      .object({
+        rating: z.number().int().min(1).max(5),
+        comment: z.string().trim().max(1_000).optional(),
+      })
+      .parse(await request.json());
+    const createdAt = new Date();
+    await c.renderFeedback.insertOne({
+      id: crypto.randomUUID(),
+      organizationId: tenant.organizationId,
+      renderId: render.id,
+      ...(tenant.publicSessionId
+        ? { publicSessionId: tenant.publicSessionId }
+        : {}),
+      rating: feedback.rating,
+      ...(feedback.comment ? { comment: feedback.comment } : {}),
+      createdAt,
+    });
+    await c.renders.updateOne(
+      { id: render.id },
+      { $set: { feedback: { ...feedback, createdAt }, updatedAt: createdAt } },
+    );
+    return Response.json({ saved: true }, { status: 201 });
+  }
   if (path[1] === "retry" && request.method === "POST") {
     const retryInput = {
       placement: render.placement,
+      mode: render.mode ?? "insert",
+      placementPoint: render.placementPoint ?? {
+        x: Number(render.placement.xNormalized ?? 0.5),
+        y: Number(render.placement.yNormalized ?? 0.7),
+      },
+      ...(render.targetPoint ? { targetPoint: render.targetPoint } : {}),
+      ...(render.targetMaskId ? { targetMaskId: render.targetMaskId } : {}),
+      ...(render.targetMaskAssetId
+        ? { targetMaskAssetId: render.targetMaskAssetId }
+        : {}),
+      ...(render.surfaceType ? { surfaceType: render.surfaceType } : {}),
+      outputQuality: render.outputQuality ?? "final",
+      preserveBackground: render.preserveBackground ?? true,
+      userInstructions: render.userInstructions ?? "",
       idempotencyKey: `${render.idempotencyKey}:retry:${crypto.randomUUID()}`,
       quality: "high",
     };
@@ -816,15 +1090,22 @@ async function adminAudit(db: Db, tenant: Tenant): Promise<Response> {
   return Response.json(logs);
 }
 
-async function uploadedFile(
-  request: Request,
-): Promise<{ buffer: Buffer; contentType: string }> {
+async function uploadedFile(request: Request): Promise<{
+  buffer: Buffer;
+  contentType: string;
+  fields: Record<string, string>;
+}> {
   const form = await request.formData();
   const file = form.get("file");
   if (!(file instanceof File)) throw new ApiInputError("Fichier requis");
+  const fields: Record<string, string> = {};
+  for (const [key, value] of form.entries()) {
+    if (typeof value === "string") fields[key] = value;
+  }
   return {
     buffer: Buffer.from(await file.arrayBuffer()),
     contentType: file.type,
+    fields,
   };
 }
 

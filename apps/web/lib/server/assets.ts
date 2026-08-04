@@ -6,9 +6,15 @@ import sharp from "sharp";
 
 import { cloudinaryStorageConfigured, serverConfig } from "./config";
 import { collections } from "./mongodb";
+import { sniffImageMime } from "./image-security";
 import type { AssetDocument } from "./types";
 
 const allowedTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
+const formatForMime: Record<string, string> = {
+  "image/jpeg": "jpeg",
+  "image/png": "png",
+  "image/webp": "webp",
+};
 const cloudinaryDeliveryType = "private" as const;
 
 let cloudinaryReady = false;
@@ -33,7 +39,20 @@ export async function validateImage(
       `Image trop volumineuse: maximum ${Math.floor(serverConfig.maxUploadBytes / 1_000_000)} Mo`,
     );
   }
-  const metadata = await sharp(buffer, { failOn: "error" }).metadata();
+  if (sniffImageMime(buffer) !== contentType) {
+    throw new ApiInputError(
+      "Le contenu réel de l’image ne correspond pas au format annoncé",
+    );
+  }
+  const metadata = await sharp(buffer, {
+    failOn: "error",
+    limitInputPixels: 40_000_000,
+  }).metadata();
+  if (!metadata.format || metadata.format !== formatForMime[contentType]) {
+    throw new ApiInputError(
+      "Le contenu réel de l’image ne correspond pas au format annoncé",
+    );
+  }
   const width = metadata.width ?? 0;
   const height = metadata.height ?? 0;
   if (width < 320 || height < 320) {
