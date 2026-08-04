@@ -19,6 +19,7 @@ import type {
 import sharp from "sharp";
 
 import { serverConfig } from "../config";
+import { buildGoogleImageResponseFormat } from "./google-image-config";
 
 type GooglePart = {
   text?: string;
@@ -141,12 +142,10 @@ export class GoogleImageProvider
       contents: [{ role: "user", parts }],
       generationConfig: {
         responseModalities: ["IMAGE"],
-        responseFormat: {
-          image: {
-            aspectRatio: aspectRatio(request.size),
-            imageSize,
-          },
-        },
+        responseFormat: buildGoogleImageResponseFormat(
+          request.size,
+          request.outputQuality,
+        ),
       },
     });
 
@@ -532,12 +531,6 @@ function estimateGoogleCost(
   }
   const output = imageSize === "4K" ? 0.24 : 0.134;
   return Number((output + inputImages * 0.0011).toFixed(4));
-}
-
-function aspectRatio(size: ImageGenerationRequest["size"]): string {
-  if (size === "1536x1024") return "3:2";
-  if (size === "1024x1536") return "2:3";
-  return "1:1";
 }
 
 function safetyMetadata(
