@@ -45,6 +45,27 @@ interface Segmentation {
   maskUrl: string;
 }
 
+interface PlacementPreparation {
+  mode: "insert" | "replace";
+  surfaceType: string;
+  placementPoint: { x: number; y: number };
+  targetPoint?: { x: number; y: number };
+  targetLabel?: string;
+  confidence: number;
+  needsClarification: boolean;
+  rationale: string;
+  segmentation?: Segmentation;
+}
+
+interface PreparedRenderInput {
+  mode: "insert" | "replace";
+  surfaceType: string;
+  placementPoint: { x: number; y: number };
+  targetPoint?: { x: number; y: number };
+  targetMaskId?: string;
+  outputQuality: "preview" | "final";
+}
+
 const pipelineCopy: Record<string, { title: string; detail: string }> = {
   uploaded: {
     title: "Photo reçue…",
@@ -139,7 +160,7 @@ export function VisualizerStudio({
   const [surface, setSurface] = useState("tabletop");
   const [renderMode, setRenderMode] = useState<"insert" | "replace">("insert");
   const [outputQuality, setOutputQuality] = useState<"preview" | "final">(
-    "preview",
+    "final",
   );
   const [placementPoint, setPlacementPoint] = useState<{
     x: number;
@@ -156,6 +177,7 @@ export function VisualizerStudio({
   const [busy, setBusy] = useState(false);
   const [uploadStatus, setUploadStatus] = useState("Choisir une photo");
   const [userInstructions, setUserInstructions] = useState("");
+  const [manualPlacement, setManualPlacement] = useState(false);
   const [feedbackSent, setFeedbackSent] = useState(false);
   const [error, setError] = useState("");
 
@@ -246,6 +268,11 @@ export function VisualizerStudio({
     setBusy(true);
     setError("");
     try {
+      if (catalogSession) {
+        await establishGuestEditorSession();
+      } else if (merchantSlug && initialProductId) {
+        await establishPublicSession(merchantSlug, initialProductId);
+      }
       setUploadStatus("Optimisation…");
       const preparedFile = await prepareImageForUpload(file);
       setUploadStatus("Envoi sécurisé…");
@@ -260,6 +287,7 @@ export function VisualizerStudio({
       setPlacementPoint(null);
       setTargetPoint(null);
       setSegmentation(null);
+      setManualPlacement(false);
       setStep(2);
       await recordEvent("room_uploaded");
     } catch (reason) {
@@ -338,35 +366,59 @@ export function VisualizerStudio({
     }
   }
 
+  async function requestRender(
+    prepared: PreparedRenderInput,
+  ): Promise<Render> {
+    if (!scene || !product) throw new Error("Photos introuvables");
+    return api<Render>(`/v1/renders/${prepared.outputQuality}`, {
+      method: "POST",
+      body: JSON.stringify({
+        mode: prepared.mode,
+        placement: {
+          sceneId: scene.id,
+          productId: product.id,
+          mode: prepared.mode,
+          surfaceType:
+            prepared.mode === "replace"
+              ? "existing_object"
+              : prepared.surfaceType,
+          xNormalized: prepared.placementPoint.x,
+          yNormalized: prepared.placementPoint.y,
+        },
+        placementPoint: prepared.placementPoint,
+        ...(prepared.targetPoint ? { targetPoint: prepared.targetPoint } : {}),
+        ...(prepared.targetMaskId
+          ? { targetMaskId: prepared.targetMaskId }
+          : {}),
+        surfaceType:
+          prepared.mode === "replace"
+            ? "existing_object"
+            : prepared.surfaceType,
+        idempotencyKey: `web-${crypto.randomUUID()}`,
+        outputQuality: prepared.outputQuality,
+        quality: prepared.outputQuality === "preview" ? "low" : "high",
+        preserveBackground: true,
+        userInstructions:
+          userInstructions.trim() ||
+          "Place ce produit à l’endroit le plus naturel et réaliste.",
+      }),
+    });
+  }
+
   async function generate() {
     if (!scene || !product || !placementPoint) return;
     setBusy(true);
     setError("");
     try {
-      const result = await api<Render>(`/v1/renders/${outputQuality}`, {
-        method: "POST",
-        body: JSON.stringify({
-          mode: renderMode,
-          placement: {
-            sceneId: scene.id,
-            productId: product.id,
-            mode: renderMode,
-            surfaceType: renderMode === "replace" ? "existing_object" : surface,
-            xNormalized: placementPoint.x,
-            yNormalized: placementPoint.y,
-          },
-          placementPoint,
-          ...(targetPoint ? { targetPoint } : {}),
-          ...(segmentation?.status === "confirmed"
-            ? { targetMaskId: segmentation.id }
-            : {}),
-          surfaceType: renderMode === "replace" ? "existing_object" : surface,
-          idempotencyKey: `web-${crypto.randomUUID()}`,
-          outputQuality,
-          quality: outputQuality === "preview" ? "low" : "high",
-          preserveBackground: true,
-          userInstructions,
-        }),
+      const result = await requestRender({
+        mode: renderMode,
+        surfaceType: surface,
+        placementPoint,
+        ...(targetPoint ? { targetPoint } : {}),
+        ...(segmentation?.status === "confirmed"
+          ? { targetMaskId: segmentation.id }
+          : {}),
+        outputQuality,
       });
       setRender(result);
       setStep(3);
@@ -375,6 +427,58 @@ export function VisualizerStudio({
       );
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Rendu impossible");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function generateFromInstruction() {
+    if (!scene || !product) return;
+    setBusy(true);
+    setError("");
+    try {
+      const prepared = await api<PlacementPreparation>(
+        `/v1/scenes/${scene.id}/prepare`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            productId: product.id,
+            instruction: userInstructions,
+          }),
+        },
+      );
+      setRenderMode(prepared.mode);
+      setSurface(prepared.surfaceType);
+      setPlacementPoint(prepared.placementPoint);
+      setTargetPoint(prepared.targetPoint ?? null);
+      setSegmentation(prepared.segmentation ?? null);
+      if (prepared.needsClarification) {
+        setManualPlacement(true);
+        setError(
+          "Je n’ai pas identifié la zone avec assez de certitude. Touchez simplement l’endroit sur la photo.",
+        );
+        return;
+      }
+      const result = await requestRender({
+        mode: prepared.mode,
+        surfaceType: prepared.surfaceType,
+        placementPoint: prepared.placementPoint,
+        ...(prepared.targetPoint ? { targetPoint: prepared.targetPoint } : {}),
+        ...(prepared.segmentation
+          ? { targetMaskId: prepared.segmentation.id }
+          : {}),
+        outputQuality: "final",
+      });
+      setRender(result);
+      setOutputQuality("final");
+      setStep(3);
+      await recordEvent("natural_language_render_requested");
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Je n’ai pas pu comprendre la demande.",
+      );
     } finally {
       setBusy(false);
     }
@@ -426,9 +530,9 @@ export function VisualizerStudio({
     >
       <header className="studio-head">
         <div>
-          <span className="eyebrow">Simple, rapide, sans installation</span>
-          <h1>Voyez l’objet chez vous.</h1>
-          <p>Choisissez, touchez l’endroit, puis comparez le résultat.</p>
+          <span className="eyebrow">Aussi simple qu’un message</span>
+          <h1>Montrez. Demandez. Visualisez.</h1>
+          <p>Un produit, une photo de votre pièce et une phrase. C’est tout.</p>
         </div>
         {!embedded && (
           <span className="credit-pill" aria-label="Crédits disponibles">
@@ -438,7 +542,7 @@ export function VisualizerStudio({
       </header>
 
       <nav className="studio-steps" aria-label="Étapes du visualiseur">
-        {["Photo", "Placement", "Résultat"].map((label, index) => (
+        {["Photos", "Demande", "Résultat"].map((label, index) => (
           <button
             key={label}
             className={
@@ -530,7 +634,119 @@ export function VisualizerStudio({
           </div>
         )}
 
-        {step === 2 && scene && (
+        {step === 2 && scene && !manualPlacement && (
+          <div className="studio-grid ai-request-grid">
+            <div className="ai-room-preview">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={scene.imageUrl} alt="Votre pièce" />
+              <span>Votre pièce</span>
+            </div>
+            <div className="studio-panel ai-request-panel">
+              <span className="panel-index">Votre demande</span>
+              <h2>Dites simplement ce que vous voulez.</h2>
+              <p className="muted">
+                L’intelligence artificielle trouvera seule l’objet, le support,
+                la taille et la perspective.
+              </p>
+
+              <div className="ai-attachments" aria-label="Images fournies">
+                <div className="ai-attachment">
+                  {product?.cutoutUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={product.cutoutUrl} alt={product.name} />
+                  ) : (
+                    <ImagePlus size={24} />
+                  )}
+                  <span>
+                    <small>Produit</small>
+                    <strong>{product?.name}</strong>
+                  </span>
+                  <Check size={16} />
+                </div>
+                <div className="ai-attachment">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={scene.imageUrl} alt="Pièce à modifier" />
+                  <span>
+                    <small>Pièce</small>
+                    <strong>Votre photo</strong>
+                  </span>
+                  <Check size={16} />
+                </div>
+              </div>
+
+              <label className="ai-instruction-field">
+                <span>Que voulez-vous faire ?</span>
+                <textarea
+                  aria-label="Votre demande"
+                  value={userInstructions}
+                  maxLength={1500}
+                  rows={4}
+                  autoFocus
+                  placeholder="Ex. Place le vase à la place du bocal"
+                  onChange={(event) => setUserInstructions(event.target.value)}
+                />
+              </label>
+              <p className="ai-example-copy">
+                Vous pouvez écrire naturellement : « remplace la lampe », « sur
+                l’étagère vide » ou laisser le champ vide pour que l’IA choisisse.
+              </p>
+
+              <Button
+                onClick={() => void generateFromInstruction()}
+                disabled={busy || credits === null || credits < 1 || !product}
+              >
+                {busy ? (
+                  <LoaderCircle className="spin" size={18} />
+                ) : (
+                  <Sparkles size={18} />
+                )}
+                {busy
+                  ? "Je comprends votre demande…"
+                  : credits === 0
+                    ? "Aucun crédit disponible"
+                    : "Créer le rendu · 1 crédit"}
+                {!busy && <ArrowRight size={18} />}
+              </Button>
+
+              <div className="ai-hidden-work">
+                <Sparkles size={18} />
+                <span>
+                  <strong>Tout est automatique</strong>
+                  <small>
+                    Remplacement, échelle, perspective, ombres et contrôle du
+                    réalisme sont effectués en arrière-plan.
+                  </small>
+                </span>
+              </div>
+
+              <button
+                className="back-link ai-manual-link"
+                type="button"
+                onClick={() => {
+                  setError("");
+                  setManualPlacement(true);
+                }}
+              >
+                Je préfère indiquer précisément l’endroit
+              </button>
+              <button
+                className="back-link"
+                type="button"
+                onClick={() => {
+                  setScene(null);
+                  setPlacementPoint(null);
+                  setTargetPoint(null);
+                  setSegmentation(null);
+                  setStep(1);
+                }}
+              >
+                <ArrowLeft size={15} /> Changer les photos
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === 2 && scene && manualPlacement && (
           <div className="studio-grid settings-grid">
             <p className="mobile-placement-hint">
               {renderMode === "replace"
@@ -724,6 +940,16 @@ export function VisualizerStudio({
                         : "Créer le rendu final · 1 crédit"}
                 {!busy && <ArrowRight size={17} />}
               </Button>
+              <button
+                className="back-link"
+                type="button"
+                onClick={() => {
+                  setError("");
+                  setManualPlacement(false);
+                }}
+              >
+                <Sparkles size={15} /> Revenir à la demande simple
+              </button>
               <button
                 className="back-link"
                 type="button"

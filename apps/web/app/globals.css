@@ -2563,6 +2563,189 @@ button {
   gap: 18px;
 }
 
+.focused-demo-page .ai-request-grid {
+  grid-template-columns: minmax(0, 1.2fr) minmax(340px, 0.8fr);
+  align-items: stretch;
+  gap: 18px;
+}
+
+.ai-room-preview {
+  position: relative;
+  display: grid;
+  min-height: 620px;
+  overflow: hidden;
+  border: 1px solid #dedede;
+  border-radius: 18px;
+  background: #0b0b0b;
+  place-items: center;
+}
+
+.ai-room-preview img {
+  width: 100%;
+  height: 100%;
+  max-height: 760px;
+  object-fit: contain;
+}
+
+.ai-room-preview > span {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 999px;
+  padding: 7px 11px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.68);
+  font-size: 0.72rem;
+  font-weight: 800;
+  backdrop-filter: blur(8px);
+}
+
+.focused-demo-page .ai-request-panel {
+  align-content: start;
+}
+
+.focused-demo-page .ai-request-panel h2 {
+  max-width: 420px;
+  font-size: clamp(1.7rem, 3vw, 2.35rem);
+}
+
+.ai-attachments {
+  display: grid;
+  gap: 9px;
+}
+
+.ai-attachment {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 76px;
+  border: 1px solid #dedede;
+  border-radius: 14px;
+  padding: 6px 12px 6px 6px;
+  background: #fafafa;
+}
+
+.ai-attachment > img,
+.ai-attachment > svg:first-child {
+  width: 64px;
+  height: 64px;
+  border-radius: 10px;
+  background: #ededed;
+  object-fit: cover;
+}
+
+.ai-attachment > span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.ai-attachment small {
+  color: #777;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.ai-attachment strong {
+  overflow: hidden;
+  font-size: 0.86rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-attachment > svg:last-child {
+  border-radius: 999px;
+  padding: 3px;
+  color: #fff;
+  background: #111;
+}
+
+.ai-instruction-field {
+  display: grid;
+  gap: 8px;
+}
+
+.ai-instruction-field > span {
+  font-size: 0.82rem;
+  font-weight: 850;
+}
+
+.ai-instruction-field textarea {
+  min-height: 132px;
+  resize: vertical;
+  border: 2px solid #bdbdbd;
+  border-radius: 15px;
+  padding: 15px 16px;
+  color: #111;
+  background: #fff;
+  font: inherit;
+  font-size: 1rem;
+  line-height: 1.5;
+  outline: none;
+}
+
+.ai-instruction-field textarea:focus {
+  border-color: #111;
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.08);
+}
+
+.ai-instruction-field textarea::placeholder {
+  color: #777;
+}
+
+.focused-demo-page .ai-example-copy {
+  margin: -7px 0 0;
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.focused-demo-page .ai-request-panel > .button {
+  width: 100%;
+  min-height: 58px;
+  justify-content: center;
+  font-size: 0.94rem;
+}
+
+.ai-hidden-work {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  border: 1px solid #dedede;
+  border-radius: 13px;
+  padding: 13px;
+  background: #f5f5f5;
+}
+
+.ai-hidden-work > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.ai-hidden-work > span {
+  display: grid;
+  gap: 3px;
+}
+
+.ai-hidden-work strong {
+  font-size: 0.8rem;
+}
+
+.ai-hidden-work small {
+  color: #666;
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.focused-demo-page .ai-manual-link {
+  justify-content: center;
+  border-top: 1px solid #e6e6e6;
+  padding-top: 14px;
+}
+
 .focused-demo-page .studio-panel {
   gap: 16px;
   border-color: #dedede;
@@ -3321,8 +3504,13 @@ button {
 
   .focused-demo-page .intro-grid,
   .focused-demo-page .settings-grid,
+  .focused-demo-page .ai-request-grid,
   .focused-product-grid {
     grid-template-columns: 1fr;
+  }
+
+  .ai-room-preview {
+    min-height: 440px;
   }
 
   .object-photo-section {
@@ -3442,6 +3630,47 @@ button {
 
   .focused-demo-page .room-preview.marker-placement {
     border-radius: 14px;
+  }
+
+  .focused-demo-page .ai-request-grid {
+    gap: 10px;
+  }
+
+  .ai-room-preview {
+    min-height: 300px;
+    max-height: 48vh;
+    border-radius: 14px;
+  }
+
+  .ai-room-preview img {
+    max-height: 48vh;
+  }
+
+  .ai-room-preview > span {
+    top: 10px;
+    left: 10px;
+    padding: 6px 9px;
+    font-size: 0.65rem;
+  }
+
+  .focused-demo-page .ai-request-panel h2 {
+    font-size: 1.55rem;
+  }
+
+  .ai-attachment {
+    grid-template-columns: 54px minmax(0, 1fr) auto;
+    min-height: 64px;
+  }
+
+  .ai-attachment > img,
+  .ai-attachment > svg:first-child {
+    width: 54px;
+    height: 54px;
+  }
+
+  .ai-instruction-field textarea {
+    min-height: 112px;
+    font-size: 1rem;
   }
 
   .focused-demo-page .choice {

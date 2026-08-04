@@ -5,6 +5,9 @@ import type {
   ImageEditingRequest,
   ImageGenerationProvider,
   ImageGenerationRequest,
+  PlacementIntentProvider,
+  PlacementIntentRequest,
+  PlacementIntentResult,
   ProviderAttemptResult,
   SceneAnalysisProvider,
   SceneAnalysisRequest,
@@ -159,6 +162,47 @@ export class LocalPointSegmentationProvider implements SegmentationProvider {
         provider: "mock",
         model: this.name,
         requestId: "mock-segmentation",
+        status: "succeeded",
+        durationMs: 1,
+        estimatedCostUsd: 0,
+        images: [],
+        safety: { blocked: false },
+        attemptCount: 1,
+      },
+    };
+  }
+}
+
+export class MockPlacementIntentProvider implements PlacementIntentProvider {
+  readonly name = "mock-placement-intent";
+  readonly model = "deterministic-intent-v1";
+
+  isAvailable(): boolean {
+    return true;
+  }
+
+  async resolve(
+    request: PlacementIntentRequest,
+  ): Promise<PlacementIntentResult> {
+    const replace =
+      /(remplac\w*|replace|swap|à la place|a la place|instead of|retire\w*|enlève\w*|enleve\w*)/i.test(
+        request.instruction,
+      );
+    return {
+      mode: replace ? "replace" : "insert",
+      surfaceType: replace ? "existing_object" : request.productSurfaceType,
+      placementPoint: { x: 0.5, y: 0.7 },
+      ...(replace ? { targetPoint: { x: 0.5, y: 0.58 } } : {}),
+      ...(replace ? { targetLabel: "objet demandé" } : {}),
+      confidence: 0.92,
+      needsClarification: false,
+      rationale: replace
+        ? "L’objet cité sera remplacé automatiquement."
+        : "Le meilleur emplacement compatible sera utilisé.",
+      providerResult: {
+        provider: "mock",
+        model: this.model,
+        requestId: "mock-placement-intent",
         status: "succeeded",
         durationMs: 1,
         estimatedCostUsd: 0,

@@ -7,6 +7,9 @@ import type {
   ImageGenerationRequest,
   ImageReference,
   NormalizedProviderError,
+  PlacementIntentProvider,
+  PlacementIntentRequest,
+  PlacementIntentResult,
   ProviderAttemptResult,
   SceneAnalysisProvider,
   SceneAnalysisRequest,
@@ -363,6 +366,116 @@ export class GooglePointSegmentationProvider implements SegmentationProvider {
         status: "succeeded",
         durationMs: result.durationMs,
         estimatedCostUsd: 0.002,
+        images: [],
+        safety: { blocked: false, raw: safetyMetadata(result.payload) },
+        attemptCount: result.attemptCount,
+        usage: result.payload.usageMetadata,
+      },
+    };
+  }
+}
+
+export class GooglePlacementIntentProvider
+  implements PlacementIntentProvider
+{
+  readonly name = "google-placement-intent";
+
+  constructor(readonly model: string) {}
+
+  isAvailable(): boolean {
+    return Boolean(serverConfig.googleApiKey) && !serverConfig.aiMockMode;
+  }
+
+  async resolve(
+    request: PlacementIntentRequest,
+  ): Promise<PlacementIntentResult> {
+    const instruction =
+      request.instruction.trim() ||
+      "Place the product in the most natural compatible location in the room.";
+    const prompt = [
+      "You are interpreting a simple visual interior-editing request. Do not generate an image yet.",
+      "Image 1 is the room photograph. Image 2 is the exact catalog product to place.",
+      `User instruction: ${JSON.stringify(instruction)}.`,
+      `Product: ${request.productName}. ${request.productDescription}. Exact dimensions: ${request.productDimensionsCm.width} x ${request.productDimensionsCm.height} x ${request.productDimensionsCm.depth} cm. Preferred support: ${request.productSurfaceType}.`,
+      "Understand the instruction in its original language. If the user says to replace, remove, swap, or put the product in place of an existing item, use mode=replace and identify that exact existing item in Image 1.",
+      "For replacement, targetPoint must be safely inside the named object's silhouette. placementPoint must use the same horizontal center but its y coordinate must be the real bottom contact point on the shelf, table, floor or wall support beneath or behind the old object.",
+      "For insertion, choose a physically compatible empty support location matching the instruction and product dimensions. placementPoint is the bottom-center contact point.",
+      "Do not choose architecture, shelves, tables, walls, floors, doors or windows as replaceable objects. Never invent a target that is not visible.",
+      "Return JSON only, without markdown: {mode:'insert'|'replace', surfaceType:'tabletop'|'shelf'|'niche'|'wall'|'floor'|'rug_zone'|'ceiling'|'existing_object', placementPoint:{x:number,y:number}, targetPoint:{x:number,y:number}, targetLabel:string, targetFound:boolean, confidence:number, rationale:string}.",
+      "All coordinates must be normalized from 0 to 1. For insertion, targetPoint may equal placementPoint and targetLabel may be empty.",
+    ].join("\n");
+    const result = await callGoogleModel(this.model, {
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { text: prompt },
+            imagePart(request.room),
+            imagePart(request.product),
+          ],
+        },
+      ],
+      generationConfig: { responseModalities: ["TEXT"] },
+    });
+    if (!result.payload || result.error) {
+      throw new GoogleProviderError(
+        result.error?.message ?? "Interprétation de la demande indisponible.",
+        result.error?.httpStatus ?? 502,
+        result.error?.code ?? "google_intent_failed",
+      );
+    }
+    const text = result.payload.candidates?.[0]?.content?.parts
+      ?.map((part) => part.text ?? "")
+      .join("\n")
+      .trim();
+    if (!text) {
+      throw new GoogleProviderError(
+        "Google n’a pas compris la demande.",
+        502,
+        "empty_intent",
+      );
+    }
+    const parsed = parseJsonRecord(text);
+    const mode = enumValue(parsed.mode, ["insert", "replace"], "insert");
+    const placement = asRecord(parsed.placementPoint);
+    const target = asRecord(parsed.targetPoint);
+    const confidence = unitValue(parsed.confidence, 0.5);
+    const targetFound = parsed.targetFound === true;
+    const placementPoint = {
+      x: unitValue(placement.x, 0.5),
+      y: unitValue(placement.y, 0.7),
+    };
+    const targetPoint = {
+      x: unitValue(target.x, placementPoint.x),
+      y: unitValue(target.y, placementPoint.y),
+    };
+    return {
+      mode,
+      surfaceType: normalizeSurface(
+        parsed.surfaceType,
+        request.productSurfaceType,
+      ),
+      placementPoint,
+      ...(mode === "replace" ? { targetPoint } : {}),
+      ...(mode === "replace"
+        ? { targetLabel: textValue(parsed.targetLabel, "objet sélectionné") }
+        : {}),
+      confidence,
+      needsClarification:
+        confidence < 0.58 || (mode === "replace" && !targetFound),
+      rationale: textValue(
+        parsed.rationale,
+        mode === "replace"
+          ? "L’objet demandé a été identifié pour être remplacé."
+          : "Un emplacement compatible a été identifié.",
+      ),
+      providerResult: {
+        provider: "google",
+        model: this.model,
+        requestId: result.requestId,
+        status: "succeeded",
+        durationMs: result.durationMs,
+        estimatedCostUsd: 0.003,
         images: [],
         safety: { blocked: false, raw: safetyMetadata(result.payload) },
         attemptCount: result.attemptCount,

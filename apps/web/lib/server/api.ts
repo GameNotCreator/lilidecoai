@@ -34,7 +34,11 @@ import {
 import { cloudinaryStorageConfigured, serverConfig } from "./config";
 import { CreditError, getCredits } from "./credits";
 import { collections, database, pingMongo } from "./mongodb";
-import { selectSceneAnalysisProvider, selectSegmentationProvider } from "./ai";
+import {
+  selectPlacementIntentProvider,
+  selectSceneAnalysisProvider,
+  selectSegmentationProvider,
+} from "./ai";
 import { enforceRateLimit } from "./rate-limit";
 import { createRender, RenderError, type DeferRenderTask } from "./rendering";
 import { productResponse, renderResponse, sceneResponse } from "./serializers";
@@ -43,6 +47,7 @@ import type {
   CalibrationDocument,
   ProductDocument,
   SceneDocument,
+  SegmentationDocument,
 } from "./types";
 import {
   DEMO_CATALOG_USER_ID,
@@ -82,6 +87,11 @@ const productCreateSchema = z.object({
   ]),
   lightingProfile: z.record(z.string(), z.unknown()).default({}),
   buyUrl: z.url().nullable().optional(),
+});
+
+const placementIntentSchema = z.object({
+  productId: z.string().uuid(),
+  instruction: z.string().trim().max(1_500).default(""),
 });
 
 export async function dispatchApi(
@@ -521,6 +531,168 @@ async function handleScenes(
   if (!scene) return error("Scène introuvable", 404);
   if (path.length === 1 && request.method === "GET") {
     return Response.json(sceneResponse(scene));
+  }
+  if (path[1] === "prepare" && request.method === "POST") {
+    await enforceRateLimit(
+      db,
+      tenant.organizationId,
+      "placement-intent",
+      20,
+      300_000,
+    );
+    const input = placementIntentSchema.parse(await request.json());
+    if (
+      tenant.publicProductId &&
+      input.productId !== tenant.publicProductId
+    ) {
+      throw new AuthError("Produit non autorisé", 403);
+    }
+    const product = await c.products.findOne({
+      id: input.productId,
+      organizationId: tenant.organizationId,
+      status: "ready",
+    });
+    if (!product?.cutoutAssetId) {
+      throw new ApiInputError("Produit prêt introuvable");
+    }
+    const [sceneAsset, productAsset] = await Promise.all([
+      readAsset(db, scene.assetId),
+      readAsset(db, product.cutoutAssetId),
+    ]);
+    if (!sceneAsset || !productAsset) {
+      throw new ApiInputError("Les images nécessaires sont introuvables");
+    }
+    const surfaceMapping = {
+      table: "tabletop",
+      nightstand: "tabletop",
+      shelf: "shelf",
+      niche: "niche",
+      wall: "wall",
+      floor: "floor",
+    } as const;
+    const productSurfaceType =
+      surfaceMapping[product.placementType as keyof typeof surfaceMapping] ??
+      "floor";
+    const intent = await selectPlacementIntentProvider().resolve({
+      room: {
+        data: new Uint8Array(sceneAsset.buffer),
+        mimeType: sceneAsset.asset.contentType as
+          | "image/jpeg"
+          | "image/png"
+          | "image/webp",
+        role: "room_original",
+      },
+      product: {
+        data: new Uint8Array(productAsset.buffer),
+        mimeType: productAsset.asset.contentType as
+          | "image/jpeg"
+          | "image/png"
+          | "image/webp",
+        role: "product_front",
+      },
+      instruction: input.instruction,
+      productName: product.name,
+      productDescription: product.description,
+      productSurfaceType,
+      productDimensionsCm: {
+        width: product.widthCm,
+        height: product.heightCm,
+        depth: product.depthCm,
+      },
+    });
+    const intentMetadata = {
+      mode: intent.mode,
+      surfaceType: intent.surfaceType,
+      placementPoint: intent.placementPoint,
+      ...(intent.targetPoint ? { targetPoint: intent.targetPoint } : {}),
+      ...(intent.targetLabel ? { targetLabel: intent.targetLabel } : {}),
+      confidence: intent.confidence,
+      needsClarification: intent.needsClarification,
+      rationale: intent.rationale,
+      provider: intent.providerResult.provider,
+      model: intent.providerResult.model,
+      durationMs: intent.providerResult.durationMs,
+      createdAt: new Date(),
+    };
+    await c.scenes.updateOne(
+      { id: scene.id },
+      { $set: { "analysis.lastIntent": intentMetadata } },
+    );
+    if (intent.needsClarification) {
+      return Response.json({
+        ...intentMetadata,
+        needsClarification: true,
+      });
+    }
+    if (intent.mode !== "replace") {
+      return Response.json(intentMetadata);
+    }
+    if (!intent.targetPoint) {
+      return Response.json({
+        ...intentMetadata,
+        needsClarification: true,
+        rationale:
+          "L’objet à remplacer n’a pas pu être localisé avec certitude.",
+      });
+    }
+    const segmented = await selectSegmentationProvider().segment({
+      room: {
+        data: new Uint8Array(sceneAsset.buffer),
+        mimeType: sceneAsset.asset.contentType as
+          | "image/jpeg"
+          | "image/png"
+          | "image/webp",
+        role: "room_original",
+      },
+      point: intent.targetPoint,
+    });
+    if (segmented.confidence < 0.45) {
+      return Response.json({
+        ...intentMetadata,
+        needsClarification: true,
+        rationale:
+          "L’objet a été repéré, mais sa zone reste ambiguë. Indiquez-le sur la photo.",
+      });
+    }
+    const maskAsset = await storeAsset(db, {
+      organizationId: tenant.organizationId,
+      kind: "mask",
+      buffer: Buffer.from(segmented.mask.data),
+      contentType: "image/png",
+      expiresAt: scene.expiresAt,
+    });
+    const confirmedAt = new Date();
+    const segmentation: SegmentationDocument = {
+      id: crypto.randomUUID(),
+      organizationId: tenant.organizationId,
+      sceneId: scene.id,
+      ...(tenant.publicSessionId
+        ? { publicSessionId: tenant.publicSessionId }
+        : {}),
+      point: intent.targetPoint,
+      maskAssetId: maskAsset.id,
+      label: segmented.label || intent.targetLabel || "objet sélectionné",
+      confidence: segmented.confidence,
+      box: segmented.box,
+      status: "confirmed",
+      provider: segmented.providerResult.provider,
+      model: segmented.providerResult.model,
+      createdAt: confirmedAt,
+      confirmedAt,
+    };
+    await c.segmentations.insertOne(segmentation);
+    return Response.json({
+      ...intentMetadata,
+      needsClarification: false,
+      segmentation: {
+        id: segmentation.id,
+        status: segmentation.status,
+        label: segmentation.label,
+        confidence: segmentation.confidence,
+        box: segmentation.box,
+        maskUrl: assetUrl(segmentation.maskAssetId),
+      },
+    });
   }
   if (path[1] === "analyse" && request.method === "POST") {
     await enforceRateLimit(

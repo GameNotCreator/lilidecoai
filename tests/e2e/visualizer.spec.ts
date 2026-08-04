@@ -93,7 +93,7 @@ test("landing and merchant dashboard expose the core promise", async ({
 }) => {
   await page.goto("/");
   await expect(
-    page.getByRole("heading", { name: /Voyez l’objet chez vous/i }),
+    page.getByRole("heading", { name: /Montrez\. Demandez\. Visualisez/i }),
   ).toBeVisible();
   await expect(
     page.getByRole("link", { name: /Ajouter un objet/i }),
@@ -108,7 +108,7 @@ test("landing and merchant dashboard expose the core promise", async ({
 test("public demo loads the multi-product guest catalog", async ({ page }) => {
   await page.goto("/demo");
   await expect(
-    page.getByRole("heading", { name: /Voyez l’objet/i }),
+    page.getByRole("heading", { name: /Montrez\. Demandez\. Visualisez/i }),
   ).toBeVisible();
   await expect(page.getByRole("button", { name: /Vase Sable/i })).toBeVisible();
   await expect(
@@ -238,7 +238,9 @@ test("a source photo over 4 MB is optimized before upload", async ({
     buffer: largePhoto,
   });
   await expect(
-    page.getByRole("heading", { name: "Indiquez l’endroit." }),
+    page.getByRole("heading", {
+      name: "Dites simplement ce que vous voulez.",
+    }),
   ).toBeVisible({ timeout: 60_000 });
   await expect(page.locator(".studio-error")).toHaveCount(0);
 });
@@ -301,7 +303,7 @@ test("required customer journey reaches a successful mock render", async ({
 
   await page.goto(`/visualizer/atelier-lili/${productId}`);
   await expect(
-    page.getByRole("heading", { name: /Voyez l’objet/i }),
+    page.getByRole("heading", { name: /Montrez\. Demandez\. Visualisez/i }),
   ).toBeVisible();
   await expect(
     page.getByRole("button", { name: new RegExp(productName) }),
@@ -328,15 +330,14 @@ test("required customer journey reaches a successful mock render", async ({
     buffer: await roomFixture(),
   });
   await expect(
-    page.getByRole("heading", { name: "Indiquez l’endroit." }),
+    page.getByRole("heading", {
+      name: "Dites simplement ce que vous voulez.",
+    }),
   ).toBeVisible();
-  const roomPlacement = page.getByRole("button", {
-    name: "Placer le point rouge sur la pièce",
-  });
-  await roomPlacement.click({ position: { x: 100, y: 100 } });
-  await expect(page.getByTestId("placement-dot")).toBeVisible();
-  await page.getByRole("button", { name: "Table", exact: true }).click();
-  await page.getByRole("button", { name: /Créer mon aperçu/i }).click();
+  await page
+    .getByLabel("Votre demande")
+    .fill("Pose ce vase sur la table à l’endroit le plus naturel.");
+  await page.getByRole("button", { name: /Créer le rendu/i }).click();
   await expect(
     page.getByRole("heading", { name: "Voilà le résultat." }),
   ).toBeVisible({ timeout: 30_000 });
@@ -365,6 +366,11 @@ test("replacement waits for an editable confirmed mask", async ({ page }) => {
     buffer: await roomFixture(),
   });
   await page
+    .getByRole("button", {
+      name: /Je préfère indiquer précisément l’endroit/i,
+    })
+    .click();
+  await page
     .getByRole("button", { name: /Remplacer un élément existant/i })
     .click();
   const segmentationResponse = page.waitForResponse(
@@ -386,7 +392,51 @@ test("replacement waits for an editable confirmed mask", async ({ page }) => {
   ).toBeVisible();
   await page.getByRole("button", { name: /Confirmer le masque/i }).click();
   await expect(page.getByText(/prêt à être remplacé/i)).toBeVisible();
-  await page.getByRole("button", { name: /Créer mon aperçu/i }).click();
+  await page.getByRole("button", { name: /Créer le rendu final/i }).click();
+  await expect(
+    page.getByRole("heading", { name: "Voilà le résultat." }),
+  ).toBeVisible({ timeout: 30_000 });
+});
+
+test("a natural sentence automatically prepares a replacement", async ({
+  page,
+}) => {
+  test.setTimeout(90_000);
+  let uploadAuthorization = "";
+  let prepareAuthorization = "";
+  page.on("request", (request) => {
+    const pathname = new URL(request.url()).pathname;
+    if (request.method() === "POST" && pathname === "/v1/scenes") {
+      uploadAuthorization = request.headers().authorization ?? "";
+    }
+    if (request.method() === "POST" && pathname.endsWith("/prepare")) {
+      prepareAuthorization = request.headers().authorization ?? "";
+    }
+  });
+  await page.goto("/demo");
+  await page.getByLabel("Photo de votre pièce").setInputFiles({
+    name: "piece-demande-simple.png",
+    mimeType: "image/png",
+    buffer: await roomFixture(),
+  });
+  await page
+    .getByLabel("Votre demande")
+    .fill("Place le vase à la place du bocal au centre.");
+  const preparationResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname.endsWith("/prepare"),
+  );
+  await page.getByRole("button", { name: /Créer le rendu/i }).click();
+  const preparation = await preparationResponse;
+  const preparationBody = await preparation.text();
+  expect(prepareAuthorization).toBe(uploadAuthorization);
+  expect(preparation.status(), preparationBody).toBe(200);
+  expect(JSON.parse(preparationBody)).toMatchObject({
+    mode: "replace",
+    needsClarification: false,
+    segmentation: { status: "confirmed" },
+  });
   await expect(
     page.getByRole("heading", { name: "Voilà le résultat." }),
   ).toBeVisible({ timeout: 30_000 });

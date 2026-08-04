@@ -168,6 +168,32 @@ export interface SceneAnalysisResult {
   providerResult: ProviderAttemptResult;
 }
 
+export interface PlacementIntentRequest {
+  room: ImageReference;
+  product: ImageReference;
+  instruction: string;
+  productName: string;
+  productDescription: string;
+  productSurfaceType: SurfaceType;
+  productDimensionsCm: {
+    width: number;
+    height: number;
+    depth: number;
+  };
+}
+
+export interface PlacementIntentResult {
+  mode: RenderMode;
+  surfaceType: SurfaceType;
+  placementPoint: NormalizedPoint;
+  targetPoint?: NormalizedPoint;
+  targetLabel?: string;
+  confidence: number;
+  needsClarification: boolean;
+  rationale: string;
+  providerResult: ProviderAttemptResult;
+}
+
 export interface SegmentationRequest {
   room: ImageReference;
   point: NormalizedPoint;
@@ -208,6 +234,13 @@ export interface SceneAnalysisProvider {
   readonly model: string;
   isAvailable(): boolean;
   analyze(request: SceneAnalysisRequest): Promise<SceneAnalysisResult>;
+}
+
+export interface PlacementIntentProvider {
+  readonly name: string;
+  readonly model: string;
+  isAvailable(): boolean;
+  resolve(request: PlacementIntentRequest): Promise<PlacementIntentResult>;
 }
 
 export interface ProviderRoutingConfig {

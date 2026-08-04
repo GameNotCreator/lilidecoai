@@ -4,6 +4,7 @@ import {
   routeImageProvider,
   type ImageEditingProvider,
   type OutputQuality,
+  type PlacementIntentProvider,
   type ProviderRoute,
   type RenderMode,
   type SceneAnalysisProvider,
@@ -13,12 +14,14 @@ import {
 import { serverConfig } from "../config";
 import {
   GoogleImageProvider,
+  GooglePlacementIntentProvider,
   GooglePointSegmentationProvider,
   GoogleSceneAnalysisProvider,
 } from "./google";
 import {
   LocalPointSegmentationProvider,
   MockImageProvider,
+  MockPlacementIntentProvider,
   MockSceneAnalysisProvider,
 } from "./mock";
 import { OpenAIImageProvider } from "./openai";
@@ -64,6 +67,15 @@ export function selectSceneAnalysisProvider(): SceneAnalysisProvider {
     );
   }
   return new MockSceneAnalysisProvider();
+}
+
+export function selectPlacementIntentProvider(): PlacementIntentProvider {
+  if (!serverConfig.aiMockMode && serverConfig.googleApiKey) {
+    return new GooglePlacementIntentProvider(
+      serverConfig.googlePreviewImageModel,
+    );
+  }
+  return new MockPlacementIntentProvider();
 }
 
 export function selectSegmentationProvider(): SegmentationProvider {
