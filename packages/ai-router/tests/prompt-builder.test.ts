@@ -60,20 +60,47 @@ describe("PromptBuilder", () => {
     expect(text).toContain("Only one product angle is available");
   });
 
-  it("builds the exact point and dimension instruction for the simple flow", () => {
+  it("builds numbered point and dimension instructions for up to three objects", () => {
     const text = buildSimplePointPrompt({
-      mode: "replace",
-      objectLabel: "le vase",
-      point: { x: 0.5, y: 0.25 },
-      imageWidth: 1200,
-      imageHeight: 800,
-      dimension: { axis: "height", valueCm: 42 },
+      objects: [
+        {
+          objectLabel: "le vase",
+          point: { x: 0.5, y: 0.25 },
+          imageWidth: 1200,
+          imageHeight: 800,
+          dimensionsCm: { height: 42, length: 24 },
+        },
+        {
+          objectLabel: "la lampe",
+          point: { x: 0.75, y: 0.5 },
+          imageWidth: 1200,
+          imageHeight: 800,
+          dimensionsCm: { height: 55, length: 30 },
+        },
+      ],
     });
 
-    expect(text).toContain("Remplace");
+    expect(text).toContain("Place le vase");
+    expect(text).toContain("position du point 1");
     expect(text).toContain("x=600 px, y=200 px");
-    expect(text).toContain("hauteur réelle de 42 cm");
+    expect(text).toContain("hauteur de 42 cm et une longueur de 24 cm");
+    expect(text).toContain("Place la lampe");
+    expect(text).toContain("position du point 2");
     expect(text).toContain("L’image 1 est la photo du lieu");
-    expect(text).toContain("L’image 2 est la référence exacte");
+    expect(text).toContain("L’image 3 est la référence exacte");
+    expect(text).toContain("exactement 2 nouveaux objets");
+  });
+
+  it("rejects more than three objects in the simple prompt", () => {
+    const object = {
+      objectLabel: "un objet",
+      point: { x: 0.5, y: 0.5 },
+      imageWidth: 1000,
+      imageHeight: 1000,
+      dimensionsCm: { height: 20, length: 10 },
+    };
+    expect(() =>
+      buildSimplePointPrompt({ objects: [object, object, object, object] }),
+    ).toThrow(/un et trois objets/);
   });
 });

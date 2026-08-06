@@ -80,7 +80,7 @@ export function MaskEditor({
       <div className="mask-canvas-wrap">
         {/* The URL is returned by the authenticated local API. */}
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={imageUrl} alt="Objet à remplacer" />
+        <img src={imageUrl} alt="Élément sélectionné dans la pièce" />
         <canvas
           ref={canvasRef}
           aria-label="Corriger le masque de l’objet"

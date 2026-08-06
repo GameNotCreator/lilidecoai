@@ -7,38 +7,54 @@ import type {
 } from "./index";
 
 export const PROMPT_VERSION = "placement-v2.0.0";
-export const SIMPLE_POINT_PROMPT_VERSION = "simple-point-v1.0.0";
+export const SIMPLE_POINT_PROMPT_VERSION = "simple-multi-point-v2.0.0";
 
-export interface SimplePointPromptInput {
-  mode: RenderMode;
+export interface SimplePointObjectInput {
   objectLabel: string;
   point: NormalizedPoint;
   imageWidth: number;
   imageHeight: number;
-  dimension: {
-    axis: "width" | "height";
-    valueCm: number;
+  dimensionsCm: {
+    length: number;
+    height: number;
   };
 }
 
+export interface SimplePointPromptInput {
+  objects: SimplePointObjectInput[];
+}
+
 export function buildSimplePointPrompt(input: SimplePointPromptInput): string {
-  const xPx = Math.round(input.point.x * input.imageWidth);
-  const yPx = Math.round(input.point.y * input.imageHeight);
-  const axis = input.dimension.axis === "height" ? "hauteur" : "largeur";
-  const point = `x=${xPx} px, y=${yPx} px (x=${input.point.x.toFixed(4)}, y=${input.point.y.toFixed(4)} en coordonnées normalisées)`;
-  const operation =
-    input.mode === "replace"
-      ? `Remplace l’objet actuellement situé à la position du point ${point} dans l’image 1 par ${input.objectLabel} fourni dans l’image 2`
-      : `Place ${input.objectLabel} fourni dans l’image 2 à la position du point ${point} dans l’image 1`;
+  if (input.objects.length < 1 || input.objects.length > 3) {
+    throw new Error("Le prompt simple accepte entre un et trois objets.");
+  }
+
+  const placementInstructions = input.objects.map((object, index) => {
+    const pointNumber = index + 1;
+    const imageNumber = index + 2;
+    const xPx = Math.round(object.point.x * object.imageWidth);
+    const yPx = Math.round(object.point.y * object.imageHeight);
+    const coordinates = `x=${xPx} px, y=${yPx} px (x=${object.point.x.toFixed(4)}, y=${object.point.y.toFixed(4)} en coordonnées normalisées)`;
+    return `Place ${object.objectLabel} fourni dans l’image ${imageNumber} à la position du point ${pointNumber} (${coordinates}), sachant que ${object.objectLabel} a une hauteur de ${object.dimensionsCm.height} cm et une longueur de ${object.dimensionsCm.length} cm.`;
+  });
+
+  const imageRoles = [
+    "L’image 1 est la photo du lieu à conserver.",
+    ...input.objects.map(
+      (object, index) =>
+        `L’image ${index + 2} est la référence exacte de ${object.objectLabel} associé au point ${index + 1}.`,
+    ),
+  ];
 
   return [
-    `${operation}, sachant que cet objet a une ${axis} réelle de ${input.dimension.valueCm} cm.`,
-    "L’image 1 est la photo du lieu à conserver. L’image 2 est la référence exacte de l’objet à placer.",
-    input.mode === "replace"
-      ? "Supprime complètement l’objet existant visé avant d’intégrer le nouvel objet au même emplacement."
-      : "N’efface aucun objet existant : ajoute uniquement le nouvel objet à l’emplacement indiqué.",
-    "Adapte l’échelle à la perspective, pose l’objet physiquement sur la surface au point indiqué et conserve exactement sa forme, ses couleurs et ses détails.",
+    ...placementInstructions,
+    ...imageRoles,
+    "Chaque point numéroté correspond uniquement à l’objet portant le même numéro dans les instructions. N’intervertis pas les objets ni leurs positions.",
+    "Adapte séparément l’échelle de chaque objet à la perspective, pose chaque objet physiquement sur sa surface au point indiqué et conserve exactement sa forme, ses couleurs, ses proportions et ses détails.",
     "Préserve le cadrage, l’architecture et tout le reste de la photo. Harmonise seulement la perspective, la lumière, les ombres et les éventuelles occlusions pour obtenir une photographie réaliste, sans doublon.",
+    input.objects.length === 1
+      ? "Le résultat final doit contenir exactement 1 nouvel objet, associé au point 1."
+      : `Le résultat final doit contenir exactement ${input.objects.length} nouveaux objets, un par point numéroté.`,
   ].join("\n");
 }
 

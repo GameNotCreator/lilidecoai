@@ -48,19 +48,44 @@ describe("render request schema", () => {
     ).toBe("replace");
   });
 
-  it("accepts a point-only replacement in the simple demo workflow", () => {
+  it("accepts up to three numbered placements in the simple demo workflow", () => {
     const parsed = renderRequestSchema.parse({
       ...base,
       workflow: "simple_point",
-      mode: "replace",
       placementPoint: { x: 0.4, y: 0.8 },
-      targetPoint: { x: 0.4, y: 0.8 },
-      dimensionReference: { axis: "height", valueCm: 42 },
+      simplePlacements: [
+        {
+          productId: "22222222-2222-4222-8222-222222222222",
+          placementPoint: { x: 0.4, y: 0.8 },
+          dimensionReference: { axis: "height", valueCm: 42 },
+        },
+        {
+          productId: "33333333-3333-4333-8333-333333333333",
+          placementPoint: { x: 0.7, y: 0.75 },
+          dimensionReference: { axis: "width", valueCm: 30 },
+        },
+      ],
     });
-    expect(parsed.targetMaskId).toBeUndefined();
-    expect(parsed.dimensionReference).toEqual({
-      axis: "height",
-      valueCm: 42,
+    expect(parsed.mode).toBe("insert");
+    expect(parsed.simplePlacements).toHaveLength(2);
+    expect(parsed.simplePlacements?.[1]?.placementPoint).toEqual({
+      x: 0.7,
+      y: 0.75,
     });
+  });
+
+  it("rejects more than three simple placements", () => {
+    const placement = {
+      productId: "22222222-2222-4222-8222-222222222222",
+      placementPoint: { x: 0.4, y: 0.8 },
+      dimensionReference: { axis: "height" as const, valueCm: 42 },
+    };
+    expect(() =>
+      renderRequestSchema.parse({
+        ...base,
+        workflow: "simple_point",
+        simplePlacements: [placement, placement, placement, placement],
+      }),
+    ).toThrow();
   });
 });

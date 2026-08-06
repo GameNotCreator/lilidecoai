@@ -92,7 +92,7 @@ Smoke tests :
 3. créer et préparer un produit, puis confirmer sa présence dans Cloudinary ;
 4. envoyer une pièce puis produire un rendu local ;
 5. rejouer la même clé d’idempotence et vérifier l’absence de double débit ;
-6. valider un ajout et un remplacement avec GPT Image 2 en Preview Vercel,
+6. valider l’ajout sur une zone libre et sur une zone occupée avec GPT Image 2 en Preview Vercel,
    puis en Production ;
 7. appeler `/api/cron/purge` avec `Authorization: Bearer $CRON_SECRET`.
 

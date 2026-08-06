@@ -682,13 +682,14 @@ export function VisualizerStudio({
                   maxLength={1500}
                   rows={4}
                   autoFocus
-                  placeholder="Ex. Place le vase à la place du bocal"
+                  placeholder="Ex. Place le vase sur l’étagère"
                   onChange={(event) => setUserInstructions(event.target.value)}
                 />
               </label>
               <p className="ai-example-copy">
-                Vous pouvez écrire naturellement : « remplace la lampe », « sur
-                l’étagère vide » ou laisser le champ vide pour que l’IA choisisse.
+                Vous pouvez écrire naturellement : « sur l’étagère », « au
+                centre de la table » ou laisser le champ vide pour que l’IA
+                choisisse.
               </p>
 
               <Button
@@ -713,8 +714,8 @@ export function VisualizerStudio({
                 <span>
                   <strong>Tout est automatique</strong>
                   <small>
-                    Remplacement, échelle, perspective, ombres et contrôle du
-                    réalisme sont effectués en arrière-plan.
+                    Analyse de la zone, échelle, perspective, ombres et contrôle
+                    du réalisme sont effectués en arrière-plan.
                   </small>
                 </span>
               </div>
@@ -750,7 +751,7 @@ export function VisualizerStudio({
           <div className="studio-grid settings-grid">
             <p className="mobile-placement-hint">
               {renderMode === "replace"
-                ? "Touchez précisément l’objet à remplacer."
+                ? "Touchez précisément l’élément présent à cet endroit."
                 : "Touchez l’endroit où poser le produit."}
             </p>
             {renderMode === "replace" && segmentation ? (
@@ -772,7 +773,7 @@ export function VisualizerStudio({
                 className="room-preview marker-placement"
                 aria-label={
                   renderMode === "replace"
-                    ? "Sélectionner l’objet à remplacer"
+                    ? "Sélectionner l’élément présent"
                     : "Placer le point rouge sur la pièce"
                 }
                 onClick={placeMarker}
@@ -802,36 +803,9 @@ export function VisualizerStudio({
               <span className="panel-index">Étape 2 sur 3</span>
               <h2>Indiquez l’endroit.</h2>
               <p className="muted">
-                Commencez par choisir l’action, puis touchez la photo.
+                Touchez simplement la photo. Si la zone est occupée, l’IA la
+                préparera automatiquement.
               </p>
-              <div className="mode-cards simple-mode-cards">
-                <button
-                  type="button"
-                  className={
-                    renderMode === "insert" ? "mode-card active" : "mode-card"
-                  }
-                  onClick={() => resetPlacement("insert")}
-                >
-                  <ImagePlus size={21} />
-                  <span>
-                    <strong>Ajouter un objet</strong>
-                    <small>Choisissez un endroit vide.</small>
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  className={
-                    renderMode === "replace" ? "mode-card active" : "mode-card"
-                  }
-                  onClick={() => resetPlacement("replace")}
-                >
-                  <RefreshCw size={21} />
-                  <span>
-                    <strong>Remplacer un élément existant</strong>
-                    <small>Vous validerez la zone avant le rendu.</small>
-                  </span>
-                </button>
-              </div>
 
               {renderMode === "insert" ? (
                 <>
@@ -857,7 +831,7 @@ export function VisualizerStudio({
                 <div className="mask-status-copy">
                   <strong>
                     {segmentation?.status === "confirmed"
-                      ? `${segmentation.label} prêt à être remplacé`
+                      ? `${segmentation.label} correctement sélectionné`
                       : segmentation
                         ? "Corrigez la zone rouge si nécessaire"
                         : "Touchez l’objet dans la photo"}
@@ -928,7 +902,7 @@ export function VisualizerStudio({
                 )}
                 {!placementPoint
                   ? renderMode === "replace"
-                    ? "Touchez l’objet à remplacer"
+                    ? "Touchez l’élément présent"
                     : "Touchez d’abord la photo"
                   : renderMode === "replace" &&
                       segmentation?.status !== "confirmed"
@@ -1149,12 +1123,6 @@ export function VisualizerStudio({
     </section>
   );
 
-  function resetPlacement(mode: "insert" | "replace") {
-    setRenderMode(mode);
-    setSegmentation(null);
-    setTargetPoint(null);
-    setPlacementPoint(null);
-  }
 }
 
 const surfaceChoices: Array<[string, string]> = [

@@ -13,9 +13,9 @@ flowchart TD
     A["1 à 4 vues produit"] --> N["Normalisation serveur"]
     B["Photo de la pièce"] --> S["Analyse de scène"]
     C["Point utilisateur"] --> S
-    S --> M{"Ajouter ou remplacer ?"}
-    M -->|"Ajouter"| G["Géométrie déterministe"]
-    M -->|"Remplacer"| K["Segmentation et correction du masque"]
+    S --> M{"Zone libre ou occupée ?"}
+    M -->|"Libre"| G["Géométrie déterministe"]
+    M -->|"Occupée"| K["Segmentation et correction du masque"]
     K --> X["Confirmation utilisateur"]
     X --> R["Suppression de la cible"]
     R --> S2["Réanalyse de la scène nettoyée"]
@@ -64,8 +64,8 @@ et ne supprime aucune donnée.
 - Sans calibration réelle, l’échelle reste estimée et l’interface l’indique.
 - La segmentation compatible point/masque est interchangeable ; le backend
   actuel propose un masque assisté à corriger, pas un modèle SAM local lourd.
-- Un rendu traite un produit à la fois ; une composition multi-produits se fait
-  par rendus successifs.
+- Le parcours public accepte jusqu’à trois produits dans une seule édition ;
+  les anciens parcours marchands conservent leurs contrats historiques.
 - Les angles produit absents sont estimés et ne sont jamais présentés comme
   parfaitement fidèles.
 - Les surfaces réfléchissantes, transparentes ou très occultées peuvent

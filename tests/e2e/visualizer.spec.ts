@@ -93,9 +93,9 @@ test("landing and merchant dashboard expose the core promise", async ({
 }) => {
   await page.goto("/");
   await expect(
-    page.getByRole("heading", { name: /Voyez votre objet chez vous/i }),
+    page.getByRole("heading", { name: /Voyez vos objets chez vous/i }),
   ).toBeVisible();
-  await expect(page.getByLabel("Image de l’objet à placer")).toBeVisible();
+  await expect(page.getByLabel("Image de l’objet 1")).toBeVisible();
   await page.goto("/app");
   await expect(
     page.getByRole("heading", { name: /Bonjour, Lili/i }),
@@ -108,9 +108,9 @@ test("public demo starts without a preselected product catalog", async ({
 }) => {
   await page.goto("/demo");
   await expect(
-    page.getByRole("heading", { name: /Voyez votre objet chez vous/i }),
+    page.getByRole("heading", { name: /Voyez vos objets chez vous/i }),
   ).toBeVisible();
-  await expect(page.getByLabel("Image de l’objet à placer")).toBeVisible();
+  await expect(page.getByLabel("Image de l’objet 1")).toBeVisible();
   await expect(page.getByRole("button", { name: /Vase Sable/i })).toHaveCount(
     0,
   );
@@ -215,7 +215,7 @@ test("object form adapts dimensions to the selected object type", async ({
   await page.getByRole("button", { name: /Préparer cet objet/i }).click();
   await expect(page).toHaveURL(/\?product=/, { timeout: 60_000 });
   await expect(
-    page.getByRole("heading", { name: /Voyez votre objet chez vous/i }),
+    page.getByRole("heading", { name: /Voyez vos objets chez vous/i }),
   ).toBeVisible();
   await expect(page.getByText("Droits marchand requis")).toHaveCount(0);
 });
@@ -225,13 +225,13 @@ test("a source photo over 4 MB is optimized before upload", async ({
 }) => {
   test.setTimeout(90_000);
   await page.goto("/demo");
-  await page.getByLabel("Image de l’objet à placer").setInputFiles({
+  await page.getByLabel("Image de l’objet 1").setInputFiles({
     name: "vase-demo.png",
     mimeType: "image/png",
     buffer: await productFixture(),
   });
-  await page.getByLabel("Hauteur en centimètres").fill("42");
-  await page.getByRole("button", { name: "Continuer" }).click();
+  await page.getByLabel("Hauteur de l’objet 1 en centimètres").fill("42");
+  await page.getByRole("button", { name: "Continuer avec 1 objet" }).click();
   await expect(
     page.getByRole("heading", { name: /Ajoutez la photo du lieu/i }),
   ).toBeVisible({ timeout: 60_000 });
@@ -243,7 +243,7 @@ test("a source photo over 4 MB is optimized before upload", async ({
     buffer: largePhoto,
   });
   await expect(
-    page.getByRole("button", { name: "Placer le point dans l’image" }),
+    page.getByRole("button", { name: "Placer le point 1 dans l’image" }),
   ).toBeVisible({ timeout: 60_000 });
   await expect(page.locator(".simple-demo-error")).toHaveCount(0);
 });
@@ -352,14 +352,14 @@ test("simple demo records the clicked coordinates and adds the object", async ({
 }) => {
   test.setTimeout(90_000);
   await page.goto("/demo");
-  await page.getByLabel("Image de l’objet à placer").setInputFiles({
+  await page.getByLabel("Image de l’objet 1").setInputFiles({
     name: "vase-simple.png",
     mimeType: "image/png",
     buffer: await productFixture(),
   });
-  await page.getByRole("button", { name: "Largeur" }).click();
-  await page.getByLabel("Largeur en centimètres").fill("30");
-  await page.getByRole("button", { name: "Continuer" }).click();
+  await page.getByRole("button", { name: "Longueur" }).click();
+  await page.getByLabel("Longueur de l’objet 1 en centimètres").fill("30");
+  await page.getByRole("button", { name: "Continuer avec 1 objet" }).click();
   await expect(page.getByText(/Reculez d’au moins 1,5 mètre/i)).toBeVisible({
     timeout: 60_000,
   });
@@ -369,26 +369,29 @@ test("simple demo records the clicked coordinates and adds the object", async ({
     buffer: await roomFixture(),
   });
   const picker = page.getByRole("button", {
-    name: "Placer le point dans l’image",
+    name: "Placer le point 1 dans l’image",
   });
   await expect(picker).toBeVisible();
   await picker.click({ position: { x: 320, y: 230 } });
-  await expect(page.getByText(/Point enregistré : x \d+ px · y \d+ px/)).toBeVisible();
+  await expect(page.getByText(/Point 1 : x \d+ · y \d+/)).toBeVisible();
 
   const renderResponse = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
       new URL(response.url()).pathname === "/v1/renders/final",
   );
-  await page
-    .getByRole("button", { name: /Générer avec GPT Image 2/i })
-    .click();
+  await page.getByRole("button", { name: /Générer avec GPT Image 2/i }).click();
   const response = await renderResponse;
   const body = response.request().postDataJSON() as {
     workflow: string;
     mode: string;
     placementPoint: { x: number; y: number };
     dimensionReference: { axis: string; valueCm: number };
+    simplePlacements: Array<{
+      productId: string;
+      placementPoint: { x: number; y: number };
+      dimensionReference: { axis: string; valueCm: number };
+    }>;
   };
   expect(response.status()).toBe(201);
   expect(body).toMatchObject({
@@ -398,61 +401,107 @@ test("simple demo records the clicked coordinates and adds the object", async ({
   });
   expect(body.placementPoint.x).toBeGreaterThan(0);
   expect(body.placementPoint.y).toBeGreaterThan(0);
+  expect(body.simplePlacements).toHaveLength(1);
+  expect(body.simplePlacements[0]?.dimensionReference).toEqual({
+    axis: "width",
+    valueCm: 30,
+  });
   await expect(
     page.getByRole("heading", { name: "Votre visualisation" }),
   ).toBeVisible({ timeout: 30_000 });
   await expect(page.getByAltText("Visualisation après")).toBeVisible();
 });
 
-test("replacement uses the same point without a segmentation step", async ({
+test("simple demo supports three numbered points and can reposition them", async ({
   page,
 }) => {
-  test.setTimeout(90_000);
-  let segmentationCalls = 0;
-  page.on("request", (request) => {
-    const pathname = new URL(request.url()).pathname;
-    if (request.method() === "POST" && pathname.endsWith("/segment")) {
-      segmentationCalls += 1;
-    }
-  });
+  test.setTimeout(120_000);
   await page.goto("/demo");
-  await page.getByLabel("Image de l’objet à placer").setInputFiles({
-    name: "vase-remplacement.png",
+  await page.getByLabel("Image de l’objet 1").setInputFiles({
+    name: "vase-1.png",
     mimeType: "image/png",
     buffer: await productFixture(),
   });
-  await page.getByLabel("Hauteur en centimètres").fill("42");
-  await page.getByRole("button", { name: "Continuer" }).click();
+  await page.getByLabel("Hauteur de l’objet 1 en centimètres").fill("42");
+
+  await page.getByRole("button", { name: /Ajouter un objet/ }).click();
+  await page.getByLabel("Image de l’objet 2").setInputFiles({
+    name: "vase-2.png",
+    mimeType: "image/png",
+    buffer: await productFixture(),
+  });
+  await page.getByRole("button", { name: "Longueur" }).nth(1).click();
+  await page.getByLabel("Longueur de l’objet 2 en centimètres").fill("28");
+
+  await page.getByRole("button", { name: /Ajouter un objet/ }).click();
+  await page.getByLabel("Image de l’objet 3").setInputFiles({
+    name: "vase-3.png",
+    mimeType: "image/png",
+    buffer: await productFixture(),
+  });
+  await page.getByLabel("Hauteur de l’objet 3 en centimètres").fill("36");
+  await expect(
+    page.getByRole("button", { name: /Ajouter un objet/ }),
+  ).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Continuer avec 3 objets" }).click();
   await page.getByLabel("Photo du lieu de réception").setInputFiles({
-    name: "piece-remplacement.png",
+    name: "piece-multi-objets.png",
     mimeType: "image/png",
     buffer: await roomFixture(),
   });
   await page
-    .getByRole("button", { name: "Placer le point dans l’image" })
-    .click({ position: { x: 260, y: 180 } });
+    .getByRole("button", { name: "Placer le point 1 dans l’image" })
+    .click({ position: { x: 90, y: 120 } });
   await page
-    .getByRole("radio", { name: /Oui, remplacer l’objet/i })
-    .check();
+    .getByRole("button", { name: "Placer le point 2 dans l’image" })
+    .click({ position: { x: 170, y: 150 } });
+  await page
+    .getByRole("button", { name: "Placer le point 3 dans l’image" })
+    .click({ position: { x: 240, y: 180 } });
+  await expect(page.getByTestId("placement-dot")).toHaveCount(3);
+
+  await page.getByRole("button", { name: "Replacer les points" }).click();
+  await expect(page.getByTestId("placement-dot")).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "Placer le point 1 dans l’image" })
+    .click({ position: { x: 100, y: 125 } });
+  await page
+    .getByRole("button", { name: "Placer le point 2 dans l’image" })
+    .click({ position: { x: 180, y: 155 } });
+  await page
+    .getByRole("button", { name: "Placer le point 3 dans l’image" })
+    .click({ position: { x: 250, y: 185 } });
+
   const renderResponse = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
       new URL(response.url()).pathname === "/v1/renders/final",
   );
-  await page
-    .getByRole("button", { name: /Générer avec GPT Image 2/i })
-    .click();
+  await page.getByRole("button", { name: /Générer avec GPT Image 2/i }).click();
   const response = await renderResponse;
-  const body = response.request().postDataJSON() as Record<string, unknown>;
+  const body = response.request().postDataJSON() as {
+    workflow: string;
+    mode: string;
+    simplePlacements: Array<{
+      productId: string;
+      placementPoint: { x: number; y: number };
+      dimensionReference: { axis: string; valueCm: number };
+    }>;
+  };
   expect(response.status()).toBe(201);
   expect(body).toMatchObject({
     workflow: "simple_point",
-    mode: "replace",
-    dimensionReference: { axis: "height", valueCm: 42 },
+    mode: "insert",
   });
-  expect(body).toHaveProperty("targetPoint");
-  expect(body).not.toHaveProperty("targetMaskId");
-  expect(segmentationCalls).toBe(0);
+  expect(body.simplePlacements).toHaveLength(3);
+  expect(
+    body.simplePlacements.map((placement) => placement.dimensionReference),
+  ).toEqual([
+    { axis: "height", valueCm: 42 },
+    { axis: "width", valueCm: 28 },
+    { axis: "height", valueCm: 36 },
+  ]);
   await expect(
     page.getByRole("heading", { name: "Votre visualisation" }),
   ).toBeVisible({ timeout: 30_000 });

@@ -3983,8 +3983,8 @@ button {
 }
 
 .simple-upload input,
-.simple-replace-file input,
-.point-picker-heading label input {
+.simple-change-file input,
+.point-picker-tools label input {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -3992,8 +3992,82 @@ button {
   pointer-events: none;
 }
 
+.simple-objects-list {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.simple-object-entry {
+  overflow: hidden;
+  border: 1px solid #dedede;
+  border-radius: 18px;
+  background: #fff;
+}
+
+.simple-object-entry-head {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid #e5e5e5;
+  padding: 8px 12px;
+  background: #fafafa;
+}
+
+.simple-object-entry-head > div {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.simple-object-entry-head > div > span {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  background: #111;
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.simple-object-remove {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 9px;
+  padding: 0 9px;
+  color: #666;
+  background: transparent;
+  font-size: 0.76rem;
+  font-weight: 750;
+}
+
+.simple-object-remove:hover:not(:disabled) {
+  color: #9d1717;
+  background: #fff0f0;
+}
+
+.simple-object-entry-body {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.65fr) minmax(0, 1.35fr);
+  gap: 18px;
+  padding: 16px;
+}
+
+.simple-object-entry .simple-object-upload {
+  min-height: 190px;
+  border-radius: 14px;
+  padding: 16px;
+}
+
 .simple-object-upload.has-image {
-  min-height: 320px;
+  min-height: 190px;
   border-style: solid;
   background:
     linear-gradient(45deg, #f0f0f0 25%, transparent 25%) 0 0 / 18px 18px,
@@ -4005,12 +4079,12 @@ button {
 
 .simple-object-upload img {
   width: 100%;
-  height: 280px;
+  height: 158px;
   object-fit: contain;
 }
 
-.simple-replace-file,
-.point-picker-heading label {
+.simple-change-file,
+.point-picker-tools label {
   position: relative;
   display: inline-flex;
   min-height: 40px;
@@ -4023,9 +4097,60 @@ button {
   cursor: pointer;
 }
 
+.simple-object-dimensions {
+  display: grid;
+  grid-template-columns: minmax(190px, 1fr) minmax(145px, 0.7fr);
+  gap: 13px;
+  align-content: center;
+}
+
+.simple-object-dimensions .simple-field-label {
+  grid-column: 1 / -1;
+}
+
+.simple-object-ready {
+  display: inline-flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  gap: 6px;
+  color: #174f27;
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.simple-add-object {
+  display: flex;
+  width: 100%;
+  min-height: 52px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 18px;
+  border: 1px dashed #aaa;
+  border-radius: 14px;
+  color: #222;
+  background: #fafafa;
+  font-weight: 800;
+}
+
+.simple-add-object:hover:not(:disabled) {
+  border-color: #111;
+  background: #f3f3f3;
+}
+
+.simple-add-object > span {
+  margin-left: auto;
+  margin-right: 14px;
+  color: #777;
+  font-size: 0.74rem;
+}
+
 .simple-dimension-block {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(210px, 0.8fr) minmax(170px, 0.6fr);
+  grid-template-columns: minmax(0, 1.35fr) minmax(210px, 0.8fr) minmax(
+      170px,
+      0.6fr
+    );
   gap: 16px;
   align-items: end;
   margin: 26px 0;
@@ -4203,6 +4328,93 @@ button {
   line-height: 1.45;
 }
 
+.simple-placement-objects {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+  margin-bottom: 18px;
+}
+
+.simple-placement-objects > div {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  border: 1px solid #dedede;
+  border-radius: 13px;
+  padding: 7px;
+  background: #fafafa;
+}
+
+.simple-placement-objects > div.current {
+  border-color: #111;
+  box-shadow: inset 0 0 0 1px #111;
+}
+
+.simple-placement-objects > div.placed {
+  border-color: #bcd7c3;
+  background: #f3faf5;
+}
+
+.simple-placement-objects img {
+  width: 38px;
+  height: 38px;
+  grid-column: 1;
+  grid-row: 1;
+  border-radius: 8px;
+  background: #eee;
+  object-fit: contain;
+}
+
+.simple-placement-number {
+  z-index: 1;
+  align-self: start;
+  justify-self: start;
+  display: grid;
+  width: 19px;
+  height: 19px;
+  grid-column: 1;
+  grid-row: 1;
+  place-items: center;
+  margin: -3px 0 0 -3px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  color: #fff;
+  background: #d90000;
+  font-size: 0.62rem;
+  font-weight: 900;
+}
+
+.simple-placement-objects > div > span:not(.simple-placement-number) {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.simple-placement-objects strong,
+.simple-placement-objects small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.simple-placement-objects strong {
+  font-size: 0.74rem;
+}
+
+.simple-placement-objects small {
+  color: #6e6e6e;
+  font-size: 0.65rem;
+}
+
+.simple-placement-objects > div > svg {
+  color: #1d7136;
+}
+
 .point-picker-heading {
   display: flex;
   align-items: center;
@@ -4211,7 +4423,7 @@ button {
   margin-bottom: 12px;
 }
 
-.point-picker-heading > div {
+.point-picker-heading > div:first-child {
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -4222,9 +4434,33 @@ button {
   font-size: 0.82rem;
 }
 
-.point-picker-heading label {
+.point-picker-tools {
+  display: flex;
   flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.point-picker-tools button,
+.point-picker-tools label {
+  display: inline-flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
   margin: 0;
+  border: 1px solid #d3d3d3;
+  border-radius: 10px;
+  padding: 0 10px;
+  color: #333;
+  background: #fff;
+  font-size: 0.76rem;
+  font-weight: 750;
+}
+
+.point-picker-tools button:hover:not(:disabled),
+.point-picker-tools label:hover {
+  border-color: #111;
 }
 
 .simple-point-picker {
@@ -4248,18 +4484,28 @@ button {
   object-fit: contain;
 }
 
+.simple-point-picker.points-complete {
+  cursor: default;
+}
+
 .simple-red-dot {
   position: absolute;
-  width: 20px;
-  height: 20px;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
   border: 3px solid #fff;
   border-radius: 50%;
+  color: #fff;
   background: #e00000;
   box-shadow:
     0 0 0 2px rgba(0, 0, 0, 0.45),
     0 5px 14px rgba(0, 0, 0, 0.34);
   transform: translate(-50%, -50%);
   pointer-events: none;
+  font-size: 0.74rem;
+  font-weight: 900;
+  line-height: 1;
 }
 
 .point-coordinates {
@@ -4274,6 +4520,7 @@ button {
   background: #f5f5f5;
   font-size: 0.8rem;
   font-weight: 700;
+  flex-wrap: wrap;
 }
 
 .point-coordinates.ready {
@@ -4422,6 +4669,23 @@ button {
     align-items: stretch;
   }
 
+  .simple-object-entry-body {
+    grid-template-columns: 1fr;
+  }
+
+  .simple-placement-objects {
+    grid-auto-columns: minmax(225px, 82%);
+    grid-template-columns: none;
+    grid-auto-flow: column;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    scroll-snap-type: x proximity;
+  }
+
+  .simple-placement-objects > div {
+    scroll-snap-align: start;
+  }
+
   .simple-demo-actions {
     grid-template-columns: 1fr;
   }
@@ -4464,18 +4728,60 @@ button {
     min-height: 210px;
   }
 
-  .simple-object-upload.has-image {
-    min-height: 260px;
+  .simple-object-entry {
+    border-radius: 15px;
   }
 
-  .simple-object-upload img {
-    height: 230px;
+  .simple-object-entry-body {
+    gap: 13px;
+    padding: 12px;
+  }
+
+  .simple-object-entry .simple-object-upload,
+  .simple-object-entry .simple-object-upload.has-image {
+    min-height: 185px;
+  }
+
+  .simple-object-entry .simple-object-upload img {
+    height: 155px;
+  }
+
+  .simple-object-dimensions {
+    grid-template-columns: 1fr;
+  }
+
+  .simple-object-dimensions .simple-field-label,
+  .simple-object-ready {
+    grid-column: auto;
+  }
+
+  .simple-object-remove > span {
+    display: none;
   }
 
   .point-picker-heading {
     align-items: flex-start;
     flex-direction: column;
-    gap: 4px;
+    gap: 10px;
+  }
+
+  .point-picker-tools {
+    display: grid;
+    width: 100%;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .point-picker-tools label:only-child {
+    grid-column: 1 / -1;
+  }
+
+  .point-coordinates {
+    justify-content: flex-start;
+    padding: 8px 10px;
+  }
+
+  .point-coordinates > span {
+    width: calc(50% - 8px);
   }
 
   .replacement-choice > div {
@@ -4483,8 +4789,8 @@ button {
   }
 
   .simple-red-dot {
-    width: 24px;
-    height: 24px;
+    width: 30px;
+    height: 30px;
   }
 
   .simple-demo-primary,

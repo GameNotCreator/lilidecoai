@@ -48,16 +48,15 @@ tentatives de rendu, analytics et audits.
 
 ## Parcours de la démo
 
-1. Le visiteur téléverse la photo de l’objet à placer.
-2. Il choisit `Largeur` ou `Hauteur` et indique cette dimension en centimètres.
+1. Le visiteur téléverse les photos de un à trois objets à placer.
+2. Pour chaque objet, il choisit `Longueur` ou `Hauteur` et indique cette
+   dimension en centimètres.
 3. Il téléverse la photo du lieu, prise à au moins 1,5 mètre.
-4. Il place un point rouge dans l’image ; les coordonnées pixel et normalisées
-   sont conservées.
-5. Il choisit si l’objet doit être ajouté ou remplacer l’objet déjà présent au
-   point indiqué.
-6. Next.js transmet la photo du lieu en image 1, l’objet en image 2 et le prompt
-   de placement à `gpt-image-2` via l’API d’édition OpenAI.
-7. Un crédit est débité uniquement après un rendu réussi.
+4. Il place dans l’ordre jusqu’à trois points rouges numérotés ; chaque point
+   reste associé à l’objet portant le même numéro et peut être repositionné.
+5. Next.js transmet la photo du lieu en image 1, puis les objets en images 2 à
+   4, avec le prompt multi-points à `gpt-image-2` via l’API d’édition OpenAI.
+6. Un crédit est débité uniquement après un rendu réussi.
 
 ## Vérification
 

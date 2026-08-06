@@ -40,6 +40,15 @@ export const normalizedPointSchema = z.object({
   x: z.number().finite().min(0).max(1),
   y: z.number().finite().min(0).max(1),
 });
+const dimensionReferenceSchema = z.object({
+  axis: z.enum(["width", "height"]),
+  valueCm: z.number().finite().positive().max(1_500),
+});
+const simplePlacementSchema = z.object({
+  productId: z.string().uuid(),
+  placementPoint: normalizedPointSchema,
+  dimensionReference: dimensionReferenceSchema,
+});
 export const dimensionsCmSchema = z.object({
   width: z.number().finite().positive().max(1_500),
   height: z.number().finite().positive().max(1_500),
@@ -94,6 +103,7 @@ export const renderRequestSchema = z
       lighting: z.record(z.string(), z.unknown()).optional(),
     }),
     placementPoint: normalizedPointSchema.optional(),
+    simplePlacements: z.array(simplePlacementSchema).min(1).max(3).optional(),
     targetPoint: normalizedPointSchema.optional(),
     targetMaskId: z.string().uuid().optional(),
     surfaceType: surfaceTypeSchema.or(legacySurfaceSchema).optional(),
@@ -105,12 +115,7 @@ export const renderRequestSchema = z
     outputQuality: outputQualitySchema.default("final"),
     preserveBackground: z.boolean().default(true),
     userInstructions: z.string().trim().max(1_500).default(""),
-    dimensionReference: z
-      .object({
-        axis: z.enum(["width", "height"]),
-        valueCm: z.number().finite().positive().max(1_500),
-      })
-      .optional(),
+    dimensionReference: dimensionReferenceSchema.optional(),
     idempotencyKey: z.string().trim().min(1).max(160),
     quality: z.enum(["low", "medium", "high"]).optional(),
   })
@@ -131,25 +136,29 @@ export const renderRequestSchema = z
         path: ["placementPoint"],
       });
     }
-    if (value.workflow === "simple_point" && !value.dimensionReference) {
+    if (
+      value.workflow === "simple_point" &&
+      !value.dimensionReference &&
+      !value.simplePlacements
+    ) {
       context.addIssue({
         code: "custom",
-        message: "Indiquez la dimension réelle de l’objet.",
-        path: ["dimensionReference"],
+        message: "Indiquez les objets, leurs points et leurs dimensions.",
+        path: ["simplePlacements"],
       });
     }
     if (value.mode === "replace" && value.workflow !== "simple_point") {
       if (!value.targetPoint) {
         context.addIssue({
           code: "custom",
-          message: "Sélectionnez l’objet à remplacer.",
+          message: "Sélectionnez l’élément présent dans la zone.",
           path: ["targetPoint"],
         });
       }
       if (!value.targetMaskId) {
         context.addIssue({
           code: "custom",
-          message: "Confirmez le masque avant de lancer le remplacement.",
+          message: "Confirmez la zone sélectionnée avant de lancer le rendu.",
           path: ["targetMaskId"],
         });
       }

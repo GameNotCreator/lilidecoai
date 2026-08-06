@@ -61,25 +61,25 @@ const objectTypes: Array<{
   {
     value: "frame",
     label: "Cadre ou tableau",
-    help: "Largeur, hauteur et épaisseur",
+    help: "Longueur, hauteur et épaisseur",
     placement: "wall",
   },
   {
     value: "mirror",
     label: "Miroir",
-    help: "Largeur, hauteur et épaisseur",
+    help: "Longueur, hauteur et épaisseur",
     placement: "wall",
   },
   {
     value: "rug",
     label: "Tapis",
-    help: "Largeur, longueur et épaisseur",
+    help: "Dimensions au sol et épaisseur",
     placement: "floor",
   },
   {
     value: "furniture",
     label: "Meuble",
-    help: "Largeur, hauteur et profondeur",
+    help: "Longueur, hauteur et profondeur",
     placement: "floor",
   },
   {
@@ -91,13 +91,13 @@ const objectTypes: Array<{
   {
     value: "clock",
     label: "Horloge murale",
-    help: "Largeur, hauteur et épaisseur",
+    help: "Longueur, hauteur et épaisseur",
     placement: "wall",
   },
   {
     value: "other",
     label: "Autre objet",
-    help: "Largeur, hauteur et profondeur",
+    help: "Longueur, hauteur et profondeur",
     placement: "table",
   },
 ];
@@ -308,10 +308,10 @@ export function ProductCreateForm({
           </label>
           {preview && (
             <label className="replace-image-button">
-              <Upload size={17} /> Remplacer le PNG
+              <Upload size={17} /> Changer le PNG
               <input
                 type="file"
-                aria-label="Remplacer l’image PNG"
+                aria-label="Changer l’image PNG"
                 accept="image/png,.png"
                 disabled={!editorReady || busy}
                 onChange={(event) => {
@@ -564,7 +564,7 @@ function DimensionFields({ objectType }: { objectType: ObjectType }) {
   ) {
     return (
       <div className="three-fields">
-        <Dimension name="widthCm" label="Largeur" />
+        <Dimension name="widthCm" label="Longueur" />
         <Dimension name="heightCm" label="Hauteur" />
         <Dimension name="thicknessCm" label="Épaisseur" min="0.1" />
       </div>
@@ -573,15 +573,15 @@ function DimensionFields({ objectType }: { objectType: ObjectType }) {
   if (objectType === "rug") {
     return (
       <div className="three-fields">
-        <Dimension name="widthCm" label="Largeur" />
-        <Dimension name="lengthCm" label="Longueur" />
+        <Dimension name="widthCm" label="Longueur" />
+        <Dimension name="lengthCm" label="Deuxième côté" />
         <Dimension name="thicknessCm" label="Épaisseur" min="0.1" />
       </div>
     );
   }
   return (
     <div className="three-fields">
-      <Dimension name="widthCm" label="Largeur" />
+      <Dimension name="widthCm" label="Longueur" />
       <Dimension name="heightCm" label="Hauteur" />
       <Dimension name="depthCm" label="Profondeur" min="0.1" />
     </div>

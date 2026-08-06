@@ -156,7 +156,7 @@ export function ProductEditForm({ productId }: { productId: string }) {
             ) : (
               <>
                 <ImagePlus size={32} />
-                <strong>Remplacer la photo</strong>
+                <strong>Changer la photo</strong>
               </>
             )}
             <input
@@ -199,7 +199,11 @@ export function ProductEditForm({ productId }: { productId: string }) {
             />
           </div>
           <div className="three-fields">
-            <Dimension name="widthCm" label="Largeur" value={product.widthCm} />
+            <Dimension
+              name="widthCm"
+              label="Longueur"
+              value={product.widthCm}
+            />
             <Dimension
               name="heightCm"
               label="Hauteur"

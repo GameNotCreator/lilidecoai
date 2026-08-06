@@ -6,7 +6,7 @@ Le parcours public `simple_point` reste entièrement côté serveur.
 
 | Étape                                    | Fournisseur | Modèle par défaut        |
 | ---------------------------------------- | ----------- | ------------------------ |
-| Ajout ou remplacement depuis un point    | OpenAI      | `gpt-image-2`            |
+| Ajout depuis un point, zone libre ou occupée | OpenAI   | `gpt-image-2`            |
 | Tests et développement sans clé          | Mock local  | `mock-image-v2`          |
 
 La démo choisit explicitement OpenAI, même si les anciens fournisseurs restent
@@ -20,12 +20,12 @@ erreur normalisée et nombre de tentatives.
 
 ## Pipeline
 
-1. L’image 1 est la photo originale du lieu ; l’image 2 est l’objet fourni.
-2. Le clic est converti en coordonnées pixel et normalisées.
-3. Le choix de l’utilisateur fixe l’opération `Place` ou `Remplace` ; aucune
-   segmentation automatique n’est imposée dans cette démo.
-4. `buildSimplePointPrompt` ajoute le point, la largeur ou la hauteur réelle et
-   les contraintes de préservation de la photo.
+1. L’image 1 est la photo originale du lieu ; les images 2 à 4 sont les objets
+   fournis dans l’ordre de sélection.
+2. Jusqu’à trois clics sont convertis en coordonnées pixel et normalisées, puis
+   associés aux objets et points portant les mêmes numéros.
+3. `buildSimplePointPrompt` ajoute pour chaque objet son point, sa longueur, sa
+   hauteur et les contraintes de préservation de la photo.
 5. L’endpoint `/v1/images/edits` exécute une seule édition avec
    `model=gpt-image-2`. Le modèle reçoit les images en haute fidélité par
    défaut, conformément à la documentation OpenAI.

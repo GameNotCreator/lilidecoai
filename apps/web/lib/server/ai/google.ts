@@ -466,7 +466,7 @@ export class GooglePlacementIntentProvider
       rationale: textValue(
         parsed.rationale,
         mode === "replace"
-          ? "L’objet demandé a été identifié pour être remplacé."
+          ? "L’élément demandé a été identifié automatiquement."
           : "Un emplacement compatible a été identifié.",
       ),
       providerResult: {

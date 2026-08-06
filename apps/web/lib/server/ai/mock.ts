@@ -197,7 +197,7 @@ export class MockPlacementIntentProvider implements PlacementIntentProvider {
       confidence: 0.92,
       needsClarification: false,
       rationale: replace
-        ? "L’objet cité sera remplacé automatiquement."
+        ? "L’élément cité a été identifié automatiquement."
         : "Le meilleur emplacement compatible sera utilisé.",
       providerResult: {
         provider: "mock",

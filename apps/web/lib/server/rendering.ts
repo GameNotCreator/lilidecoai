@@ -116,6 +116,23 @@ interface RenderInput {
     axis: "width" | "height";
     valueCm: number;
   };
+  simplePlacements?: Array<{
+    productId: string;
+    placementPoint: { x: number; y: number };
+    dimensionReference: {
+      axis: "width" | "height";
+      valueCm: number;
+    };
+  }>;
+}
+
+interface SimpleRenderObject {
+  product: ProductDocument;
+  placementPoint: { x: number; y: number };
+  dimensionReference: {
+    axis: "width" | "height";
+    valueCm: number;
+  };
 }
 
 interface ResolvedRenderInput extends Omit<RenderInput, "placement"> {
@@ -179,27 +196,81 @@ export async function createRender(
   }
 
   const simplePointWorkflow = input.workflow === "simple_point";
+  let simpleObjects: SimpleRenderObject[] = [];
   if (simplePointWorkflow) {
-    if (!input.dimensionReference) {
-      throw new RenderError("Dimension réelle de l’objet manquante", 422);
-    }
     if (!serverConfig.aiMockMode && !serverConfig.openaiApiKey) {
       throw new RenderError(
         "La clé OPENAI_API_KEY est requise pour générer avec GPT Image 2.",
         503,
       );
     }
-    const point = input.placementPoint ?? {
-      x: Number(input.placement.xNormalized ?? 0.5),
-      y: Number(input.placement.yNormalized ?? 0.7),
+    const requestedObjects =
+      input.simplePlacements ??
+      (input.dimensionReference
+        ? [
+            {
+              productId: product.id,
+              placementPoint: input.placementPoint ?? {
+                x: Number(input.placement.xNormalized ?? 0.5),
+                y: Number(input.placement.yNormalized ?? 0.7),
+              },
+              dimensionReference: input.dimensionReference,
+            },
+          ]
+        : []);
+    if (requestedObjects.length < 1 || requestedObjects.length > 3) {
+      throw new RenderError(
+        "Sélectionnez entre un et trois objets avec leurs points.",
+        422,
+      );
+    }
+    if (requestedObjects[0]?.productId !== product.id) {
+      throw new RenderError(
+        "Le premier objet doit correspondre au premier point.",
+        422,
+      );
+    }
+    const productIds = [
+      ...new Set(requestedObjects.map((item) => item.productId)),
+    ];
+    const requestedProducts = await c.products
+      .find({ organizationId, id: { $in: productIds } })
+      .toArray();
+    const productsById = new Map(
+      requestedProducts.map((item) => [item.id, item]),
+    );
+    simpleObjects = requestedObjects.map((item) => {
+      const selectedProduct = productsById.get(item.productId);
+      if (!selectedProduct?.cutoutAssetId) {
+        throw new RenderError("Un objet sélectionné est introuvable", 404);
+      }
+      return {
+        product: selectedProduct,
+        placementPoint: item.placementPoint,
+        dimensionReference: item.dimensionReference,
+      };
+    });
+    const firstSimpleObject = simpleObjects[0]!;
+    input.mode = "insert";
+    input.placementPoint = firstSimpleObject.placementPoint;
+    input.placement = {
+      ...input.placement,
+      mode: "insert",
+      xNormalized: firstSimpleObject.placementPoint.x,
+      yNormalized: firstSimpleObject.placementPoint.y,
+      simplePlacements: requestedObjects,
     };
     input.userInstructions = buildSimplePointPrompt({
-      mode: input.mode ?? "insert",
-      objectLabel: `l’objet « ${product.name} »`,
-      point,
-      imageWidth: scene.widthPx,
-      imageHeight: scene.heightPx,
-      dimension: input.dimensionReference,
+      objects: simpleObjects.map((item, index) => ({
+        objectLabel: `l’objet ${index + 1} « ${item.product.name} »`,
+        point: item.placementPoint,
+        imageWidth: scene.widthPx,
+        imageHeight: scene.heightPx,
+        dimensionsCm: {
+          length: item.product.widthCm,
+          height: item.product.heightCm,
+        },
+      })),
     });
   }
 
@@ -247,7 +318,10 @@ export async function createRender(
     lighting: input.lighting ??
       input.placement.lighting ?? { mode: "automatic" },
     ...(input.calibration ? { calibration: input.calibration } : {}),
-    productViews: (product.views ?? []).map((view) => ({
+    productViews: (simplePointWorkflow
+      ? simpleObjects.flatMap((item) => item.product.views ?? [])
+      : (product.views ?? [])
+    ).map((view) => ({
       assetId: view.assetId,
       type: view.type,
       widthPx: view.widthPx,
@@ -302,7 +376,7 @@ export async function createRender(
             organizationId,
             render,
             scene,
-            product,
+            simpleObjects,
             input,
             requestedSize,
             startedAt,
@@ -325,7 +399,7 @@ export async function createRender(
       organizationId,
       render,
       scene,
-      product,
+      simpleObjects,
       input,
       requestedSize,
       startedAt,
@@ -408,7 +482,7 @@ async function runSimplePointRender(
   organizationId: string,
   render: RenderDocument,
   scene: SceneDocument,
-  product: ProductDocument,
+  simpleObjects: SimpleRenderObject[],
   input: RenderInput,
   requestedSize: RenderDocument["requestedSize"],
   startedAt: number,
@@ -418,13 +492,25 @@ async function runSimplePointRender(
   if (!sourceAsset) {
     throw new RenderError("Photo du lieu introuvable", 404);
   }
-  const productReferences = await loadProductReferences(db, product);
+  const productReferences = await Promise.all(
+    simpleObjects.map(async (item) => {
+      const references = await loadProductReferences(db, item.product);
+      const reference = references[0];
+      if (!reference) {
+        throw new RenderError(
+          `Photo de l’objet « ${item.product.name} » introuvable`,
+          404,
+        );
+      }
+      return reference;
+    }),
+  );
   const productReference = productReferences[0];
   if (!productReference) {
     throw new RenderError("Photo de l’objet introuvable", 404);
   }
 
-  const mode = input.mode ?? "insert";
+  const mode = "insert" as const;
   const { provider, route } = selectEditingProvider(
     mode,
     "final",
@@ -451,7 +537,8 @@ async function runSimplePointRender(
         model: provider.model,
         placement: {
           ...input.placement,
-          operation: mode === "replace" ? "replace" : "place",
+          operation: "place",
+          objectCount: simpleObjects.length,
           pipelineStage: "generating_final",
         },
         updatedAt: new Date(),
@@ -475,10 +562,11 @@ async function runSimplePointRender(
     placement: {
       x: Number(input.placement.xNormalized ?? 0.5),
       y: Number(input.placement.yNormalized ?? 0.7),
-      operation: mode === "replace" ? "replace" : "place",
+      operation: "place",
+      objectCount: simpleObjects.length,
     },
     idempotencyKey: input.idempotencyKey,
-    references: [roomReference, productReference],
+    references: [roomReference, ...productReferences],
     mode,
     outputQuality: "final",
     preserveBackground: true,
@@ -536,7 +624,8 @@ async function runSimplePointRender(
     ],
     placement: {
       ...input.placement,
-      operation: mode === "replace" ? "replace" : "place",
+      operation: "place",
+      objectCount: simpleObjects.length,
       pipelineStage: "complete",
     },
     updatedAt: new Date(),
@@ -786,13 +875,13 @@ async function runGoogleLayeredRender(
   const obstacle = nearestObstacle(initialAnalysis, anchor);
   if (mode === "insert" && obstacle && obstacle.confidence >= 0.58) {
     throw new RenderError(
-      "Un objet occupe ce point. Choisissez « Remplacer un élément existant » pour le retirer proprement.",
+      "Un objet occupe ce point. Indiquez précisément cet élément afin que la zone soit préparée proprement.",
       422,
     );
   }
   if (mode === "replace" && (!segmentation || !input.targetMaskAssetId)) {
     throw new RenderError(
-      "Confirmez le masque de l’objet avant de lancer le remplacement.",
+      "Confirmez la zone de l’objet avant de lancer le rendu.",
       422,
     );
   }

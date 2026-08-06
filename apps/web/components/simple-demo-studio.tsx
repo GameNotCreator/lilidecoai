@@ -7,12 +7,14 @@ import {
   ImagePlus,
   LoaderCircle,
   MapPin,
+  Plus,
   RefreshCw,
   Ruler,
   Sparkles,
+  Trash2,
   Upload,
 } from "lucide-react";
-import { type MouseEvent, useEffect, useMemo, useState } from "react";
+import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { Render } from "@lili/types";
 
 import { api, establishGuestEditorSession, getRender } from "@/lib/api";
@@ -30,6 +32,15 @@ interface PreparedProduct {
   depthCm: number;
 }
 
+interface DemoObject {
+  key: string;
+  file: File | null;
+  preview: string;
+  dimensionAxis: DimensionAxis;
+  dimensionValue: string;
+  product: PreparedProduct | null;
+}
+
 interface Scene {
   id: string;
   imageUrl: string;
@@ -42,33 +53,34 @@ interface Point {
   y: number;
 }
 
-const progressLabels = ["Votre objet", "Votre intérieur", "Résultat"];
+const MAX_OBJECTS = 3;
+const progressLabels = ["Vos objets", "Votre intérieur", "Résultat"];
 
 export function SimpleDemoStudio() {
   const [step, setStep] = useState<Step>(1);
   const [ready, setReady] = useState(false);
   const [busyLabel, setBusyLabel] = useState("Préparation de la démo…");
   const [error, setError] = useState("");
-  const [objectFile, setObjectFile] = useState<File | null>(null);
-  const [objectPreview, setObjectPreview] = useState("");
-  const [dimensionAxis, setDimensionAxis] =
-    useState<DimensionAxis>("height");
-  const [dimensionValue, setDimensionValue] = useState("");
-  const [product, setProduct] = useState<PreparedProduct | null>(null);
+  const [objects, setObjects] = useState<DemoObject[]>(() => [createObject(1)]);
   const [scene, setScene] = useState<Scene | null>(null);
-  const [point, setPoint] = useState<Point | null>(null);
-  const [replaceExisting, setReplaceExisting] = useState(false);
+  const [points, setPoints] = useState<Point[]>([]);
   const [render, setRender] = useState<Render | null>(null);
+  const nextObjectId = useRef(2);
+  const previewUrls = useRef(new Set<string>());
 
   const busy = Boolean(busyLabel && ready);
-  const dimensionCm = Number(dimensionValue);
-  const pixelPoint = useMemo(() => {
-    if (!point || !scene) return null;
-    return {
+  const objectsAreValid = objects.every((object) => {
+    const value = Number(object.dimensionValue);
+    return object.file && Number.isFinite(value) && value > 0;
+  });
+  const allPointsPlaced = points.length === objects.length;
+  const pixelPoints = useMemo(() => {
+    if (!scene) return [];
+    return points.map((point) => ({
       x: Math.round(point.x * scene.widthPx),
       y: Math.round(point.y * scene.heightPx),
-    };
-  }, [point, scene]);
+    }));
+  }, [points, scene]);
 
   useEffect(() => {
     void establishGuestEditorSession()
@@ -86,12 +98,13 @@ export function SimpleDemoStudio() {
       });
   }, []);
 
-  useEffect(
-    () => () => {
-      if (objectPreview) URL.revokeObjectURL(objectPreview);
-    },
-    [objectPreview],
-  );
+  useEffect(() => {
+    const urls = previewUrls.current;
+    return () => {
+      urls.forEach((url) => URL.revokeObjectURL(url));
+      urls.clear();
+    };
+  }, []);
 
   useEffect(() => {
     if (!render || render.status !== "processing") return;
@@ -114,72 +127,138 @@ export function SimpleDemoStudio() {
     return () => window.clearInterval(timer);
   }, [render]);
 
-  async function prepareObject() {
-    if (!objectFile || !Number.isFinite(dimensionCm) || dimensionCm <= 0) {
-      setError("Ajoutez une image et indiquez une dimension valide.");
+  function updateObject(
+    key: string,
+    changes: Partial<Omit<DemoObject, "key">>,
+  ) {
+    setObjects((current) =>
+      current.map((object) =>
+        object.key === key ? { ...object, ...changes } : object,
+      ),
+    );
+    setPoints([]);
+    setError("");
+  }
+
+  function selectObjectFile(key: string, file: File | null) {
+    const previous = objects.find((object) => object.key === key)?.preview;
+    if (previous) {
+      URL.revokeObjectURL(previous);
+      previewUrls.current.delete(previous);
+    }
+    const preview = file ? URL.createObjectURL(file) : "";
+    if (preview) previewUrls.current.add(preview);
+    updateObject(key, { file, preview, product: null });
+  }
+
+  function addObject() {
+    if (objects.length >= MAX_OBJECTS) return;
+    setObjects((current) => [...current, createObject(nextObjectId.current++)]);
+    setPoints([]);
+    setError("");
+  }
+
+  function removeObject(key: string) {
+    if (objects.length === 1) return;
+    const removed = objects.find((object) => object.key === key);
+    if (removed?.preview) {
+      URL.revokeObjectURL(removed.preview);
+      previewUrls.current.delete(removed.preview);
+    }
+    setObjects((current) => current.filter((object) => object.key !== key));
+    setPoints([]);
+    setError("");
+  }
+
+  async function prepareObjects() {
+    if (!objectsAreValid) {
+      setError("Ajoutez une image et une dimension valide pour chaque objet.");
       return;
     }
     setError("");
-    setBusyLabel("Préparation de l’objet…");
     try {
       await establishGuestEditorSession();
-      const imageSize = await readImageSize(objectFile);
-      const ratio = imageSize.width / Math.max(1, imageSize.height);
-      const heightCm =
-        dimensionAxis === "height" ? dimensionCm : dimensionCm / ratio;
-      const widthCm =
-        dimensionAxis === "width" ? dimensionCm : dimensionCm * ratio;
-      const depthCm = Math.max(0.1, Math.min(widthCm, heightCm) * 0.4);
-      const name = objectName(objectFile.name);
-      const created = await api<PreparedProduct>("/v1/products", {
-        method: "POST",
-        body: JSON.stringify({
-          temporary: true,
-          name,
-          description: "Objet fourni par l’utilisateur pour cette visualisation.",
-          objectType: "other",
-          widthCm: roundDimension(widthCm),
-          heightCm: roundDimension(heightCm),
-          depthCm: roundDimension(depthCm),
-          material: "Matière visible sur la photo de référence",
-          generationInstructions:
-            "Conserver fidèlement la forme, les couleurs et tous les détails visibles.",
-          placementType: "table",
-          lightingProfile: {},
-          buyUrl: null,
-        }),
-      });
-      setBusyLabel("Envoi de l’image…");
-      const preparedFile = await prepareImageForUpload(objectFile);
-      const upload = new FormData();
-      upload.set("file", preparedFile);
-      upload.set("viewType", "front");
-      await api(`/v1/products/${created.id}/assets`, {
-        method: "POST",
-        body: upload,
-      });
-      setBusyLabel("Détourage de l’objet…");
-      const prepared = await api<PreparedProduct>(
-        `/v1/products/${created.id}/prepare`,
-        { method: "POST" },
-      );
-      await api(`/v1/products/${created.id}/anchor`, {
-        method: "POST",
-        body: JSON.stringify({
-          anchorType: "bottom_center",
-          xNormalized: 0.5,
-          yNormalized: 1,
-        }),
-      });
-      setProduct(prepared);
+      for (let index = 0; index < objects.length; index += 1) {
+        const object = objects[index];
+        if (!object) continue;
+        if (object.product) continue;
+        setBusyLabel(
+          objects.length === 1
+            ? "Préparation de l’objet…"
+            : `Préparation de l’objet ${index + 1} sur ${objects.length}…`,
+        );
+        const prepared = await prepareObject(object);
+        setObjects((current) =>
+          current.map((item) =>
+            item.key === object.key ? { ...item, product: prepared } : item,
+          ),
+        );
+      }
+      setPoints([]);
       setStep(2);
     } catch (reason) {
       setError(
-        reason instanceof Error ? reason.message : "Objet impossible à préparer.",
+        reason instanceof Error
+          ? reason.message
+          : "Un objet n’a pas pu être préparé.",
       );
     } finally {
       setBusyLabel("");
     }
+  }
+
+  async function prepareObject(object: DemoObject): Promise<PreparedProduct> {
+    if (!object.file) throw new Error("L’image de l’objet est manquante.");
+    const dimensionCm = Number(object.dimensionValue);
+    const imageSize = await readImageSize(object.file);
+    const ratio = imageSize.width / Math.max(1, imageSize.height);
+    const heightCm =
+      object.dimensionAxis === "height" ? dimensionCm : dimensionCm / ratio;
+    const widthCm =
+      object.dimensionAxis === "width" ? dimensionCm : dimensionCm * ratio;
+    const depthCm = Math.max(0.1, Math.min(widthCm, heightCm) * 0.4);
+    const name = objectName(object.file.name);
+    const created = await api<PreparedProduct>("/v1/products", {
+      method: "POST",
+      body: JSON.stringify({
+        temporary: true,
+        name,
+        description: "Objet fourni par l’utilisateur pour cette visualisation.",
+        objectType: "other",
+        widthCm: roundDimension(widthCm),
+        heightCm: roundDimension(heightCm),
+        depthCm: roundDimension(depthCm),
+        material: "Matière visible sur la photo de référence",
+        generationInstructions:
+          "Conserver fidèlement la forme, les couleurs et tous les détails visibles.",
+        placementType: "table",
+        lightingProfile: {},
+        buyUrl: null,
+      }),
+    });
+    setBusyLabel(`Envoi de ${name}…`);
+    const preparedFile = await prepareImageForUpload(object.file);
+    const upload = new FormData();
+    upload.set("file", preparedFile);
+    upload.set("viewType", "front");
+    await api(`/v1/products/${created.id}/assets`, {
+      method: "POST",
+      body: upload,
+    });
+    setBusyLabel(`Détourage de ${name}…`);
+    const prepared = await api<PreparedProduct>(
+      `/v1/products/${created.id}/prepare`,
+      { method: "POST" },
+    );
+    await api(`/v1/products/${created.id}/anchor`, {
+      method: "POST",
+      body: JSON.stringify({
+        anchorType: "bottom_center",
+        xNormalized: 0.5,
+        yNormalized: 1,
+      }),
+    });
+    return prepared;
   }
 
   async function uploadRoom(file: File) {
@@ -196,7 +275,7 @@ export function SimpleDemoStudio() {
         body: form,
       });
       setScene(created);
-      setPoint(null);
+      setPoints([]);
     } catch (reason) {
       setError(
         reason instanceof Error
@@ -209,42 +288,57 @@ export function SimpleDemoStudio() {
   }
 
   function selectPoint(event: MouseEvent<HTMLButtonElement>) {
+    if (allPointsPlaced) return;
     const bounds = event.currentTarget.getBoundingClientRect();
-    setPoint({
+    const point = {
       x: clamp((event.clientX - bounds.left) / bounds.width),
       y: clamp((event.clientY - bounds.top) / bounds.height),
-    });
+    };
+    setPoints((current) => [...current, point]);
     setError("");
   }
 
   async function generate() {
-    if (!product || !scene || !point) {
-      setError("Ajoutez les deux images puis placez le point rouge.");
+    const products = objects.map((object) => object.product);
+    if (!scene || products.some((product) => !product) || !allPointsPlaced) {
+      setError("Ajoutez les images puis placez un point par objet.");
       return;
     }
+    const firstObject = objects[0];
+    const firstProduct = products[0];
+    const firstPoint = points[0];
+    if (!firstObject || !firstProduct || !firstPoint) return;
+
     setError("");
     setBusyLabel("Lancement de GPT Image 2…");
     try {
-      const mode = replaceExisting ? "replace" : "insert";
+      const simplePlacements = objects.map((object, index) => ({
+        productId: object.product!.id,
+        placementPoint: points[index],
+        dimensionReference: {
+          axis: object.dimensionAxis,
+          valueCm: Number(object.dimensionValue),
+        },
+      }));
       const created = await api<Render>("/v1/renders/final", {
         method: "POST",
         body: JSON.stringify({
           workflow: "simple_point",
-          mode,
+          mode: "insert",
+          simplePlacements,
           placement: {
             sceneId: scene.id,
-            productId: product.id,
-            mode,
-            surfaceType: replaceExisting ? "existing_object" : "tabletop",
-            xNormalized: point.x,
-            yNormalized: point.y,
+            productId: firstProduct.id,
+            mode: "insert",
+            surfaceType: "tabletop",
+            xNormalized: firstPoint.x,
+            yNormalized: firstPoint.y,
           },
-          placementPoint: point,
-          ...(replaceExisting ? { targetPoint: point } : {}),
-          surfaceType: replaceExisting ? "existing_object" : "tabletop",
+          placementPoint: firstPoint,
+          surfaceType: "tabletop",
           dimensionReference: {
-            axis: dimensionAxis,
-            valueCm: dimensionCm,
+            axis: firstObject.dimensionAxis,
+            valueCm: Number(firstObject.dimensionValue),
           },
           outputQuality: "final",
           preserveBackground: true,
@@ -262,28 +356,32 @@ export function SimpleDemoStudio() {
     }
   }
 
+  function resetPoints() {
+    setPoints([]);
+    setError("");
+  }
+
   function reset() {
-    if (objectPreview) URL.revokeObjectURL(objectPreview);
+    previewUrls.current.forEach((url) => URL.revokeObjectURL(url));
+    previewUrls.current.clear();
+    nextObjectId.current = 2;
     setStep(1);
     setError("");
-    setObjectFile(null);
-    setObjectPreview("");
-    setDimensionAxis("height");
-    setDimensionValue("");
-    setProduct(null);
+    setObjects([createObject(1)]);
     setScene(null);
-    setPoint(null);
-    setReplaceExisting(false);
+    setPoints([]);
     setRender(null);
     setBusyLabel("");
   }
+
+  const nextObject = objects[points.length];
 
   return (
     <section className="simple-demo" data-step={step}>
       <header className="simple-demo-head">
         <span className="simple-demo-kicker">Visualisation IA</span>
-        <h1>Voyez votre objet chez vous.</h1>
-        <p>Deux photos, une dimension et un point. C’est tout.</p>
+        <h1>Voyez vos objets chez vous.</h1>
+        <p>Jusqu’à trois objets, une photo et leurs points. C’est tout.</p>
       </header>
 
       <ol className="simple-demo-progress" aria-label="Étapes de la démo">
@@ -320,129 +418,245 @@ export function SimpleDemoStudio() {
           <div className="simple-demo-title">
             <span>1</span>
             <div>
-              <h2>Ajoutez l’objet à placer</h2>
-              <p>Une photo nette où l’objet est visible en entier.</p>
+              <h2>Ajoutez les objets à placer</h2>
+              <p>De un à trois objets, visibles en entier sur leurs photos.</p>
             </div>
           </div>
 
-          <label
-            className={
-              objectPreview
-                ? "simple-upload simple-object-upload has-image"
-                : "simple-upload simple-object-upload"
-            }
-          >
-            {objectPreview ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={objectPreview} alt="Objet à placer" />
-            ) : (
-              <>
-                <ImagePlus size={34} />
-                <strong>Choisir l’image de l’objet</strong>
-                <span>PNG, JPG ou WebP · objet bien cadré</span>
-              </>
-            )}
-            <input
-              type="file"
-              accept="image/png,image/jpeg,image/webp"
-              aria-label="Image de l’objet à placer"
-              disabled={!ready || busy}
-              onChange={(event) => {
-                const file = event.target.files?.[0] ?? null;
-                if (objectPreview) URL.revokeObjectURL(objectPreview);
-                setObjectFile(file);
-                setObjectPreview(file ? URL.createObjectURL(file) : "");
-                setProduct(null);
-                setError("");
-              }}
-            />
-          </label>
+          <div className="simple-objects-list">
+            {objects.map((object, index) => {
+              const dimensionCm = Number(object.dimensionValue);
+              return (
+                <article className="simple-object-entry" key={object.key}>
+                  <div className="simple-object-entry-head">
+                    <div>
+                      <span>{index + 1}</span>
+                      <strong>Objet {index + 1}</strong>
+                    </div>
+                    {objects.length > 1 && (
+                      <button
+                        type="button"
+                        className="simple-object-remove"
+                        aria-label={`Supprimer l’objet ${index + 1}`}
+                        disabled={busy}
+                        onClick={() => removeObject(object.key)}
+                      >
+                        <Trash2 size={17} />
+                        <span>Supprimer</span>
+                      </button>
+                    )}
+                  </div>
 
-          {objectPreview && (
-            <label className="simple-replace-file">
-              <Upload size={17} /> Changer l’image
-              <input
-                type="file"
-                accept="image/png,image/jpeg,image/webp"
-                aria-label="Changer l’image de l’objet"
-                disabled={busy}
-                onChange={(event) => {
-                  const file = event.target.files?.[0] ?? null;
-                  if (!file) return;
-                  if (objectPreview) URL.revokeObjectURL(objectPreview);
-                  setObjectFile(file);
-                  setObjectPreview(URL.createObjectURL(file));
-                }}
-              />
-            </label>
+                  <div className="simple-object-entry-body">
+                    <div>
+                      <label
+                        className={
+                          object.preview
+                            ? "simple-upload simple-object-upload has-image"
+                            : "simple-upload simple-object-upload"
+                        }
+                      >
+                        {object.preview ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={object.preview}
+                            alt={`Objet ${index + 1} à placer`}
+                          />
+                        ) : (
+                          <>
+                            <ImagePlus size={30} />
+                            <strong>Choisir l’image</strong>
+                            <span>PNG, JPG ou WebP</span>
+                          </>
+                        )}
+                        <input
+                          type="file"
+                          accept="image/png,image/jpeg,image/webp"
+                          aria-label={`Image de l’objet ${index + 1}`}
+                          disabled={!ready || busy}
+                          onChange={(event) =>
+                            selectObjectFile(
+                              object.key,
+                              event.target.files?.[0] ?? null,
+                            )
+                          }
+                        />
+                      </label>
+
+                      {object.preview && (
+                        <label className="simple-change-file">
+                          <Upload size={17} /> Changer l’image
+                          <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/webp"
+                            aria-label={`Changer l’image de l’objet ${index + 1}`}
+                            disabled={busy}
+                            onChange={(event) => {
+                              const file = event.target.files?.[0];
+                              if (file) selectObjectFile(object.key, file);
+                            }}
+                          />
+                        </label>
+                      )}
+                    </div>
+
+                    <div className="simple-object-dimensions">
+                      <div className="simple-field-label">
+                        <Ruler size={19} />
+                        <div>
+                          <strong>Dimension connue</strong>
+                          <span>
+                            Mesurez au point le plus long ou le plus haut.
+                          </span>
+                        </div>
+                      </div>
+                      <div
+                        className="simple-segmented"
+                        role="group"
+                        aria-label={`Dimension de l’objet ${index + 1}`}
+                      >
+                        <button
+                          type="button"
+                          className={
+                            object.dimensionAxis === "width" ? "selected" : ""
+                          }
+                          aria-pressed={object.dimensionAxis === "width"}
+                          onClick={() =>
+                            updateObject(object.key, {
+                              dimensionAxis: "width",
+                              product: null,
+                            })
+                          }
+                        >
+                          Longueur
+                        </button>
+                        <button
+                          type="button"
+                          className={
+                            object.dimensionAxis === "height" ? "selected" : ""
+                          }
+                          aria-pressed={object.dimensionAxis === "height"}
+                          onClick={() =>
+                            updateObject(object.key, {
+                              dimensionAxis: "height",
+                              product: null,
+                            })
+                          }
+                        >
+                          Hauteur
+                        </button>
+                      </div>
+                      <label className="simple-unit-input">
+                        <span>
+                          {object.dimensionAxis === "height"
+                            ? "Hauteur"
+                            : "Longueur"}
+                        </span>
+                        <div>
+                          <input
+                            type="number"
+                            inputMode="decimal"
+                            min="0.1"
+                            max="1500"
+                            step="0.1"
+                            value={object.dimensionValue}
+                            aria-label={`${
+                              object.dimensionAxis === "height"
+                                ? "Hauteur"
+                                : "Longueur"
+                            } de l’objet ${index + 1} en centimètres`}
+                            placeholder="Ex. 42"
+                            onChange={(event) =>
+                              updateObject(object.key, {
+                                dimensionValue: event.target.value,
+                                product: null,
+                              })
+                            }
+                          />
+                          <span>cm</span>
+                        </div>
+                      </label>
+                      {object.file && dimensionCm > 0 && (
+                        <span className="simple-object-ready">
+                          <Check size={15} /> Objet {index + 1} prêt
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+
+          {objects.length < MAX_OBJECTS && (
+            <button
+              type="button"
+              className="simple-add-object"
+              disabled={busy}
+              onClick={addObject}
+            >
+              <Plus size={19} /> Ajouter un objet
+              <span>
+                {objects.length}/{MAX_OBJECTS}
+              </span>
+            </button>
           )}
-
-          <div className="simple-dimension-block">
-            <div className="simple-field-label">
-              <Ruler size={19} />
-              <div>
-                <strong>Quelle dimension connaissez-vous ?</strong>
-                <span>Mesurez l’objet au point le plus large.</span>
-              </div>
-            </div>
-            <div className="simple-segmented" role="group" aria-label="Dimension">
-              <button
-                type="button"
-                className={dimensionAxis === "width" ? "selected" : ""}
-                aria-pressed={dimensionAxis === "width"}
-                onClick={() => setDimensionAxis("width")}
-              >
-                Largeur
-              </button>
-              <button
-                type="button"
-                className={dimensionAxis === "height" ? "selected" : ""}
-                aria-pressed={dimensionAxis === "height"}
-                onClick={() => setDimensionAxis("height")}
-              >
-                Hauteur
-              </button>
-            </div>
-            <label className="simple-unit-input">
-              <span>{dimensionAxis === "height" ? "Hauteur" : "Largeur"}</span>
-              <div>
-                <input
-                  type="number"
-                  inputMode="decimal"
-                  min="0.1"
-                  max="1500"
-                  step="0.1"
-                  value={dimensionValue}
-                  aria-label={`${dimensionAxis === "height" ? "Hauteur" : "Largeur"} en centimètres`}
-                  placeholder="Ex. 42"
-                  onChange={(event) => setDimensionValue(event.target.value)}
-                />
-                <span>cm</span>
-              </div>
-            </label>
-          </div>
 
           <button
             type="button"
             className="simple-demo-primary"
-            disabled={!ready || busy || !objectFile || dimensionCm <= 0}
-            onClick={() => void prepareObject()}
+            disabled={!ready || busy || !objectsAreValid}
+            onClick={() => void prepareObjects()}
           >
             {busy ? <LoaderCircle className="spin" size={19} /> : null}
-            {busy ? busyLabel : "Continuer"}
+            {busy
+              ? busyLabel
+              : `Continuer avec ${objects.length} objet${objects.length > 1 ? "s" : ""}`}
             {!busy && <ArrowRight size={19} />}
           </button>
         </div>
       )}
 
-      {step === 2 && product && (
+      {step === 2 && objects.every((object) => object.product) && (
         <div className="simple-demo-card simple-room-card">
           <div className="simple-demo-title">
             <span>2</span>
             <div>
               <h2>Ajoutez la photo du lieu</h2>
-              <p>Puis touchez exactement l’endroit où placer l’objet.</p>
+              <p>Placez ensuite un point numéroté pour chaque objet.</p>
             </div>
+          </div>
+
+          <div
+            className="simple-placement-objects"
+            aria-label="Objets à placer"
+          >
+            {objects.map((object, index) => (
+              <div
+                className={
+                  points[index]
+                    ? "placed"
+                    : index === points.length
+                      ? "current"
+                      : ""
+                }
+                key={object.key}
+              >
+                <span className="simple-placement-number">{index + 1}</span>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={object.product?.cutoutUrl || object.preview} alt="" />
+                <span>
+                  <strong>
+                    {object.product?.name || `Objet ${index + 1}`}
+                  </strong>
+                  <small>
+                    {object.dimensionAxis === "height" ? "Hauteur" : "Longueur"}{" "}
+                    {object.dimensionValue} cm
+                  </small>
+                </span>
+                {points[index] && <Check size={17} />}
+              </div>
+            ))}
           </div>
 
           <div className="photo-guideline">
@@ -476,32 +690,55 @@ export function SimpleDemoStudio() {
             <div className="point-picker-block">
               <div className="point-picker-heading">
                 <div>
-                  <strong>Placez le point rouge</strong>
-                  <span>Touchez la surface ou l’objet concerné.</span>
+                  <strong>
+                    {allPointsPlaced
+                      ? "Tous les points sont placés"
+                      : `Placez le point ${points.length + 1}`}
+                  </strong>
+                  <span>
+                    {nextObject
+                      ? `Touchez l’endroit où poser ${nextObject.product?.name || `l’objet ${points.length + 1}`}.`
+                      : `${points.length} point${points.length > 1 ? "s" : ""} enregistré${points.length > 1 ? "s" : ""}.`}
+                  </span>
                 </div>
-                <label>
-                  <Upload size={16} /> Changer la photo
-                  <input
-                    type="file"
-                    accept="image/png,image/jpeg,image/webp"
-                    aria-label="Changer la photo du lieu"
-                    disabled={busy}
-                    onChange={(event) => {
-                      const file = event.target.files?.[0];
-                      if (file) void uploadRoom(file);
-                    }}
-                  />
-                </label>
+                <div className="point-picker-tools">
+                  {points.length > 0 && (
+                    <button type="button" onClick={resetPoints} disabled={busy}>
+                      <RefreshCw size={16} /> Replacer les points
+                    </button>
+                  )}
+                  <label>
+                    <Upload size={16} /> Changer la photo
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      aria-label="Changer la photo du lieu"
+                      disabled={busy}
+                      onChange={(event) => {
+                        const file = event.target.files?.[0];
+                        if (file) void uploadRoom(file);
+                      }}
+                    />
+                  </label>
+                </div>
               </div>
               <button
                 type="button"
-                className="simple-point-picker"
-                aria-label="Placer le point dans l’image"
+                className={
+                  allPointsPlaced
+                    ? "simple-point-picker points-complete"
+                    : "simple-point-picker"
+                }
+                aria-label={
+                  allPointsPlaced
+                    ? "Tous les points sont placés"
+                    : `Placer le point ${points.length + 1} dans l’image`
+                }
                 onClick={selectPoint}
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={scene.imageUrl} alt="Lieu de réception" />
-                {point && (
+                {points.map((point, index) => (
                   <span
                     className="simple-red-dot"
                     style={{
@@ -509,54 +746,36 @@ export function SimpleDemoStudio() {
                       top: `${point.y * 100}%`,
                     }}
                     data-testid="placement-dot"
-                  />
-                )}
+                    data-point-number={index + 1}
+                    key={`${point.x}-${point.y}-${index}`}
+                  >
+                    {index + 1}
+                  </span>
+                ))}
               </button>
-              <div className={point ? "point-coordinates ready" : "point-coordinates"}>
-                {pixelPoint ? (
+              <div
+                className={
+                  points.length > 0
+                    ? "point-coordinates ready"
+                    : "point-coordinates"
+                }
+              >
+                {points.length > 0 ? (
                   <>
                     <Check size={17} />
-                    Point enregistré : x {pixelPoint.x} px · y {pixelPoint.y} px
+                    {pixelPoints.map((point, index) => (
+                      <span key={`${point.x}-${point.y}-${index}`}>
+                        Point {index + 1} : x {point.x} · y {point.y}
+                      </span>
+                    ))}
                   </>
                 ) : (
                   <>
-                    <MapPin size={17} /> Touchez la photo pour choisir l’endroit
+                    <MapPin size={17} /> Touchez la photo pour placer le point 1
                   </>
                 )}
               </div>
             </div>
-          )}
-
-          {scene && (
-            <fieldset className="replacement-choice">
-              <legend>Est-ce qu’on remplace un objet déjà présent ?</legend>
-              <div>
-                <label className={!replaceExisting ? "selected" : ""}>
-                  <input
-                    type="radio"
-                    name="replacement"
-                    checked={!replaceExisting}
-                    onChange={() => setReplaceExisting(false)}
-                  />
-                  <span>
-                    <strong>Non, ajouter l’objet</strong>
-                    <small>L’espace choisi est libre.</small>
-                  </span>
-                </label>
-                <label className={replaceExisting ? "selected" : ""}>
-                  <input
-                    type="radio"
-                    name="replacement"
-                    checked={replaceExisting}
-                    onChange={() => setReplaceExisting(true)}
-                  />
-                  <span>
-                    <strong>Oui, remplacer l’objet</strong>
-                    <small>Le point rouge vise l’objet à supprimer.</small>
-                  </span>
-                </label>
-              </div>
-            </fieldset>
           )}
 
           <div className="simple-demo-actions">
@@ -571,7 +790,7 @@ export function SimpleDemoStudio() {
             <button
               type="button"
               className="simple-demo-primary"
-              disabled={busy || !scene || !point}
+              disabled={busy || !scene || !allPointsPlaced}
               onClick={() => void generate()}
             >
               {busy ? (
@@ -593,7 +812,7 @@ export function SimpleDemoStudio() {
               <h2>Votre visualisation</h2>
               <p>
                 {render?.status === "processing"
-                  ? "GPT Image 2 intègre votre objet…"
+                  ? "GPT Image 2 intègre vos objets…"
                   : "Comparez le lieu original et le résultat."}
               </p>
             </div>
@@ -639,6 +858,17 @@ export function SimpleDemoStudio() {
       )}
     </section>
   );
+}
+
+function createObject(id: number): DemoObject {
+  return {
+    key: `object-${id}`,
+    file: null,
+    preview: "",
+    dimensionAxis: "height",
+    dimensionValue: "",
+    product: null,
+  };
 }
 
 async function readImageSize(file: File): Promise<{

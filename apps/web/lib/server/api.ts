@@ -653,7 +653,7 @@ async function handleScenes(
         ...intentMetadata,
         needsClarification: true,
         rationale:
-          "L’objet à remplacer n’a pas pu être localisé avec certitude.",
+          "L’élément présent n’a pas pu être localisé avec certitude.",
       });
     }
     const segmented = await selectSegmentationProvider().segment({
@@ -995,6 +995,14 @@ async function handleRenders(
       ) {
         throw new AuthError("Produit non autorisé", 403);
       }
+      if (
+        tenant.publicProductId &&
+        input.simplePlacements?.some(
+          (item) => item.productId !== tenant.publicProductId,
+        )
+      ) {
+        throw new AuthError("Produit non autorisé", 403);
+      }
       const ownedScene = await c.scenes.findOne({
         id: input.placement.sceneId,
         organizationId: tenant.organizationId,
@@ -1019,7 +1027,7 @@ async function handleRenders(
       });
       if (!segmentation) {
         throw new ApiInputError(
-          "Le masque doit être confirmé avant le remplacement.",
+          "La zone sélectionnée doit être confirmée avant le rendu.",
         );
       }
       targetMaskAssetId = segmentation.maskAssetId;
