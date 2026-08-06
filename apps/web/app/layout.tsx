@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Cormorant_Garamond, Manrope } from "next/font/google";
 import Link from "next/link";
-import { Plus, ScanLine } from "lucide-react";
+import { ScanLine } from "lucide-react";
 import { serverConfig } from "@/lib/server/config";
 import "./globals.css";
 
@@ -42,10 +42,6 @@ export default function RootLayout({
               <Link className="simple-nav-link" href="/">
                 <ScanLine size={18} />
                 <span>Visualiser</span>
-              </Link>
-              <Link className="button simple-add-button" href="/objet">
-                <Plus size={18} />
-                <span>Ajouter un objet</span>
               </Link>
             </nav>
           </div>

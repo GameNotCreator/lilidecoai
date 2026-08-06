@@ -22,8 +22,9 @@ Ouvrir :
 - administration : <http://localhost:3000/admin>
 - santé API : <http://localhost:3000/v1/health>
 
-Avec `DEMO_MODE=true`, un vase et un portefeuille de 12 crédits sont créés
-automatiquement dans MongoDB. Avec `AI_MOCK_MODE=true`, le pipeline complet
+Avec `DEMO_MODE=true`, un portefeuille de crédits de démonstration est créé
+automatiquement dans MongoDB. La démo ne présélectionne aucun produit : chaque
+visiteur envoie son propre objet. Avec `AI_MOCK_MODE=true`, le pipeline complet
 reste testable sans appel payant. Sans configuration Cloudinary en local, les images sont
 stockées en binaire dans MongoDB.
 
@@ -45,19 +46,18 @@ les routes Next.js de même origine sous `/v1/*`. Les collections MongoDB
 contiennent produits, scènes, rendus, utilisateurs, crédits, transactions,
 tentatives de rendu, analytics et audits.
 
-## Parcours MVP
+## Parcours de la démo
 
-1. Le marchand crée un produit, téléverse sa photo et ses dimensions.
-2. Le serveur produit un cutout normalisé.
-3. Le client téléverse sa pièce avec consentement.
-4. Il place un point rouge à l’endroit exact où le produit doit toucher le
-   meuble, puis choisit le type de support : table, étagère, niche, mur ou sol.
-5. Le modèle de vision conserve ce point et adapte l’échelle, la perspective et
-   la lumière ; un placement local conserve le point si l’API est indisponible.
-6. Next.js crée une composition unique et un masque qui protège le produit.
-7. Gemini Flash produit l’aperçu et Gemini Pro le rendu final ; OpenAI reste un
-   secours explicitement désactivé par défaut.
-8. Un crédit est débité uniquement après un rendu réussi.
+1. Le visiteur téléverse la photo de l’objet à placer.
+2. Il choisit `Largeur` ou `Hauteur` et indique cette dimension en centimètres.
+3. Il téléverse la photo du lieu, prise à au moins 1,5 mètre.
+4. Il place un point rouge dans l’image ; les coordonnées pixel et normalisées
+   sont conservées.
+5. Il choisit si l’objet doit être ajouté ou remplacer l’objet déjà présent au
+   point indiqué.
+6. Next.js transmet la photo du lieu en image 1, l’objet en image 2 et le prompt
+   de placement à `gpt-image-2` via l’API d’édition OpenAI.
+7. Un crédit est débité uniquement après un rendu réussi.
 
 ## Vérification
 
@@ -76,8 +76,8 @@ npm.cmd run test:e2e
    situés hors de ce dossier.
 3. Ajouter `MONGODB_URI`, `MONGODB_DB`, `APP_SESSION_SECRET`, `CRON_SECRET` et
    la variable `CLOUDINARY_URL` copiée depuis Cloudinary.
-4. Ajouter `GOOGLE_AI_API_KEY`, puis mettre `AI_MOCK_MODE=false`. Garder
-   `OPENAI_IMAGE_ENABLED=false` tant que le secours OpenAI n’est pas souhaité.
+4. Ajouter `OPENAI_API_KEY`, définir `OPENAI_MODEL=gpt-image-2`, puis mettre
+   `AI_MOCK_MODE=false`. Aucune clé ne doit être préfixée par `NEXT_PUBLIC_`.
 5. Déployer, puis vérifier `/v1/health`.
 
 Les détails sont dans [docs/deployment.md](docs/deployment.md).

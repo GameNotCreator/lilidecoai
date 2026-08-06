@@ -56,6 +56,7 @@ import {
 } from "./types";
 
 const productCreateSchema = z.object({
+  temporary: z.boolean().default(false),
   name: z.string().trim().min(2).max(120),
   description: z.string().trim().max(1000).default(""),
   objectType: z
@@ -110,8 +111,19 @@ export async function dispatchApi(
         authentication: serverConfig.demoMode ? "demo" : "required",
         runtime: "nextjs-vercel",
         imagePipeline: {
-          mode: serverConfig.imagePipelineMode,
+          mode: "simple_point",
           mockMode: serverConfig.aiMockMode,
+          activeDemoProvider: serverConfig.aiMockMode
+            ? "mock"
+            : serverConfig.openaiApiKey
+              ? "openai"
+              : "unavailable",
+          activeDemoModel: serverConfig.aiMockMode
+            ? "mock"
+            : serverConfig.openaiApiKey
+              ? "gpt-image-2"
+              : null,
+          openAIConfigured: Boolean(serverConfig.openaiApiKey),
           googleConfigured: Boolean(serverConfig.googleApiKey),
           previewModel: serverConfig.googlePreviewImageModel,
           finalModel: serverConfig.googleFinalImageModel,
@@ -324,6 +336,13 @@ async function handleProducts(
       status: "draft",
       createdAt: now,
       updatedAt: now,
+      ...(body.temporary
+        ? {
+            expiresAt: new Date(
+              Date.now() + serverConfig.roomRetentionHours * 60 * 60 * 1000,
+            ),
+          }
+        : {}),
     };
     await c.products.insertOne(product);
     return Response.json(productResponse(product), { status: 201 });
@@ -379,6 +398,7 @@ async function handleProducts(
       kind: viewType === "front" ? "product" : "product_view",
       buffer: normalized,
       contentType: "image/webp",
+      ...(product.expiresAt ? { expiresAt: product.expiresAt } : {}),
     });
     const previousView = currentViews.find((view) => view.type === viewType);
     if (previousView?.assetId) await deleteAsset(db, previousView.assetId);
@@ -435,6 +455,7 @@ async function handleProducts(
       kind: "cutout",
       buffer: cutout,
       contentType: "image/webp",
+      ...(product.expiresAt ? { expiresAt: product.expiresAt } : {}),
     });
     if (product.cutoutAssetId) await deleteAsset(db, product.cutoutAssetId);
     await c.products.updateOne(
@@ -986,7 +1007,7 @@ async function handleRenders(
       y: input.placement.yNormalized as number,
     };
     let targetMaskAssetId: string | undefined;
-    if (input.mode === "replace") {
+    if (input.mode === "replace" && input.workflow !== "simple_point") {
       const segmentation = await c.segmentations.findOne({
         id: input.targetMaskId,
         organizationId: tenant.organizationId,

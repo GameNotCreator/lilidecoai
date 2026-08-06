@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { PROMPT_VERSION, PromptBuilder } from "../src/index";
+import {
+  buildSimplePointPrompt,
+  PROMPT_VERSION,
+  PromptBuilder,
+} from "../src/index";
 
 describe("PromptBuilder", () => {
   it("assigns explicit image roles and encodes hard replacement constraints", () => {
@@ -54,5 +58,22 @@ describe("PromptBuilder", () => {
       preserveBackground: true,
     }).text;
     expect(text).toContain("Only one product angle is available");
+  });
+
+  it("builds the exact point and dimension instruction for the simple flow", () => {
+    const text = buildSimplePointPrompt({
+      mode: "replace",
+      objectLabel: "le vase",
+      point: { x: 0.5, y: 0.25 },
+      imageWidth: 1200,
+      imageHeight: 800,
+      dimension: { axis: "height", valueCm: 42 },
+    });
+
+    expect(text).toContain("Remplace");
+    expect(text).toContain("x=600 px, y=200 px");
+    expect(text).toContain("hauteur réelle de 42 cm");
+    expect(text).toContain("L’image 1 est la photo du lieu");
+    expect(text).toContain("L’image 2 est la référence exacte");
   });
 });

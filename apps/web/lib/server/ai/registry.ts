@@ -34,7 +34,45 @@ export interface SelectedEditingProvider {
 export function selectEditingProvider(
   mode: RenderMode,
   outputQuality: OutputQuality,
+  preferredProvider?: "openai" | "google",
 ): SelectedEditingProvider {
+  if (serverConfig.aiMockMode) {
+    return {
+      route: {
+        provider: "mock",
+        modelRole: "mock",
+        degradedMode: false,
+        reason: "AI_MOCK_MODE is enabled",
+      },
+      provider: new MockImageProvider(),
+    };
+  }
+  if (preferredProvider === "openai" && serverConfig.openaiApiKey) {
+    return {
+      route: {
+        provider: "openai",
+        modelRole: "final",
+        degradedMode: false,
+        reason: "The simple point workflow explicitly requires GPT Image 2",
+      },
+      provider: new OpenAIImageProvider("gpt-image-2"),
+    };
+  }
+  if (preferredProvider === "google" && serverConfig.googleApiKey) {
+    return {
+      route: {
+        provider: "google",
+        modelRole: outputQuality === "preview" ? "preview" : "final",
+        degradedMode: false,
+        reason: "Google was explicitly requested",
+      },
+      provider: new GoogleImageProvider(
+        outputQuality === "preview"
+          ? serverConfig.googlePreviewImageModel
+          : serverConfig.googleFinalImageModel,
+      ),
+    };
+  }
   const route = routeImageProvider(
     { mode, outputQuality },
     {

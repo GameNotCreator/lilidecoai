@@ -44,19 +44,15 @@ APP_SESSION_SECRET
 CRON_SECRET
 DEMO_MODE=false
 CLOUDINARY_URL
-GOOGLE_AI_API_KEY
-GOOGLE_PREVIEW_IMAGE_MODEL=gemini-3.1-flash-image
-GOOGLE_FINAL_IMAGE_MODEL=gemini-3-pro-image
-IMAGE_PIPELINE_MODE=google_hybrid
-OPENAI_IMAGE_ENABLED=false
+OPENAI_API_KEY
+OPENAI_MODEL=gpt-image-2
+OPENAI_IMAGE_ENABLED=true
 AI_MOCK_MODE=false
 ```
 
 Optionnelles :
 
 ```text
-OPENAI_API_KEY
-OPENAI_MODEL=gpt-image-2
 OPENAI_VISION_MODEL=gpt-5.6-sol
 OPENAI_SERVICE_TIER=fast
 OPENAI_QUALITY=high
@@ -96,7 +92,8 @@ Smoke tests :
 3. créer et préparer un produit, puis confirmer sa présence dans Cloudinary ;
 4. envoyer une pièce puis produire un rendu local ;
 5. rejouer la même clé d’idempotence et vérifier l’absence de double débit ;
-6. valider Gemini en Preview Vercel, puis en Production ;
+6. valider un ajout et un remplacement avec GPT Image 2 en Preview Vercel,
+   puis en Production ;
 7. appeler `/api/cron/purge` avec `Authorization: Bearer $CRON_SECRET`.
 
 Avant le premier déploiement de cette version, inspecter la migration avec

@@ -47,4 +47,20 @@ describe("render request schema", () => {
       }).mode,
     ).toBe("replace");
   });
+
+  it("accepts a point-only replacement in the simple demo workflow", () => {
+    const parsed = renderRequestSchema.parse({
+      ...base,
+      workflow: "simple_point",
+      mode: "replace",
+      placementPoint: { x: 0.4, y: 0.8 },
+      targetPoint: { x: 0.4, y: 0.8 },
+      dimensionReference: { axis: "height", valueCm: 42 },
+    });
+    expect(parsed.targetMaskId).toBeUndefined();
+    expect(parsed.dimensionReference).toEqual({
+      axis: "height",
+      valueCm: 42,
+    });
+  });
 });

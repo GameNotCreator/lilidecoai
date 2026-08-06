@@ -70,6 +70,7 @@ export interface ProductDocument {
   };
   createdAt: Date;
   updatedAt: Date;
+  expiresAt?: Date;
 }
 
 export interface SceneDocument {

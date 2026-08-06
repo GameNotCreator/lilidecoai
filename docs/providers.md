@@ -1,20 +1,16 @@
 # Fournisseurs d’image
 
-## Politique active
+## Politique active de la démo
 
-Le pipeline est piloté par `IMAGE_PIPELINE_MODE=google_hybrid` et reste
-entièrement côté serveur.
+Le parcours public `simple_point` reste entièrement côté serveur.
 
 | Étape                                    | Fournisseur | Modèle par défaut        |
 | ---------------------------------------- | ----------- | ------------------------ |
-| Analyse, segmentation assistée et aperçu | Google      | `gemini-3.1-flash-image` |
-| Rendu final et remplacement              | Google      | `gemini-3-pro-image`     |
-| Secours explicite uniquement             | OpenAI      | `gpt-image-2`            |
+| Ajout ou remplacement depuis un point    | OpenAI      | `gpt-image-2`            |
 | Tests et développement sans clé          | Mock local  | `mock-image-v2`          |
 
-OpenAI est conservé derrière les interfaces communes, mais n’est jamais choisi
-tant que `OPENAI_IMAGE_ENABLED` ne vaut pas explicitement `true`. Il n’existe
-aucune intégration Black Forest Labs dans cette version.
+La démo choisit explicitement OpenAI, même si les anciens fournisseurs restent
+derrière les interfaces communes pour les parcours marchands existants.
 
 Les interfaces `ImageGenerationProvider`, `ImageEditingProvider`,
 `SegmentationProvider` et `SceneAnalysisProvider` se trouvent dans
@@ -24,35 +20,22 @@ erreur normalisée et nombre de tentatives.
 
 ## Pipeline
 
-1. La pièce originale, le point normalisé et les dimensions sont analysés.
-2. En mode remplacement, un masque est proposé puis doit être corrigé ou
-   confirmé dans l’interface. Aucun rendu ne part au premier clic.
-3. La géométrie déterministe calcule la boîte, le contact et la taille depuis
-   la perspective, la surface et la calibration disponible.
-4. Le `PromptBuilder` versionné attribue un rôle à chaque référence et encode
-   les contraintes de fidélité, caméra, perspective, éclairage et occlusion.
-5. Google Flash génère les aperçus. Google Pro utilise la pièce originale et
-   toutes les vues produit validées pour le rendu final.
-6. Le validateur note onze critères. Une seule correction ciblée est autorisée,
-   uniquement avec une raison précise et dans le plafond de coût.
-
-Le remplacement reconstruit d’abord la zone confirmée, puis réanalyse la scène
-nettoyée. L’arrière-plan hors masque est préservé. En mode insertion, un
-obstacle détecté au point produit une demande claire de passer en mode
-remplacement plutôt que de superposer deux objets.
+1. L’image 1 est la photo originale du lieu ; l’image 2 est l’objet fourni.
+2. Le clic est converti en coordonnées pixel et normalisées.
+3. Le choix de l’utilisateur fixe l’opération `Place` ou `Remplace` ; aucune
+   segmentation automatique n’est imposée dans cette démo.
+4. `buildSimplePointPrompt` ajoute le point, la largeur ou la hauteur réelle et
+   les contraintes de préservation de la photo.
+5. L’endpoint `/v1/images/edits` exécute une seule édition avec
+   `model=gpt-image-2`. Le modèle reçoit les images en haute fidélité par
+   défaut, conformément à la documentation OpenAI.
 
 ## Variables serveur
 
 ```text
-GOOGLE_AI_API_KEY=
-# GEMINI_API_KEY est accepté comme alias de transition
-GOOGLE_PREVIEW_IMAGE_MODEL=gemini-3.1-flash-image
-GOOGLE_FINAL_IMAGE_MODEL=gemini-3-pro-image
-GOOGLE_IMAGE_TIMEOUT_MS=240000
-GOOGLE_IMAGE_MAX_RETRIES=1
-GOOGLE_IMAGE_MAX_COST_USD=0.45
-IMAGE_PIPELINE_MODE=google_hybrid
-OPENAI_IMAGE_ENABLED=false
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-image-2
+OPENAI_IMAGE_ENABLED=true
 AI_MOCK_MODE=true
 ```
 
@@ -64,10 +47,9 @@ distants ne sont ni envoyés au navigateur, ni stockés en base, ni journalisés
 
 `AI_MOCK_MODE=true` force les fournisseurs locaux et empêche tout appel payant,
 même si une clé existe. Les tests unitaires et E2E utilisent ce mode. Le mock
-couvre l’analyse de scène, la segmentation, l’édition et la génération.
+couvre l’édition et le parcours complet sans appel OpenAI.
 
 ## Documentation officielle vérifiée
 
-- [Génération d’images Gemini](https://ai.google.dev/gemini-api/docs/image-generation)
-- [API REST `generateContent`](https://ai.google.dev/api/generate-content)
 - [Génération et édition d’images OpenAI](https://developers.openai.com/api/docs/guides/image-generation)
+- [Modèle GPT Image 2](https://developers.openai.com/api/docs/models/gpt-image-2)

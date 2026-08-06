@@ -7,6 +7,40 @@ import type {
 } from "./index";
 
 export const PROMPT_VERSION = "placement-v2.0.0";
+export const SIMPLE_POINT_PROMPT_VERSION = "simple-point-v1.0.0";
+
+export interface SimplePointPromptInput {
+  mode: RenderMode;
+  objectLabel: string;
+  point: NormalizedPoint;
+  imageWidth: number;
+  imageHeight: number;
+  dimension: {
+    axis: "width" | "height";
+    valueCm: number;
+  };
+}
+
+export function buildSimplePointPrompt(input: SimplePointPromptInput): string {
+  const xPx = Math.round(input.point.x * input.imageWidth);
+  const yPx = Math.round(input.point.y * input.imageHeight);
+  const axis = input.dimension.axis === "height" ? "hauteur" : "largeur";
+  const point = `x=${xPx} px, y=${yPx} px (x=${input.point.x.toFixed(4)}, y=${input.point.y.toFixed(4)} en coordonnées normalisées)`;
+  const operation =
+    input.mode === "replace"
+      ? `Remplace l’objet actuellement situé à la position du point ${point} dans l’image 1 par ${input.objectLabel} fourni dans l’image 2`
+      : `Place ${input.objectLabel} fourni dans l’image 2 à la position du point ${point} dans l’image 1`;
+
+  return [
+    `${operation}, sachant que cet objet a une ${axis} réelle de ${input.dimension.valueCm} cm.`,
+    "L’image 1 est la photo du lieu à conserver. L’image 2 est la référence exacte de l’objet à placer.",
+    input.mode === "replace"
+      ? "Supprime complètement l’objet existant visé avant d’intégrer le nouvel objet au même emplacement."
+      : "N’efface aucun objet existant : ajoute uniquement le nouvel objet à l’emplacement indiqué.",
+    "Adapte l’échelle à la perspective, pose l’objet physiquement sur la surface au point indiqué et conserve exactement sa forme, ses couleurs et ses détails.",
+    "Préserve le cadrage, l’architecture et tout le reste de la photo. Harmonise seulement la perspective, la lumière, les ombres et les éventuelles occlusions pour obtenir une photographie réaliste, sans doublon.",
+  ].join("\n");
+}
 
 export interface PromptBuilderInput {
   mode: RenderMode;

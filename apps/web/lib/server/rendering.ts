@@ -2,7 +2,9 @@ import "server-only";
 
 import { selectOutputSize, validatePlacementFit } from "@lili/geometry";
 import {
+  buildSimplePointPrompt,
   PROMPT_VERSION,
+  SIMPLE_POINT_PROMPT_VERSION,
   PromptBuilder,
   type ImageEditingRequest,
   type ImageReference,
@@ -92,6 +94,7 @@ interface SceneInspection {
 }
 
 interface RenderInput {
+  workflow?: "standard" | "simple_point";
   placement: PlacementInput;
   idempotencyKey: string;
   quality?: string;
@@ -109,6 +112,10 @@ interface RenderInput {
   outputQuality?: OutputQuality;
   preserveBackground?: boolean;
   userInstructions?: string;
+  dimensionReference?: {
+    axis: "width" | "height";
+    valueCm: number;
+  };
 }
 
 interface ResolvedRenderInput extends Omit<RenderInput, "placement"> {
@@ -171,6 +178,31 @@ export async function createRender(
     throw new RenderError("Scène ou produit introuvable", 404);
   }
 
+  const simplePointWorkflow = input.workflow === "simple_point";
+  if (simplePointWorkflow) {
+    if (!input.dimensionReference) {
+      throw new RenderError("Dimension réelle de l’objet manquante", 422);
+    }
+    if (!serverConfig.aiMockMode && !serverConfig.openaiApiKey) {
+      throw new RenderError(
+        "La clé OPENAI_API_KEY est requise pour générer avec GPT Image 2.",
+        503,
+      );
+    }
+    const point = input.placementPoint ?? {
+      x: Number(input.placement.xNormalized ?? 0.5),
+      y: Number(input.placement.yNormalized ?? 0.7),
+    };
+    input.userInstructions = buildSimplePointPrompt({
+      mode: input.mode ?? "insert",
+      objectLabel: `l’objet « ${product.name} »`,
+      point,
+      imageWidth: scene.widthPx,
+      imageHeight: scene.heightPx,
+      dimension: input.dimensionReference,
+    });
+  }
+
   const renderId = crypto.randomUUID();
   const now = new Date();
   const requestedSize = selectOutputSize(scene.widthPx, scene.heightPx);
@@ -180,7 +212,11 @@ export async function createRender(
     x: Number(input.placement.xNormalized ?? 0.5),
     y: Number(input.placement.yNormalized ?? 0.7),
   };
-  const selectedProvider = selectEditingProvider(mode, outputQuality);
+  const selectedProvider = selectEditingProvider(
+    mode,
+    outputQuality,
+    simplePointWorkflow ? "openai" : undefined,
+  );
   const render: RenderDocument = {
     id: renderId,
     organizationId,
@@ -227,7 +263,9 @@ export async function createRender(
     ],
     attemptCount: 0,
     estimatedCostUsd: 0,
-    promptVersion: PROMPT_VERSION,
+    promptVersion: simplePointWorkflow
+      ? SIMPLE_POINT_PROMPT_VERSION
+      : PROMPT_VERSION,
     preserveBackground: input.preserveBackground ?? true,
     userInstructions: input.userInstructions ?? "",
     degradedMode: selectedProvider.route.degradedMode,
@@ -244,6 +282,55 @@ export async function createRender(
   await c.renders.insertOne(render);
 
   const startedAt = Date.now();
+  if (simplePointWorkflow) {
+    if (!serverConfig.aiMockMode && deferTask) {
+      const update = {
+        provider: selectedProvider.route.provider,
+        model: selectedProvider.provider.model,
+        pipelineState: "generating_final" as const,
+        placement: {
+          ...input.placement,
+          pipelineStage: "generating_final",
+        },
+        updatedAt: new Date(),
+      };
+      await c.renders.updateOne({ id: renderId }, { $set: update });
+      deferTask(async () => {
+        try {
+          await runSimplePointRender(
+            db,
+            organizationId,
+            render,
+            scene,
+            product,
+            input,
+            requestedSize,
+            startedAt,
+          );
+        } catch (error) {
+          await recordRenderFailure(
+            db,
+            organizationId,
+            renderId,
+            startedAt,
+            error,
+          );
+          console.error("Deferred GPT Image 2 render failed", error);
+        }
+      });
+      return renderResponse({ ...render, ...update });
+    }
+    return runSimplePointRender(
+      db,
+      organizationId,
+      render,
+      scene,
+      product,
+      input,
+      requestedSize,
+      startedAt,
+    );
+  }
   if (paidImageProviderConfigured() && deferTask) {
     const placement = {
       ...input.placement,
@@ -314,6 +401,148 @@ export async function createRender(
     await recordRenderFailure(db, organizationId, renderId, startedAt, error);
     throw error;
   }
+}
+
+async function runSimplePointRender(
+  db: Db,
+  organizationId: string,
+  render: RenderDocument,
+  scene: SceneDocument,
+  product: ProductDocument,
+  input: RenderInput,
+  requestedSize: RenderDocument["requestedSize"],
+  startedAt: number,
+) {
+  const c = collections(db);
+  const sourceAsset = await readAsset(db, scene.assetId);
+  if (!sourceAsset) {
+    throw new RenderError("Photo du lieu introuvable", 404);
+  }
+  const productReferences = await loadProductReferences(db, product);
+  const productReference = productReferences[0];
+  if (!productReference) {
+    throw new RenderError("Photo de l’objet introuvable", 404);
+  }
+
+  const mode = input.mode ?? "insert";
+  const { provider, route } = selectEditingProvider(
+    mode,
+    "final",
+    "openai",
+  );
+  const roomReference: ImageReference = {
+    data: new Uint8Array(sourceAsset.buffer),
+    mimeType: sourceAsset.asset.contentType as
+      | "image/jpeg"
+      | "image/png"
+      | "image/webp",
+    role: "room_original",
+  };
+  const prompt = input.userInstructions?.trim();
+  if (!prompt) throw new RenderError("Prompt de placement manquant", 422);
+
+  await c.renders.updateOne(
+    { id: render.id },
+    {
+      $set: {
+        status: "processing",
+        pipelineState: "generating_final",
+        provider: route.provider,
+        model: provider.model,
+        placement: {
+          ...input.placement,
+          operation: mode === "replace" ? "replace" : "place",
+          pipelineStage: "generating_final",
+        },
+        updatedAt: new Date(),
+      },
+    },
+  );
+
+  const result = await provider.edit({
+    scene: roomReference.data,
+    productCutout: productReference.data,
+    composition: roomReference.data,
+    protectionMask: new Uint8Array(),
+    prompt,
+    quality: "high",
+    size: requestedSize,
+    lighting: {
+      direction: "automatic",
+      temperature: "neutral",
+      hardness: "balanced",
+    },
+    placement: {
+      x: Number(input.placement.xNormalized ?? 0.5),
+      y: Number(input.placement.yNormalized ?? 0.7),
+      operation: mode === "replace" ? "replace" : "place",
+    },
+    idempotencyKey: input.idempotencyKey,
+    references: [roomReference, productReference],
+    mode,
+    outputQuality: "final",
+    preserveBackground: true,
+  });
+  await recordProviderAttempt(
+    db,
+    render,
+    result,
+    "generating_final",
+    SIMPLE_POINT_PROMPT_VERSION,
+    route.degradedMode,
+    1,
+  );
+  if (result.status === "failed" || !result.images[0]) {
+    throw new RenderError(
+      result.error?.message ?? "GPT Image 2 n’a retourné aucune image.",
+      result.error?.httpStatus ?? 502,
+    );
+  }
+
+  const finalBuffer = await sharp(Buffer.from(result.images[0].data))
+    .webp({ quality: 94 })
+    .toBuffer();
+  const resultAsset = await storeAsset(db, {
+    organizationId,
+    kind: "render",
+    buffer: finalBuffer,
+    contentType: "image/webp",
+    expiresAt: scene.expiresAt,
+  });
+  const creditCharged = await captureCredit(
+    db,
+    organizationId,
+    `render:${render.id}`,
+  );
+  const update = {
+    status: "succeeded" as const,
+    pipelineState: "completed" as const,
+    provider: result.provider,
+    model: result.model,
+    resultAssetId: resultAsset.id,
+    creditCharged,
+    qualityScore: null,
+    qualityChecks: [],
+    estimatedCostUsd: result.estimatedCostUsd,
+    attemptCount: result.attemptCount,
+    latencyMs: Date.now() - startedAt,
+    promptVersion: SIMPLE_POINT_PROMPT_VERSION,
+    modelChain: [
+      {
+        provider: result.provider,
+        model: result.model,
+        role: "simple_point",
+      },
+    ],
+    placement: {
+      ...input.placement,
+      operation: mode === "replace" ? "replace" : "place",
+      pipelineStage: "complete",
+    },
+    updatedAt: new Date(),
+  };
+  await c.renders.updateOne({ id: render.id }, { $set: update });
+  return renderResponse({ ...render, ...update });
 }
 
 async function runLayeredRender(

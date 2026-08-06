@@ -79,6 +79,7 @@ const legacySurfaceSchema = z.enum([
 
 export const renderRequestSchema = z
   .object({
+    workflow: z.enum(["standard", "simple_point"]).default("standard"),
     mode: renderModeSchema.default("insert"),
     placement: z.object({
       sceneId: z.string().uuid(),
@@ -104,6 +105,12 @@ export const renderRequestSchema = z
     outputQuality: outputQualitySchema.default("final"),
     preserveBackground: z.boolean().default(true),
     userInstructions: z.string().trim().max(1_500).default(""),
+    dimensionReference: z
+      .object({
+        axis: z.enum(["width", "height"]),
+        valueCm: z.number().finite().positive().max(1_500),
+      })
+      .optional(),
     idempotencyKey: z.string().trim().min(1).max(160),
     quality: z.enum(["low", "medium", "high"]).optional(),
   })
@@ -124,7 +131,14 @@ export const renderRequestSchema = z
         path: ["placementPoint"],
       });
     }
-    if (value.mode === "replace") {
+    if (value.workflow === "simple_point" && !value.dimensionReference) {
+      context.addIssue({
+        code: "custom",
+        message: "Indiquez la dimension réelle de l’objet.",
+        path: ["dimensionReference"],
+      });
+    }
+    if (value.mode === "replace" && value.workflow !== "simple_point") {
       if (!value.targetPoint) {
         context.addIssue({
           code: "custom",

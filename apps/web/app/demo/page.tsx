@@ -5,11 +5,6 @@ export const metadata: Metadata = {
   title: "Démonstration",
 };
 
-export default async function DemoPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ product?: string }>;
-}) {
-  const { product } = await searchParams;
-  return <DemoExperience productId={product} />;
+export default function DemoPage() {
+  return <DemoExperience />;
 }
