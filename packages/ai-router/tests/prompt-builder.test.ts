@@ -68,14 +68,22 @@ describe("PromptBuilder", () => {
           point: { x: 0.5, y: 0.25 },
           imageWidth: 1200,
           imageHeight: 800,
-          dimensionsCm: { height: 42, length: 24 },
+          dimensions: {
+            mode: "height_length",
+            heightCm: 42,
+            lengthCm: 24,
+          },
         },
         {
           objectLabel: "la lampe",
           point: { x: 0.75, y: 0.5 },
           imageWidth: 1200,
           imageHeight: 800,
-          dimensionsCm: { height: 55, length: 30 },
+          dimensions: {
+            mode: "length_width",
+            lengthCm: 30,
+            widthCm: 18,
+          },
         },
       ],
     });
@@ -86,6 +94,7 @@ describe("PromptBuilder", () => {
     expect(text).toContain("hauteur de 42 cm et une longueur de 24 cm");
     expect(text).toContain("Place la lampe");
     expect(text).toContain("position du point 2");
+    expect(text).toContain("longueur de 30 cm et une largeur de 18 cm");
     expect(text).toContain("L’image 1 est la photo du lieu");
     expect(text).toContain("L’image 3 est la référence exacte");
     expect(text).toContain("exactement 2 nouveaux objets");
@@ -97,7 +106,11 @@ describe("PromptBuilder", () => {
       point: { x: 0.5, y: 0.5 },
       imageWidth: 1000,
       imageHeight: 1000,
-      dimensionsCm: { height: 20, length: 10 },
+      dimensions: {
+        mode: "height_length" as const,
+        heightCm: 20,
+        lengthCm: 10,
+      },
     };
     expect(() =>
       buildSimplePointPrompt({ objects: [object, object, object, object] }),

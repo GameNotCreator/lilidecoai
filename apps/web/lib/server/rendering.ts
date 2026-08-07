@@ -119,20 +119,22 @@ interface RenderInput {
   simplePlacements?: Array<{
     productId: string;
     placementPoint: { x: number; y: number };
-    dimensionReference: {
+    dimensionPair?: SimpleDimensionPair;
+    dimensionReference?: {
       axis: "width" | "height";
       valueCm: number;
     };
   }>;
 }
 
+type SimpleDimensionPair =
+  | { mode: "height_length"; heightCm: number; lengthCm: number }
+  | { mode: "length_width"; lengthCm: number; widthCm: number };
+
 interface SimpleRenderObject {
   product: ProductDocument;
   placementPoint: { x: number; y: number };
-  dimensionReference: {
-    axis: "width" | "height";
-    valueCm: number;
-  };
+  dimensionPair: SimpleDimensionPair;
 }
 
 interface ResolvedRenderInput extends Omit<RenderInput, "placement"> {
@@ -247,7 +249,9 @@ export async function createRender(
       return {
         product: selectedProduct,
         placementPoint: item.placementPoint,
-        dimensionReference: item.dimensionReference,
+        dimensionPair:
+          item.dimensionPair ??
+          legacyDimensionPair(item.dimensionReference, selectedProduct),
       };
     });
     const firstSimpleObject = simpleObjects[0]!;
@@ -266,10 +270,7 @@ export async function createRender(
         point: item.placementPoint,
         imageWidth: scene.widthPx,
         imageHeight: scene.heightPx,
-        dimensionsCm: {
-          length: item.product.widthCm,
-          height: item.product.heightCm,
-        },
+        dimensions: item.dimensionPair,
       })),
     });
   }
@@ -475,6 +476,28 @@ export async function createRender(
     await recordRenderFailure(db, organizationId, renderId, startedAt, error);
     throw error;
   }
+}
+
+function legacyDimensionPair(
+  reference:
+    | { axis: "width" | "height"; valueCm: number }
+    | undefined,
+  product: ProductDocument,
+): SimpleDimensionPair {
+  if (!reference) {
+    throw new RenderError("Deux dimensions sont requises pour cet objet", 422);
+  }
+  return reference.axis === "height"
+    ? {
+        mode: "height_length",
+        heightCm: reference.valueCm,
+        lengthCm: product.widthCm,
+      }
+    : {
+        mode: "height_length",
+        heightCm: product.heightCm,
+        lengthCm: reference.valueCm,
+      };
 }
 
 async function runSimplePointRender(

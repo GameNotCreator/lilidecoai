@@ -20,7 +20,10 @@ import type { Render } from "@lili/types";
 import { api, establishGuestEditorSession, getRender } from "@/lib/api";
 import { prepareImageForUpload } from "@/lib/client-image";
 
-type DimensionAxis = "width" | "height";
+type DimensionMode = "height_length" | "length_width";
+type ObjectDimensionPair =
+  | { mode: "height_length"; heightCm: number; lengthCm: number }
+  | { mode: "length_width"; lengthCm: number; widthCm: number };
 type Step = 1 | 2 | 3;
 
 interface PreparedProduct {
@@ -36,8 +39,10 @@ interface DemoObject {
   key: string;
   file: File | null;
   preview: string;
-  dimensionAxis: DimensionAxis;
-  dimensionValue: string;
+  dimensionMode: DimensionMode;
+  heightValue: string;
+  lengthValue: string;
+  widthValue: string;
   product: PreparedProduct | null;
 }
 
@@ -69,10 +74,7 @@ export function SimpleDemoStudio() {
   const previewUrls = useRef(new Set<string>());
 
   const busy = Boolean(busyLabel && ready);
-  const objectsAreValid = objects.every((object) => {
-    const value = Number(object.dimensionValue);
-    return object.file && Number.isFinite(value) && value > 0;
-  });
+  const objectsAreValid = objects.every(isObjectReady);
   const allPointsPlaced = points.length === objects.length;
   const pixelPoints = useMemo(() => {
     if (!scene) return [];
@@ -209,14 +211,17 @@ export function SimpleDemoStudio() {
 
   async function prepareObject(object: DemoObject): Promise<PreparedProduct> {
     if (!object.file) throw new Error("L’image de l’objet est manquante.");
-    const dimensionCm = Number(object.dimensionValue);
+    const lengthCm = Number(object.lengthValue);
     const imageSize = await readImageSize(object.file);
     const ratio = imageSize.width / Math.max(1, imageSize.height);
     const heightCm =
-      object.dimensionAxis === "height" ? dimensionCm : dimensionCm / ratio;
-    const widthCm =
-      object.dimensionAxis === "width" ? dimensionCm : dimensionCm * ratio;
-    const depthCm = Math.max(0.1, Math.min(widthCm, heightCm) * 0.4);
+      object.dimensionMode === "height_length"
+        ? Number(object.heightValue)
+        : lengthCm / ratio;
+    const depthCm =
+      object.dimensionMode === "length_width"
+        ? Number(object.widthValue)
+        : Math.max(0.1, Math.min(lengthCm, heightCm) * 0.4);
     const name = objectName(object.file.name);
     const created = await api<PreparedProduct>("/v1/products", {
       method: "POST",
@@ -225,7 +230,7 @@ export function SimpleDemoStudio() {
         name,
         description: "Objet fourni par l’utilisateur pour cette visualisation.",
         objectType: "other",
-        widthCm: roundDimension(widthCm),
+        widthCm: roundDimension(lengthCm),
         heightCm: roundDimension(heightCm),
         depthCm: roundDimension(depthCm),
         material: "Matière visible sur la photo de référence",
@@ -304,10 +309,9 @@ export function SimpleDemoStudio() {
       setError("Ajoutez les images puis placez un point par objet.");
       return;
     }
-    const firstObject = objects[0];
     const firstProduct = products[0];
     const firstPoint = points[0];
-    if (!firstObject || !firstProduct || !firstPoint) return;
+    if (!firstProduct || !firstPoint) return;
 
     setError("");
     setBusyLabel("Lancement de GPT Image 2…");
@@ -315,10 +319,7 @@ export function SimpleDemoStudio() {
       const simplePlacements = objects.map((object, index) => ({
         productId: object.product!.id,
         placementPoint: points[index],
-        dimensionReference: {
-          axis: object.dimensionAxis,
-          valueCm: Number(object.dimensionValue),
-        },
+        dimensionPair: objectDimensionPair(object),
       }));
       const created = await api<Render>("/v1/renders/final", {
         method: "POST",
@@ -336,10 +337,6 @@ export function SimpleDemoStudio() {
           },
           placementPoint: firstPoint,
           surfaceType: "tabletop",
-          dimensionReference: {
-            axis: firstObject.dimensionAxis,
-            valueCm: Number(firstObject.dimensionValue),
-          },
           outputQuality: "final",
           preserveBackground: true,
           idempotencyKey: crypto.randomUUID(),
@@ -425,7 +422,7 @@ export function SimpleDemoStudio() {
 
           <div className="simple-objects-list">
             {objects.map((object, index) => {
-              const dimensionCm = Number(object.dimensionValue);
+              const objectReady = isObjectReady(object);
               return (
                 <article className="simple-object-entry" key={object.key}>
                   <div className="simple-object-entry-head">
@@ -504,79 +501,108 @@ export function SimpleDemoStudio() {
                       <div className="simple-field-label">
                         <Ruler size={19} />
                         <div>
-                          <strong>Dimension connue</strong>
-                          <span>
-                            Mesurez au point le plus long ou le plus haut.
-                          </span>
+                          <strong>Deux dimensions connues</strong>
+                          <span>Choisissez la paire que vous pouvez mesurer.</span>
                         </div>
                       </div>
                       <div
                         className="simple-segmented"
                         role="group"
-                        aria-label={`Dimension de l’objet ${index + 1}`}
+                        aria-label={`Dimensions de l’objet ${index + 1}`}
                       >
                         <button
                           type="button"
                           className={
-                            object.dimensionAxis === "width" ? "selected" : ""
+                            object.dimensionMode === "height_length"
+                              ? "selected"
+                              : ""
                           }
-                          aria-pressed={object.dimensionAxis === "width"}
+                          aria-pressed={
+                            object.dimensionMode === "height_length"
+                          }
                           onClick={() =>
                             updateObject(object.key, {
-                              dimensionAxis: "width",
+                              dimensionMode: "height_length",
                               product: null,
                             })
                           }
                         >
-                          Longueur
+                          Hauteur + longueur
                         </button>
                         <button
                           type="button"
                           className={
-                            object.dimensionAxis === "height" ? "selected" : ""
+                            object.dimensionMode === "length_width"
+                              ? "selected"
+                              : ""
                           }
-                          aria-pressed={object.dimensionAxis === "height"}
+                          aria-pressed={
+                            object.dimensionMode === "length_width"
+                          }
                           onClick={() =>
                             updateObject(object.key, {
-                              dimensionAxis: "height",
+                              dimensionMode: "length_width",
                               product: null,
                             })
                           }
                         >
-                          Hauteur
+                          Longueur + largeur
                         </button>
                       </div>
-                      <label className="simple-unit-input">
-                        <span>
-                          {object.dimensionAxis === "height"
-                            ? "Hauteur"
-                            : "Longueur"}
-                        </span>
-                        <div>
-                          <input
-                            type="number"
-                            inputMode="decimal"
-                            min="0.1"
-                            max="1500"
-                            step="0.1"
-                            value={object.dimensionValue}
-                            aria-label={`${
-                              object.dimensionAxis === "height"
-                                ? "Hauteur"
-                                : "Longueur"
-                            } de l’objet ${index + 1} en centimètres`}
-                            placeholder="Ex. 42"
-                            onChange={(event) =>
-                              updateObject(object.key, {
-                                dimensionValue: event.target.value,
-                                product: null,
-                              })
-                            }
-                          />
-                          <span>cm</span>
-                        </div>
-                      </label>
-                      {object.file && dimensionCm > 0 && (
+                      <div className="simple-size-inputs">
+                        {object.dimensionMode === "height_length" ? (
+                          <>
+                            <SizeInput
+                              label="Hauteur"
+                              objectNumber={index + 1}
+                              value={object.heightValue}
+                              onChange={(value) =>
+                                updateObject(object.key, {
+                                  heightValue: value,
+                                  product: null,
+                                })
+                              }
+                            />
+                            <SizeInput
+                              label="Longueur"
+                              objectNumber={index + 1}
+                              value={object.lengthValue}
+                              onChange={(value) =>
+                                updateObject(object.key, {
+                                  lengthValue: value,
+                                  product: null,
+                                })
+                              }
+                            />
+                          </>
+                        ) : (
+                          <>
+                            <SizeInput
+                              label="Longueur"
+                              objectNumber={index + 1}
+                              value={object.lengthValue}
+                              onChange={(value) =>
+                                updateObject(object.key, {
+                                  lengthValue: value,
+                                  product: null,
+                                })
+                              }
+                            />
+                            <SizeInput
+                              label="Largeur"
+                              objectNumber={index + 1}
+                              value={object.widthValue}
+                              onChange={(value) =>
+                                updateObject(object.key, {
+                                  widthValue: value,
+                                  product: null,
+                                })
+                              }
+                            />
+                          </>
+                        )}
+                      </div>
+                      {objectReady && (
                         <span className="simple-object-ready">
                           <Check size={15} /> Objet {index + 1} prêt
                         </span>
@@ -650,8 +676,7 @@ export function SimpleDemoStudio() {
                     {object.product?.name || `Objet ${index + 1}`}
                   </strong>
                   <small>
-                    {object.dimensionAxis === "height" ? "Hauteur" : "Longueur"}{" "}
-                    {object.dimensionValue} cm
+                    {dimensionPairSummary(object)}
                   </small>
                 </span>
                 {points[index] && <Check size={17} />}
@@ -865,10 +890,77 @@ function createObject(id: number): DemoObject {
     key: `object-${id}`,
     file: null,
     preview: "",
-    dimensionAxis: "height",
-    dimensionValue: "",
+    dimensionMode: "height_length",
+    heightValue: "",
+    lengthValue: "",
+    widthValue: "",
     product: null,
   };
+}
+
+function isObjectReady(object: DemoObject): boolean {
+  if (!object.file || !positiveDimension(object.lengthValue)) return false;
+  return object.dimensionMode === "height_length"
+    ? positiveDimension(object.heightValue)
+    : positiveDimension(object.widthValue);
+}
+
+function positiveDimension(value: string): boolean {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 && parsed <= 1_500;
+}
+
+function objectDimensionPair(object: DemoObject): ObjectDimensionPair {
+  return object.dimensionMode === "height_length"
+    ? {
+        mode: "height_length",
+        heightCm: Number(object.heightValue),
+        lengthCm: Number(object.lengthValue),
+      }
+    : {
+        mode: "length_width",
+        lengthCm: Number(object.lengthValue),
+        widthCm: Number(object.widthValue),
+      };
+}
+
+function dimensionPairSummary(object: DemoObject): string {
+  const dimensions = objectDimensionPair(object);
+  return dimensions.mode === "height_length"
+    ? `Hauteur ${dimensions.heightCm} cm · Longueur ${dimensions.lengthCm} cm`
+    : `Longueur ${dimensions.lengthCm} cm · Largeur ${dimensions.widthCm} cm`;
+}
+
+function SizeInput({
+  label,
+  objectNumber,
+  value,
+  onChange,
+}: {
+  label: "Hauteur" | "Longueur" | "Largeur";
+  objectNumber: number;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="simple-unit-input">
+      <span>{label}</span>
+      <div>
+        <input
+          type="number"
+          inputMode="decimal"
+          min="0.1"
+          max="1500"
+          step="0.1"
+          value={value}
+          aria-label={`${label} de l’objet ${objectNumber} en centimètres`}
+          placeholder="Ex. 42"
+          onChange={(event) => onChange(event.target.value)}
+        />
+        <span>cm</span>
+      </div>
+    </label>
+  );
 }
 
 async function readImageSize(file: File): Promise<{

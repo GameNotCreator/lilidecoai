@@ -231,6 +231,7 @@ test("a source photo over 4 MB is optimized before upload", async ({
     buffer: await productFixture(),
   });
   await page.getByLabel("Hauteur de l’objet 1 en centimètres").fill("42");
+  await page.getByLabel("Longueur de l’objet 1 en centimètres").fill("24");
   await page.getByRole("button", { name: "Continuer avec 1 objet" }).click();
   await expect(
     page.getByRole("heading", { name: /Ajoutez la photo du lieu/i }),
@@ -357,8 +358,11 @@ test("simple demo records the clicked coordinates and adds the object", async ({
     mimeType: "image/png",
     buffer: await productFixture(),
   });
-  await page.getByRole("button", { name: "Longueur" }).click();
+  await page
+    .getByRole("button", { name: "Longueur + largeur", exact: true })
+    .click();
   await page.getByLabel("Longueur de l’objet 1 en centimètres").fill("30");
+  await page.getByLabel("Largeur de l’objet 1 en centimètres").fill("18");
   await page.getByRole("button", { name: "Continuer avec 1 objet" }).click();
   await expect(page.getByText(/Reculez d’au moins 1,5 mètre/i)).toBeVisible({
     timeout: 60_000,
@@ -386,25 +390,26 @@ test("simple demo records the clicked coordinates and adds the object", async ({
     workflow: string;
     mode: string;
     placementPoint: { x: number; y: number };
-    dimensionReference: { axis: string; valueCm: number };
     simplePlacements: Array<{
       productId: string;
       placementPoint: { x: number; y: number };
-      dimensionReference: { axis: string; valueCm: number };
+      dimensionPair:
+        | { mode: "height_length"; heightCm: number; lengthCm: number }
+        | { mode: "length_width"; lengthCm: number; widthCm: number };
     }>;
   };
   expect(response.status()).toBe(201);
   expect(body).toMatchObject({
     workflow: "simple_point",
     mode: "insert",
-    dimensionReference: { axis: "width", valueCm: 30 },
   });
   expect(body.placementPoint.x).toBeGreaterThan(0);
   expect(body.placementPoint.y).toBeGreaterThan(0);
   expect(body.simplePlacements).toHaveLength(1);
-  expect(body.simplePlacements[0]?.dimensionReference).toEqual({
-    axis: "width",
-    valueCm: 30,
+  expect(body.simplePlacements[0]?.dimensionPair).toEqual({
+    mode: "length_width",
+    lengthCm: 30,
+    widthCm: 18,
   });
   await expect(
     page.getByRole("heading", { name: "Votre visualisation" }),
@@ -423,6 +428,7 @@ test("simple demo supports three numbered points and can reposition them", async
     buffer: await productFixture(),
   });
   await page.getByLabel("Hauteur de l’objet 1 en centimètres").fill("42");
+  await page.getByLabel("Longueur de l’objet 1 en centimètres").fill("24");
 
   await page.getByRole("button", { name: /Ajouter un objet/ }).click();
   await page.getByLabel("Image de l’objet 2").setInputFiles({
@@ -430,8 +436,12 @@ test("simple demo supports three numbered points and can reposition them", async
     mimeType: "image/png",
     buffer: await productFixture(),
   });
-  await page.getByRole("button", { name: "Longueur" }).nth(1).click();
+  await page
+    .getByRole("button", { name: "Longueur + largeur", exact: true })
+    .nth(1)
+    .click();
   await page.getByLabel("Longueur de l’objet 2 en centimètres").fill("28");
+  await page.getByLabel("Largeur de l’objet 2 en centimètres").fill("16");
 
   await page.getByRole("button", { name: /Ajouter un objet/ }).click();
   await page.getByLabel("Image de l’objet 3").setInputFiles({
@@ -440,6 +450,7 @@ test("simple demo supports three numbered points and can reposition them", async
     buffer: await productFixture(),
   });
   await page.getByLabel("Hauteur de l’objet 3 en centimètres").fill("36");
+  await page.getByLabel("Longueur de l’objet 3 en centimètres").fill("20");
   await expect(
     page.getByRole("button", { name: /Ajouter un objet/ }),
   ).toHaveCount(0);
@@ -486,7 +497,9 @@ test("simple demo supports three numbered points and can reposition them", async
     simplePlacements: Array<{
       productId: string;
       placementPoint: { x: number; y: number };
-      dimensionReference: { axis: string; valueCm: number };
+      dimensionPair:
+        | { mode: "height_length"; heightCm: number; lengthCm: number }
+        | { mode: "length_width"; lengthCm: number; widthCm: number };
     }>;
   };
   expect(response.status()).toBe(201);
@@ -496,11 +509,11 @@ test("simple demo supports three numbered points and can reposition them", async
   });
   expect(body.simplePlacements).toHaveLength(3);
   expect(
-    body.simplePlacements.map((placement) => placement.dimensionReference),
+    body.simplePlacements.map((placement) => placement.dimensionPair),
   ).toEqual([
-    { axis: "height", valueCm: 42 },
-    { axis: "width", valueCm: 28 },
-    { axis: "height", valueCm: 36 },
+    { mode: "height_length", heightCm: 42, lengthCm: 24 },
+    { mode: "length_width", lengthCm: 28, widthCm: 16 },
+    { mode: "height_length", heightCm: 36, lengthCm: 20 },
   ]);
   await expect(
     page.getByRole("heading", { name: "Votre visualisation" }),

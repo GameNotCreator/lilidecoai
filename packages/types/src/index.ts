@@ -40,15 +40,34 @@ export const normalizedPointSchema = z.object({
   x: z.number().finite().min(0).max(1),
   y: z.number().finite().min(0).max(1),
 });
+const dimensionValueCmSchema = z.number().finite().positive().max(1_500);
 const dimensionReferenceSchema = z.object({
   axis: z.enum(["width", "height"]),
-  valueCm: z.number().finite().positive().max(1_500),
+  valueCm: dimensionValueCmSchema,
 });
-const simplePlacementSchema = z.object({
-  productId: z.string().uuid(),
-  placementPoint: normalizedPointSchema,
-  dimensionReference: dimensionReferenceSchema,
-});
+export const dimensionPairSchema = z.discriminatedUnion("mode", [
+  z.object({
+    mode: z.literal("height_length"),
+    heightCm: dimensionValueCmSchema,
+    lengthCm: dimensionValueCmSchema,
+  }),
+  z.object({
+    mode: z.literal("length_width"),
+    lengthCm: dimensionValueCmSchema,
+    widthCm: dimensionValueCmSchema,
+  }),
+]);
+const simplePlacementSchema = z
+  .object({
+    productId: z.string().uuid(),
+    placementPoint: normalizedPointSchema,
+    dimensionPair: dimensionPairSchema.optional(),
+    dimensionReference: dimensionReferenceSchema.optional(),
+  })
+  .refine((value) => value.dimensionPair || value.dimensionReference, {
+    message: "Indiquez deux dimensions pour cet objet.",
+    path: ["dimensionPair"],
+  });
 export const dimensionsCmSchema = z.object({
   width: z.number().finite().positive().max(1_500),
   height: z.number().finite().positive().max(1_500),
@@ -280,6 +299,7 @@ export type PlacementMode = z.infer<typeof placementModeSchema>;
 export type RenderMode = z.infer<typeof renderModeSchema>;
 export type OutputQuality = z.infer<typeof outputQualitySchema>;
 export type SurfaceType = z.infer<typeof surfaceTypeSchema>;
+export type DimensionPair = z.infer<typeof dimensionPairSchema>;
 export type ProductViewType = z.infer<typeof productViewTypeSchema>;
 export type RenderRequest = z.infer<typeof renderRequestSchema>;
 export type PlacementType = z.infer<typeof placementTypeSchema>;

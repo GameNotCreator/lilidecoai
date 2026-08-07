@@ -14,10 +14,9 @@ export interface SimplePointObjectInput {
   point: NormalizedPoint;
   imageWidth: number;
   imageHeight: number;
-  dimensionsCm: {
-    length: number;
-    height: number;
-  };
+  dimensions:
+    | { mode: "height_length"; heightCm: number; lengthCm: number }
+    | { mode: "length_width"; lengthCm: number; widthCm: number };
 }
 
 export interface SimplePointPromptInput {
@@ -35,7 +34,11 @@ export function buildSimplePointPrompt(input: SimplePointPromptInput): string {
     const xPx = Math.round(object.point.x * object.imageWidth);
     const yPx = Math.round(object.point.y * object.imageHeight);
     const coordinates = `x=${xPx} px, y=${yPx} px (x=${object.point.x.toFixed(4)}, y=${object.point.y.toFixed(4)} en coordonnées normalisées)`;
-    return `Place ${object.objectLabel} fourni dans l’image ${imageNumber} à la position du point ${pointNumber} (${coordinates}), sachant que ${object.objectLabel} a une hauteur de ${object.dimensionsCm.height} cm et une longueur de ${object.dimensionsCm.length} cm.`;
+    const dimensions =
+      object.dimensions.mode === "height_length"
+        ? `une hauteur de ${object.dimensions.heightCm} cm et une longueur de ${object.dimensions.lengthCm} cm`
+        : `une longueur de ${object.dimensions.lengthCm} cm et une largeur de ${object.dimensions.widthCm} cm`;
+    return `Place ${object.objectLabel} fourni dans l’image ${imageNumber} à la position du point ${pointNumber} (${coordinates}), sachant que ${object.objectLabel} a ${dimensions}.`;
   });
 
   const imageRoles = [

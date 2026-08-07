@@ -57,12 +57,20 @@ describe("render request schema", () => {
         {
           productId: "22222222-2222-4222-8222-222222222222",
           placementPoint: { x: 0.4, y: 0.8 },
-          dimensionReference: { axis: "height", valueCm: 42 },
+          dimensionPair: {
+            mode: "height_length",
+            heightCm: 42,
+            lengthCm: 24,
+          },
         },
         {
           productId: "33333333-3333-4333-8333-333333333333",
           placementPoint: { x: 0.7, y: 0.75 },
-          dimensionReference: { axis: "width", valueCm: 30 },
+          dimensionPair: {
+            mode: "length_width",
+            lengthCm: 30,
+            widthCm: 18,
+          },
         },
       ],
     });
@@ -72,6 +80,26 @@ describe("render request schema", () => {
       x: 0.7,
       y: 0.75,
     });
+  });
+
+  it("requires both values of the selected dimension pair", () => {
+    expect(() =>
+      renderRequestSchema.parse({
+        ...base,
+        workflow: "simple_point",
+        placementPoint: { x: 0.4, y: 0.8 },
+        simplePlacements: [
+          {
+            productId: "22222222-2222-4222-8222-222222222222",
+            placementPoint: { x: 0.4, y: 0.8 },
+            dimensionPair: {
+              mode: "height_length",
+              heightCm: 42,
+            },
+          },
+        ],
+      }),
+    ).toThrow();
   });
 
   it("rejects more than three simple placements", () => {

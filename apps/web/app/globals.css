@@ -4099,7 +4099,7 @@ button {
 
 .simple-object-dimensions {
   display: grid;
-  grid-template-columns: minmax(190px, 1fr) minmax(145px, 0.7fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 13px;
   align-content: center;
 }
@@ -4116,6 +4116,12 @@ button {
   color: #174f27;
   font-size: 0.75rem;
   font-weight: 800;
+}
+
+.simple-size-inputs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
 }
 
 .simple-add-object {
