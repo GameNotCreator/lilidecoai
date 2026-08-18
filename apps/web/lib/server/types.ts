@@ -41,6 +41,19 @@ export interface ProductViewDocument {
   createdAt: Date;
 }
 
+/** One purchasable size of a product, e.g. « Grand modèle — 120 cm ». */
+export interface ProductVariantDocument {
+  id: string;
+  label: string;
+  sku: string | null;
+  widthCm: number | null;
+  heightCm: number | null;
+  depthCm: number | null;
+  priceCents: number | null;
+  stock: number | null;
+  available: boolean;
+}
+
 export interface ProductDocument {
   id: string;
   organizationId: string;
@@ -57,6 +70,15 @@ export interface ProductDocument {
   generationInstructions: string;
   lightingProfile: Record<string, unknown>;
   buyUrl: string | null;
+  brand?: string;
+  collection?: string;
+  tags?: string[];
+  priceCents?: number | null;
+  currency?: string;
+  stock?: number | null;
+  weightKg?: number | null;
+  variants?: ProductVariantDocument[];
+  archivedAt?: Date | null;
   imageSourceUrl?: string;
   imageCredit?: string;
   status: "draft" | "processing" | "ready" | "archived";

@@ -19,8 +19,12 @@ Ouvrir :
 - site : <http://localhost:3000>
 - studio : <http://localhost:3000/demo>
 - espace marchand : <http://localhost:3000/app>
-- administration : <http://localhost:3000/admin>
+- back office : <http://localhost:3000/admin>
 - santé API : <http://localhost:3000/v1/health>
+
+Le back office reste verrouillé tant que `ADMIN_USERNAME` et `ADMIN_PASSWORD`
+(ou `ADMIN_PASSWORD_HASH`) ne sont pas définis, y compris en mode démo. Voir
+[docs/back-office.md](docs/back-office.md).
 
 Avec `DEMO_MODE=true`, un portefeuille de crédits de démonstration est créé
 automatiquement dans MongoDB. La démo ne présélectionne aucun produit : chaque
@@ -77,13 +81,15 @@ npm.cmd run test:e2e
    la variable `CLOUDINARY_URL` copiée depuis Cloudinary.
 4. Ajouter `OPENAI_API_KEY`, définir `OPENAI_MODEL=gpt-image-2`, puis mettre
    `AI_MOCK_MODE=false`. Aucune clé ne doit être préfixée par `NEXT_PUBLIC_`.
-5. Déployer, puis vérifier `/v1/health`.
+5. Ajouter `ADMIN_USERNAME` et `ADMIN_PASSWORD_HASH` pour ouvrir `/admin`.
+6. Déployer, puis vérifier `/v1/health`.
 
 Les détails sont dans [docs/deployment.md](docs/deployment.md).
 
 ## Documentation
 
 - [Architecture](docs/architecture.md)
+- [Back office et banque de produits](docs/back-office.md)
 - [Provider OpenAI](docs/providers.md)
 - [Installation du widget](docs/widget.md)
 - [Sécurité et confidentialité](docs/security.md)

@@ -1,5 +1,7 @@
 import "server-only";
 
+import { DEMO_MERCHANT_SLUG } from "./types";
+
 function clean(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
@@ -69,7 +71,22 @@ export const serverConfig = {
   cronSecret: clean(process.env.CRON_SECRET),
   maxUploadBytes: uploadLimit(),
   roomRetentionHours: Number(clean(process.env.ROOM_RETENTION_HOURS) ?? "24"),
+  adminUsername: clean(process.env.ADMIN_USERNAME),
+  adminPassword: clean(process.env.ADMIN_PASSWORD),
+  adminPasswordHash: clean(process.env.ADMIN_PASSWORD_HASH),
+  adminSessionSecret: clean(process.env.ADMIN_SESSION_SECRET),
+  adminSessionHours: sessionHours(),
+  adminOrganizationSlug:
+    clean(process.env.ADMIN_ORGANIZATION_SLUG) ?? DEMO_MERCHANT_SLUG,
+  adminOrganizationName:
+    clean(process.env.ADMIN_ORGANIZATION_NAME) ?? "Atelier Lili",
 };
+
+function sessionHours(): number {
+  const requested = Number(clean(process.env.ADMIN_SESSION_HOURS) ?? "12");
+  if (!Number.isFinite(requested) || requested <= 0) return 12;
+  return Math.min(requested, 168);
+}
 
 export function assertProductionConfig(): void {
   if (process.env.NODE_ENV !== "production") return;

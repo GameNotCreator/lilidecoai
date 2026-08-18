@@ -39,7 +39,7 @@ export default async function AppLayout({
           ))}
         </nav>
         <Link className="admin-link" href="/admin">
-          Administration →
+          Back office →
         </Link>
       </aside>
       <div className="app-content">{children}</div>

@@ -229,6 +229,18 @@ export const renderStatusSchema = z.enum([
   "deleted",
 ]);
 
+export const productVariantSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  sku: z.string().nullable().default(null),
+  widthCm: z.coerce.number().nullable().default(null),
+  heightCm: z.coerce.number().nullable().default(null),
+  depthCm: z.coerce.number().nullable().default(null),
+  priceCents: z.coerce.number().int().nullable().default(null),
+  stock: z.coerce.number().int().nullable().default(null),
+  available: z.boolean().default(true),
+});
+
 export const productSchema = z.object({
   id: z.string().uuid(),
   name: z.string(),
@@ -244,6 +256,14 @@ export const productSchema = z.object({
   lightingProfile: z.record(z.string(), z.unknown()).optional(),
   status: z.enum(["draft", "processing", "ready", "archived"]),
   buyUrl: z.string().nullable().optional(),
+  brand: z.string().default(""),
+  collection: z.string().default(""),
+  tags: z.array(z.string()).default([]),
+  priceCents: z.coerce.number().int().nullable().default(null),
+  currency: z.string().default("TND"),
+  stock: z.coerce.number().int().nullable().default(null),
+  weightKg: z.coerce.number().nullable().default(null),
+  variants: z.array(productVariantSchema).default([]),
   imageSourceUrl: z.string().url().optional(),
   imageCredit: z.string().optional(),
   assetUrl: z.string().nullable().optional(),
@@ -294,6 +314,7 @@ export const renderSchema = z.object({
 });
 
 export type Product = z.infer<typeof productSchema>;
+export type ProductVariant = z.infer<typeof productVariantSchema>;
 export type Render = z.infer<typeof renderSchema>;
 export type PlacementMode = z.infer<typeof placementModeSchema>;
 export type RenderMode = z.infer<typeof renderModeSchema>;
