@@ -2,17 +2,21 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { KeyRound, LoaderCircle, Lock, ShieldAlert } from "lucide-react";
+import { Check, KeyRound, LoaderCircle, Lock, ShieldAlert, X } from "lucide-react";
 
 import { adminApi } from "@/lib/admin-client";
+
+type DetectedVariables = Record<string, boolean>;
 
 export function AdminLogin({
   configured,
   reason,
+  detected,
   returnTo,
 }: {
   configured: boolean;
   reason: string | null;
+  detected?: DetectedVariables | null;
   returnTo: string;
 }) {
   const router = useRouter();
@@ -59,6 +63,17 @@ export function AdminLogin({
             <div>
               <strong>Back office verrouillé</strong>
               <p>{reason}</p>
+              {detected && (
+                <ul className="bo-detected">
+                  {Object.entries(detected).map(([name, present]) => (
+                    <li key={name} className={present ? "present" : "missing"}>
+                      {present ? <Check size={13} /> : <X size={13} />}
+                      <code>{name}</code>
+                      <span>{present ? "reçue" : "absente"}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
               <pre className="bo-code">
                 {`ADMIN_USERNAME=votre-identifiant
 ADMIN_PASSWORD=un-mot-de-passe-long

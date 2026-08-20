@@ -33,6 +33,41 @@ Règles appliquées au démarrage :
 - en production, un mot de passe en clair de moins de 10 caractères est refusé ;
 - un `ADMIN_PASSWORD_HASH` mal formé est refusé plutôt qu’ignoré.
 
+## Le back office reste verrouillé ?
+
+Ouvrez `/api/admin/session` sur le déploiement concerné. La réponse indique la
+raison et, tant que le panneau est verrouillé, quelles variables atteignent
+réellement le serveur — présence uniquement, jamais les valeurs :
+
+```json
+{
+  "configured": false,
+  "reason": "…",
+  "detected": {
+    "ADMIN_USERNAME": false,
+    "ADMIN_PASSWORD": false,
+    "ADMIN_PASSWORD_HASH": false,
+    "APP_SESSION_SECRET": true
+  }
+}
+```
+
+La page `/admin/login` affiche la même liste.
+
+| Symptôme | Cause | Correctif |
+| --- | --- | --- |
+| Toutes les variables à `false` | Vercel fige les variables dans le déploiement au moment du build : en ajouter une ne modifie pas un déploiement déjà en ligne. | Redéployer (Deployments → ⋯ → Redeploy). |
+| `ADMIN_USERNAME` à `true`, mot de passe à `false` | Une seule des deux variables a été créée. | Ajouter `ADMIN_PASSWORD` ou `ADMIN_PASSWORD_HASH`, puis redéployer. |
+| Variables `true` sur un environnement mais pas l’autre | La variable n’est cochée que pour Production, ou que pour Preview. | Cocher l’environnement testé, puis redéployer. |
+| `ADMIN_PASSWORD contient encore une valeur d’exemple` | Valeur `admin`, `password` ou `replace-with…`. | Choisir un vrai mot de passe. |
+| `au moins 10 caractères` | Mot de passe en clair trop court en production. | Allonger le mot de passe, ou passer à `ADMIN_PASSWORD_HASH`. |
+| `n’est pas un hash bcrypt valide` | Hash tronqué ou entouré de guillemets. | Recoller le hash complet, du `$2b$` jusqu’au dernier caractère. |
+| `Identifiants invalides` à la connexion | Le panneau est bien configuré, seule la saisie diffère. Sans `ADMIN_USERNAME`, l’identifiant est `admin`. | Vérifier l’identifiant attendu. La casse est ignorée, pas les espaces. |
+
+En local, Next lit le `.env` du dossier de l’application (`apps/web/.env`), pas
+celui de la racine du dépôt. Passez les variables sur la ligne de commande ou
+créez `apps/web/.env.local`.
+
 ## Sécurité
 
 - Session signée HS256 dans un cookie `lili_backoffice`, `HttpOnly`,

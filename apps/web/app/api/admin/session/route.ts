@@ -30,6 +30,10 @@ export async function GET(request: Request): Promise<Response> {
   return Response.json({
     configured: status.configured,
     reason: status.configured ? null : status.reason,
+    // Presence flags only, and only while the panel is already known to be
+    // locked: enough to tell "the variable never arrived" from "its value is
+    // rejected", without revealing anything about the values themselves.
+    detected: status.configured ? null : status.detected,
     authenticated: Boolean(session),
     username: session?.username ?? null,
   });

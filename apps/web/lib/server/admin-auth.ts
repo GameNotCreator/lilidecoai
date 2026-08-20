@@ -27,9 +27,17 @@ export interface AdminSession {
   issuedAt: number;
 }
 
+/** Which ADMIN_* variables reach the server. Presence only, never values. */
+export type DetectedAdminVariables = {
+  ADMIN_USERNAME: boolean;
+  ADMIN_PASSWORD: boolean;
+  ADMIN_PASSWORD_HASH: boolean;
+  APP_SESSION_SECRET: boolean;
+};
+
 export type AdminConfigurationStatus =
   | { configured: true; credentials: AdminCredentials }
-  | { configured: false; reason: string };
+  | { configured: false; reason: string; detected: DetectedAdminVariables };
 
 export class AdminAuthError extends Error {
   constructor(
@@ -51,10 +59,15 @@ export function adminConfiguration(): AdminConfigurationStatus {
     passwordHash: serverConfig.adminPasswordHash,
   });
   if (!credentials) {
+    // Separating these two cases matters on Vercel: variables are baked into a
+    // deployment at build time, so "nothing arrives" almost always means the
+    // deployment predates the variable rather than a typo in its value.
     return {
       configured: false,
-      reason:
-        "Aucun identifiant configuré. Renseignez ADMIN_USERNAME et ADMIN_PASSWORD (ou ADMIN_PASSWORD_HASH).",
+      reason: serverConfig.adminUsername
+        ? "ADMIN_USERNAME est bien reçu, mais ni ADMIN_PASSWORD ni ADMIN_PASSWORD_HASH n’est défini."
+        : "Aucune variable ADMIN_* n’atteint le serveur. Sur Vercel, ajoutez-les puis redéployez : une variable ne s’applique qu’aux déploiements créés après son ajout.",
+      detected: detectedAdminVariables(),
     };
   }
   if (credentials.passwordHash && !looksLikeBcryptHash(credentials.passwordHash)) {
@@ -62,12 +75,14 @@ export function adminConfiguration(): AdminConfigurationStatus {
       configured: false,
       reason:
         "ADMIN_PASSWORD_HASH n’est pas un hash bcrypt valide (format $2b$12$…).",
+      detected: detectedAdminVariables(),
     };
   }
   if (credentials.password && isPlaceholderSecret(credentials.password)) {
     return {
       configured: false,
       reason: "ADMIN_PASSWORD contient encore une valeur d’exemple.",
+      detected: detectedAdminVariables(),
     };
   }
   if (
@@ -78,9 +93,19 @@ export function adminConfiguration(): AdminConfigurationStatus {
     return {
       configured: false,
       reason: `En production, ADMIN_PASSWORD doit contenir au moins ${minimumProductionPasswordLength} caractères.`,
+      detected: detectedAdminVariables(),
     };
   }
   return { configured: true, credentials };
+}
+
+export function detectedAdminVariables(): DetectedAdminVariables {
+  return {
+    ADMIN_USERNAME: Boolean(serverConfig.adminUsername),
+    ADMIN_PASSWORD: Boolean(serverConfig.adminPassword),
+    ADMIN_PASSWORD_HASH: Boolean(serverConfig.adminPasswordHash),
+    APP_SESSION_SECRET: Boolean(serverConfig.sessionSecret),
+  };
 }
 
 export function adminAuthConfigured(): boolean {

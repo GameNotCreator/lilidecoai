@@ -5853,3 +5853,35 @@ body:has(.bo-login) .site-header {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+.bo-detected {
+  display: grid;
+  gap: 4px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bo-detected li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.73rem;
+}
+
+.bo-detected code {
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.bo-detected span {
+  color: var(--muted);
+}
+
+.bo-detected .present {
+  color: #3f6b34;
+}
+
+.bo-detected .missing {
+  color: #8b2d24;
+}

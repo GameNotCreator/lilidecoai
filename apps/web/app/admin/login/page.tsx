@@ -30,6 +30,7 @@ export default async function AdminLoginPage({
     <AdminLogin
       configured={status.configured}
       reason={status.configured ? null : status.reason}
+      detected={status.configured ? null : status.detected}
       returnTo={returnTo}
     />
   );
