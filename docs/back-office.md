@@ -64,9 +64,11 @@ La page `/admin/login` affiche la même liste.
 | `n’est pas un hash bcrypt valide` | Hash tronqué ou entouré de guillemets. | Recoller le hash complet, du `$2b$` jusqu’au dernier caractère. |
 | `Identifiants invalides` à la connexion | Le panneau est bien configuré, seule la saisie diffère. Sans `ADMIN_USERNAME`, l’identifiant est `admin`. | Vérifier l’identifiant attendu. La casse est ignorée, pas les espaces. |
 
-En local, Next lit le `.env` du dossier de l’application (`apps/web/.env`), pas
-celui de la racine du dépôt. Passez les variables sur la ligne de commande ou
-créez `apps/web/.env.local`.
+En local, `apps/web/next.config.ts` charge aussi le `.env` (et `.env.local`) de
+la racine du dépôt, celui que le README demande de créer. Une variable déjà
+définie dans l’environnement n’est jamais écrasée, et sur Vercel le fichier est
+absent : ce sont les variables du tableau de bord qui s’appliquent. Après avoir
+modifié ce fichier, redémarrez `npm run dev`.
 
 ## Sécurité
 
