@@ -3,6 +3,8 @@ import "server-only";
 import { selectOutputSize, validatePlacementFit } from "@lili/geometry";
 import {
   buildSimplePointPrompt,
+  simplePointCategoryLabel,
+  simplePointPlacementKind,
   PROMPT_VERSION,
   SIMPLE_POINT_PROMPT_VERSION,
   PromptBuilder,
@@ -265,8 +267,13 @@ export async function createRender(
       simplePlacements: requestedObjects,
     };
     input.userInstructions = buildSimplePointPrompt({
-      objects: simpleObjects.map((item, index) => ({
-        objectLabel: `l’objet ${index + 1} « ${item.product.name} »`,
+      objects: simpleObjects.map((item) => ({
+        objectLabel: item.product.name,
+        category: simplePointCategoryLabel(item.product.objectType),
+        material: item.product.material || undefined,
+        catalogDescription: item.product.description || undefined,
+        placementKind: simplePointPlacementKind(item.product.objectType),
+        emitsLight: item.product.objectType === "lamp",
         point: item.placementPoint,
         imageWidth: scene.widthPx,
         imageHeight: scene.heightPx,
@@ -479,9 +486,7 @@ export async function createRender(
 }
 
 function legacyDimensionPair(
-  reference:
-    | { axis: "width" | "height"; valueCm: number }
-    | undefined,
+  reference: { axis: "width" | "height"; valueCm: number } | undefined,
   product: ProductDocument,
 ): SimpleDimensionPair {
   if (!reference) {
@@ -534,17 +539,11 @@ async function runSimplePointRender(
   }
 
   const mode = "insert" as const;
-  const { provider, route } = selectEditingProvider(
-    mode,
-    "final",
-    "openai",
-  );
+  const { provider, route } = selectEditingProvider(mode, "final", "openai");
   const roomReference: ImageReference = {
     data: new Uint8Array(sourceAsset.buffer),
     mimeType: sourceAsset.asset.contentType as
-      | "image/jpeg"
-      | "image/png"
-      | "image/webp",
+      "image/jpeg" | "image/png" | "image/webp",
     role: "room_original",
   };
   const prompt = input.userInstructions?.trim();
