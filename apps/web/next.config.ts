@@ -50,6 +50,16 @@ const nextConfig: NextConfig = {
     "..",
     "..",
   ),
+  // sharp selects its platform binary with a computed require the static
+  // tracer cannot follow, so the linux binaries must be included by hand.
+  outputFileTracingIncludes: {
+    "/**/*": [
+      "../../node_modules/@img/**/*",
+      "../../node_modules/sharp/**/*",
+      "./node_modules/@img/**/*",
+      "./node_modules/sharp/**/*",
+    ],
+  },
   serverExternalPackages: ["mongodb", "sharp"],
   transpilePackages: [
     "@lili/analytics",
