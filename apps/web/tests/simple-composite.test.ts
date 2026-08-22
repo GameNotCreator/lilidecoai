@@ -4,10 +4,15 @@ import sharp from "sharp";
 import {
   compositeObjectsOnScene,
   computeTargetPixelSize,
-  createMultiEditMask,
+  createSilhouetteMask,
   padCompositionForAspect,
   pasteBackOutsideMask,
 } from "../lib/server/simple-composite";
+
+async function circleCutout(size: number, fill: string): Promise<Buffer> {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}"><circle cx="${size / 2}" cy="${size / 2}" r="${size / 2 - 2}" fill="${fill}"/></svg>`;
+  return sharp(Buffer.from(svg)).png().toBuffer();
+}
 
 async function solidImage(
   width: number,
@@ -82,16 +87,27 @@ describe("computeTargetPixelSize", () => {
   });
 });
 
-describe("createMultiEditMask", () => {
-  it("opens transparent windows only around the boxes", () => {
-    const mask = createMultiEditMask(100, 100, [
-      { left: 40, top: 40, width: 20, height: 20 },
+describe("createSilhouetteMask", () => {
+  it("hugs the object silhouette instead of its bounding box", async () => {
+    const mask = await createSilhouetteMask(300, 200, [
+      {
+        png: await circleCutout(80, "#1e1edc"),
+        left: 110,
+        top: 60,
+        widthPx: 80,
+        heightPx: 80,
+      },
     ]);
-    const alphaAt = (x: number, y: number) => mask[(y * 100 + x) * 4 + 3];
-    expect(alphaAt(50, 50)).toBe(0);
-    expect(alphaAt(30, 50)).toBe(0); // padding (16px) around the box
-    expect(alphaAt(5, 5)).toBe(255);
-    expect(alphaAt(95, 95)).toBe(255);
+    const alphaAt = (x: number, y: number) => mask[(y * 300 + x) * 4 + 3];
+    // Centre of the circle: editable.
+    expect(alphaAt(150, 100)).toBe(0);
+    // Contact-shadow band under the base: editable.
+    expect(alphaAt(150, 140)).toBe(0);
+    // Bounding-box corner, far outside the circle: preserved — this is what
+    // keeps neighbouring shelf items out of the model's reach.
+    expect(alphaAt(111, 61)).toBe(255);
+    // Far away: preserved.
+    expect(alphaAt(20, 20)).toBe(255);
   });
 });
 
@@ -119,6 +135,8 @@ describe("composite pipeline", () => {
     const outside = await pixelAt(composition.imageWebp, 10, 10);
     expect(outside.r).toBeGreaterThan(150);
     expect(composition.maskRaw.length).toBe(300 * 200 * 4);
+    // The silhouette mask stays tight: 15 px left of the object is preserved.
+    expect(composition.maskRaw[(80 * 300 + 125) * 4 + 3]).toBe(255);
   });
 
   it("letterboxes to the requested aspect and restores it on paste-back", async () => {
@@ -153,9 +171,14 @@ describe("composite pipeline", () => {
     const corner = await pixelAt(final, 5, 5);
     expect(corner.r).toBeGreaterThan(150);
     expect(corner.g).toBeLessThan(90);
-    // Inside the mask the model output wins.
-    const inside = await pixelAt(final, 150, 80);
-    expect(inside.g).toBeGreaterThan(150);
+    // At the object's core the identity re-stamp wins: catalog blue, not the
+    // model's green rendition.
+    const core = await pixelAt(final, 150, 80);
+    expect(core.b).toBeGreaterThan(150);
+    expect(core.g).toBeLessThan(90);
+    // In the blend ring just below the base, the model's output remains.
+    const ring = await pixelAt(final, 150, 103);
+    expect(ring.g).toBeGreaterThan(ring.r);
   });
 
   it("keeps the exact scene size when the aspect already matches", async () => {

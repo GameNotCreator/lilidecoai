@@ -33,6 +33,15 @@ export interface SimpleCompositePlacement {
   scaleSource: "vision" | "assumed_room_width";
 }
 
+export interface PlacedOverlay {
+  /** The cutout resized to its final size, RGBA png. */
+  png: Buffer;
+  left: number;
+  top: number;
+  widthPx: number;
+  heightPx: number;
+}
+
 export interface SimpleComposition {
   imageWebp: Buffer;
   /** RGBA scene-sized mask: alpha 0 = editable, alpha 255 = preserved. */
@@ -40,6 +49,8 @@ export interface SimpleComposition {
   sceneWidth: number;
   sceneHeight: number;
   placements: SimpleCompositePlacement[];
+  /** Kept for the identity re-stamp after harmonization. */
+  overlays: PlacedOverlay[];
 }
 
 export interface PaddedComposition {
@@ -103,26 +114,62 @@ export function computeTargetPixelSize(
   };
 }
 
-export function createMultiEditMask(
+/**
+ * The editable region hugs each object's silhouette (dilated ~10 px) plus its
+ * contact-shadow ellipse — never a full bounding box. Neighbouring items on a
+ * crowded shelf therefore stay outside the model's reach and keep their
+ * original pixels; only a thin blend ring and the shadow are regenerated.
+ */
+export async function createSilhouetteMask(
   width: number,
   height: number,
-  boxes: Array<{ left: number; top: number; width: number; height: number }>,
-): Buffer {
+  overlays: PlacedOverlay[],
+): Promise<Buffer> {
+  const silhouettes = await Promise.all(
+    overlays.map(async (overlay) => ({
+      input: await sharp(overlay.png)
+        .ensureAlpha()
+        .extractChannel("alpha")
+        .png()
+        .toBuffer(),
+      left: overlay.left,
+      top: overlay.top,
+    })),
+  );
+  const shadowSvg = Buffer.from(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">${overlays
+      .map(
+        (overlay) =>
+          `<ellipse cx="${overlay.left + overlay.widthPx / 2}" cy="${overlay.top + overlay.heightPx * 0.985}" rx="${overlay.widthPx * 0.5}" ry="${Math.max(8, overlay.heightPx * 0.045)}" fill="#ffffff"/>`,
+      )
+      .join("")}</svg>`,
+  );
+  const region = await sharp({
+    create: {
+      width,
+      height,
+      channels: 3,
+      background: { r: 0, g: 0, b: 0 },
+    },
+  })
+    .composite([
+      ...silhouettes.map((shape) => ({
+        input: shape.input,
+        left: shape.left,
+        top: shape.top,
+        blend: "over" as const,
+      })),
+      { input: shadowSvg, blend: "over" as const },
+    ])
+    .toColourspace("b-w")
+    .blur(5)
+    .threshold(16)
+    .raw()
+    .toBuffer();
+
   const data = Buffer.alloc(width * height * 4, 255);
-  for (const box of boxes) {
-    const padding = Math.max(
-      16,
-      Math.round(Math.min(box.width, box.height) * 0.12),
-    );
-    const minX = Math.max(0, box.left - padding);
-    const maxX = Math.min(width, box.left + box.width + padding);
-    const minY = Math.max(0, box.top - padding);
-    const maxY = Math.min(height, box.top + box.height + padding);
-    for (let y = minY; y < maxY; y += 1) {
-      for (let x = minX; x < maxX; x += 1) {
-        data[(y * width + x) * 4 + 3] = 0;
-      }
-    }
+  for (let i = 0; i < width * height; i += 1) {
+    if ((region[i] ?? 0) > 0) data[i * 4 + 3] = 0;
   }
   return data;
 }
@@ -199,16 +246,14 @@ export async function compositeObjectsOnScene(
     .webp({ quality: 94 })
     .toBuffer();
 
-  const maskRaw = createMultiEditMask(
-    sceneWidth,
-    sceneHeight,
-    prepared.map((placement) => ({
-      left: placement.left,
-      top: placement.top,
-      width: placement.widthPx,
-      height: placement.heightPx,
-    })),
-  );
+  const overlays: PlacedOverlay[] = prepared.map((placement) => ({
+    png: placement.overlay,
+    left: placement.left,
+    top: placement.top,
+    widthPx: placement.widthPx,
+    heightPx: placement.heightPx,
+  }));
+  const maskRaw = await createSilhouetteMask(sceneWidth, sceneHeight, overlays);
   return {
     imageWebp,
     maskRaw,
@@ -223,6 +268,7 @@ export async function compositeObjectsOnScene(
       pixelsPerCm: placement.pixelsPerCm,
       scaleSource: placement.scaleSource,
     })),
+    overlays,
   };
 }
 
@@ -335,8 +381,36 @@ export async function pasteBackOutsideMask(
     .png()
     .toBuffer();
   const overlay = await sharp(aligned).joinChannel(feathered).png().toBuffer();
+
+  // Identity re-stamp: the model's rendition of the object (softened by
+  // regeneration and resampling) is covered again by the original cutout,
+  // eroded ~3 px so the model keeps only the blend ring and the shadow.
+  // The object's pixels stay catalog-sharp at full scene resolution.
+  const stamps = await Promise.all(
+    composition.overlays.map(async (placed) => {
+      const core = await sharp(placed.png)
+        .ensureAlpha()
+        .extractChannel("alpha")
+        .blur(2)
+        .threshold(200)
+        .blur(1)
+        .png()
+        .toBuffer();
+      const stamp = await sharp(placed.png)
+        .removeAlpha()
+        .joinChannel(core)
+        .png()
+        .toBuffer();
+      return {
+        input: stamp,
+        left: placed.left,
+        top: placed.top,
+        blend: "over" as const,
+      };
+    }),
+  );
   return sharp(composition.imageWebp)
-    .composite([{ input: overlay, blend: "over" }])
+    .composite([{ input: overlay, blend: "over" }, ...stamps])
     .webp({ quality: 94 })
     .toBuffer();
 }
