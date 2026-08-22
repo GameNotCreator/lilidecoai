@@ -574,7 +574,7 @@ async function runSimplePointRender(
     composition: roomReference.data,
     protectionMask: new Uint8Array(),
     prompt,
-    quality: "high",
+    quality: serverConfig.openaiQuality,
     size: requestedSize,
     lighting: {
       direction: "automatic",
@@ -1085,7 +1085,7 @@ async function removeConfirmedTargetWithGoogle(
     composition: new Uint8Array(source),
     protectionMask: new Uint8Array(maskAsset.buffer),
     prompt,
-    quality: "high",
+    quality: serverConfig.openaiQuality,
     size: requestedSize,
     lighting: {
       direction: "automatic",

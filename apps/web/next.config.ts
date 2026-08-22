@@ -42,6 +42,14 @@ loadRepositoryRootEnv();
 
 const nextConfig: NextConfig = {
   allowedDevOrigins: ["127.0.0.1"],
+  // The monorepo hoists sharp and mongodb into the repository-root
+  // node_modules; without this, Vercel's file tracing never leaves apps/web
+  // and the deployed function is missing sharp's native linux binaries.
+  outputFileTracingRoot: join(
+    dirname(fileURLToPath(import.meta.url)),
+    "..",
+    "..",
+  ),
   serverExternalPackages: ["mongodb", "sharp"],
   transpilePackages: [
     "@lili/analytics",

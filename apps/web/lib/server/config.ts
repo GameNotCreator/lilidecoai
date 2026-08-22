@@ -25,11 +25,24 @@ const googleApiKey =
 const openAIEnabled = clean(process.env.OPENAI_IMAGE_ENABLED) === "true";
 const explicitMockMode = clean(process.env.AI_MOCK_MODE);
 
+// In production the shared demo organization must be an explicit opt-in: a
+// missing or empty DEMO_MODE previously enabled it (fail-open).
+function demoModeEnabled(): boolean {
+  const requested = clean(process.env.DEMO_MODE);
+  if (process.env.NODE_ENV === "production") return requested === "true";
+  return requested !== "false";
+}
+
+function openAIQuality(): "low" | "medium" | "high" {
+  const requested = clean(process.env.OPENAI_QUALITY);
+  return requested === "low" || requested === "medium" ? requested : "high";
+}
+
 export const serverConfig = {
   mongodbUri:
     clean(process.env.MONGODB_URI) ?? "mongodb://127.0.0.1:27017/lilidecoai",
   mongodbDb: clean(process.env.MONGODB_DB) ?? "lilidecoai",
-  demoMode: clean(process.env.DEMO_MODE) !== "false",
+  demoMode: demoModeEnabled(),
   googleApiKey,
   googlePreviewImageModel:
     clean(process.env.GOOGLE_PREVIEW_IMAGE_MODEL) ?? "gemini-3.1-flash-image",
@@ -57,7 +70,7 @@ export const serverConfig = {
   openaiModel: clean(process.env.OPENAI_MODEL) ?? "gpt-image-2",
   openaiVisionModel: clean(process.env.OPENAI_VISION_MODEL) ?? "gpt-5.6-sol",
   openaiServiceTier: clean(process.env.OPENAI_SERVICE_TIER) ?? "fast",
-  openaiQuality: clean(process.env.OPENAI_QUALITY) ?? "high",
+  openaiQuality: openAIQuality(),
   openaiBaseUrl:
     clean(process.env.OPENAI_BASE_URL) ?? "https://api.openai.com/v1",
   openaiMaxCostUsd: Number(clean(process.env.OPENAI_MAX_COST_USD) ?? "0.25"),
