@@ -2,10 +2,12 @@ import "server-only";
 
 import { selectOutputSize, validatePlacementFit } from "@lili/geometry";
 import {
+  buildSimpleHarmonizePrompt,
   buildSimplePointPrompt,
   simplePointCategoryLabel,
   simplePointPlacementKind,
   PROMPT_VERSION,
+  SIMPLE_COMPOSITE_PROMPT_VERSION,
   SIMPLE_POINT_PROMPT_VERSION,
   PromptBuilder,
   type ImageEditingRequest,
@@ -19,6 +21,11 @@ import type { Db } from "mongodb";
 import sharp from "sharp";
 
 import { readAsset, storeAsset } from "./assets";
+import {
+  compositeObjectsOnScene,
+  padCompositionForAspect,
+  pasteBackOutsideMask,
+} from "./simple-composite";
 import { paidImageProviderConfigured, serverConfig } from "./config";
 import { captureCredit } from "./credits";
 import { collections } from "./mongodb";
@@ -540,39 +547,89 @@ async function runSimplePointRender(
 
   const mode = "insert" as const;
   const { provider, route } = selectEditingProvider(mode, "final", "openai");
-  const roomReference: ImageReference = {
-    data: new Uint8Array(sourceAsset.buffer),
-    mimeType: sourceAsset.asset.contentType as
-      "image/jpeg" | "image/png" | "image/webp",
-    role: "room_original",
-  };
-  const prompt = input.userInstructions?.trim();
-  if (!prompt) throw new RenderError("Prompt de placement manquant", 422);
-
-  await c.renders.updateOne(
-    { id: render.id },
-    {
-      $set: {
-        status: "processing",
-        pipelineState: "generating_final",
-        provider: route.provider,
-        model: provider.model,
-        placement: {
-          ...input.placement,
-          operation: "place",
-          objectCount: simpleObjects.length,
-          pipelineStage: "generating_final",
+  const setStage = async (
+    pipelineState: NonNullable<RenderDocument["pipelineState"]>,
+    pipelineStage: string,
+  ) => {
+    await c.renders.updateOne(
+      { id: render.id },
+      {
+        $set: {
+          status: "processing",
+          pipelineState,
+          provider: route.provider,
+          model: provider.model,
+          placement: {
+            ...input.placement,
+            operation: "place",
+            objectCount: simpleObjects.length,
+            pipelineStage,
+          },
+          updatedAt: new Date(),
         },
-        updatedAt: new Date(),
       },
-    },
+    );
+  };
+
+  const orientedScene = sharp(sourceAsset.buffer).rotate();
+  const sceneMetadata = await orientedScene.metadata();
+  const sceneWidth = sceneMetadata.width ?? scene.widthPx;
+  const sceneHeight = sceneMetadata.height ?? scene.heightPx;
+  const sceneImage = await orientedScene.webp({ quality: 96 }).toBuffer();
+
+  await setStage("analyzing_scene", "estimating_scale");
+  const spans = await estimateTenCmSpans(
+    sourceAsset.buffer,
+    sourceAsset.asset.contentType,
+    simpleObjects.map((item) => item.placementPoint),
+    sceneWidth,
+    sceneHeight,
   );
 
+  await setStage("computing_geometry", "compositing");
+  const cutouts = await Promise.all(
+    simpleObjects.map(async (item) => {
+      const cutout = item.product.cutoutAssetId
+        ? await readAsset(db, item.product.cutoutAssetId)
+        : null;
+      if (!cutout) {
+        throw new RenderError(
+          `Détourage de « ${item.product.name} » introuvable`,
+          404,
+        );
+      }
+      return cutout.buffer;
+    }),
+  );
+  const composition = await compositeObjectsOnScene(
+    sceneImage,
+    sceneWidth,
+    sceneHeight,
+    simpleObjects.map((item, index) => ({
+      cutout: cutouts[index] as Buffer,
+      point: item.placementPoint,
+      dimensions: item.dimensionPair,
+      pixelsPerCm: spans[index] ?? null,
+    })),
+  );
+  const padded = await padCompositionForAspect(composition, requestedSize);
+  const prompt = buildSimpleHarmonizePrompt(
+    simpleObjects.length,
+    padded.padded,
+  );
+
+  await setStage("generating_final", "generating_final");
+  const compositionData = new Uint8Array(padded.imageWebp);
   const result = await provider.edit({
-    scene: roomReference.data,
+    scene: compositionData,
     productCutout: productReference.data,
-    composition: roomReference.data,
+    composition: compositionData,
     protectionMask: new Uint8Array(),
+    targetMask: {
+      data: new Uint8Array(padded.maskPng),
+      mimeType: "image/png",
+      role: "target_mask",
+    },
     prompt,
     quality: serverConfig.openaiQuality,
     size: requestedSize,
@@ -588,7 +645,14 @@ async function runSimplePointRender(
       objectCount: simpleObjects.length,
     },
     idempotencyKey: input.idempotencyKey,
-    references: [roomReference, ...productReferences],
+    references: [
+      {
+        data: compositionData,
+        mimeType: "image/webp",
+        role: "composition",
+      },
+      ...productReferences,
+    ],
     mode,
     outputQuality: "final",
     preserveBackground: true,
@@ -598,7 +662,7 @@ async function runSimplePointRender(
     render,
     result,
     "generating_final",
-    SIMPLE_POINT_PROMPT_VERSION,
+    SIMPLE_COMPOSITE_PROMPT_VERSION,
     route.degradedMode,
     1,
   );
@@ -609,9 +673,11 @@ async function runSimplePointRender(
     );
   }
 
-  const finalBuffer = await sharp(Buffer.from(result.images[0].data))
-    .webp({ quality: 94 })
-    .toBuffer();
+  const finalBuffer = await pasteBackOutsideMask(
+    composition,
+    padded,
+    Buffer.from(result.images[0].data),
+  );
   const resultAsset = await storeAsset(db, {
     organizationId,
     kind: "render",
@@ -636,12 +702,12 @@ async function runSimplePointRender(
     estimatedCostUsd: result.estimatedCostUsd,
     attemptCount: result.attemptCount,
     latencyMs: Date.now() - startedAt,
-    promptVersion: SIMPLE_POINT_PROMPT_VERSION,
+    promptVersion: SIMPLE_COMPOSITE_PROMPT_VERSION,
     modelChain: [
       {
         provider: result.provider,
         model: result.model,
-        role: "simple_point",
+        role: "simple_composite",
       },
     ],
     placement: {
@@ -649,11 +715,117 @@ async function runSimplePointRender(
       operation: "place",
       objectCount: simpleObjects.length,
       pipelineStage: "complete",
+      compositePlacements: composition.placements,
     },
     updatedAt: new Date(),
   };
   await c.renders.updateOne({ id: render.id }, { $set: update });
   return renderResponse({ ...render, ...update });
+}
+
+/**
+ * One vision call estimating the metric scale at every tap point: how many
+ * pixels a 10 cm segment spans along the support surface at that location.
+ * Best effort — any failure falls back to the assumed-room-width heuristic.
+ */
+async function estimateTenCmSpans(
+  sceneBuffer: Buffer,
+  contentType: string,
+  points: Array<{ x: number; y: number }>,
+  sceneWidth: number,
+  sceneHeight: number,
+): Promise<Array<number | null>> {
+  if (serverConfig.aiMockMode || !serverConfig.openaiApiKey) {
+    return points.map(() => null);
+  }
+  try {
+    const pointLines = points.map(
+      (point, index) =>
+        `Point ${index + 1}: x=${point.x.toFixed(4)}, y=${point.y.toFixed(4)} normalized (pixel x=${Math.round(point.x * sceneWidth)}, y=${Math.round(point.y * sceneHeight)}).`,
+    );
+    const response = await fetchOpenAIResponse(
+      {
+        model: serverConfig.openaiVisionModel,
+        store: false,
+        service_tier: serverConfig.openaiServiceTier,
+        reasoning: { effort: "low" },
+        max_output_tokens: 1_200,
+        input: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: [
+                  `Metric scale estimation for an interior photograph of ${sceneWidth}x${sceneHeight} pixels.`,
+                  ...pointLines,
+                  "Each point lies on a physical support surface (shelf, table top or floor).",
+                  "For each point, estimate how many image pixels a 10 cm segment spans, measured horizontally along that support surface at that exact location and depth.",
+                  "Use visible size references: a door is about 200 cm tall, a chair seat about 45 cm, shelf-to-shelf spacing about 30-35 cm, a hardcover book about 24 cm, a dinner plate about 27 cm.",
+                  "Set confident=false for a point when no usable size reference is visible near it.",
+                ].join(" "),
+              },
+              {
+                type: "input_image",
+                image_url: `data:${contentType};base64,${sceneBuffer.toString("base64")}`,
+                detail: "high",
+              },
+            ],
+          },
+        ],
+        text: {
+          verbosity: "low",
+          format: {
+            type: "json_schema",
+            name: "scale_spans",
+            strict: true,
+            schema: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                spans: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    additionalProperties: false,
+                    properties: {
+                      pointNumber: { type: "integer" },
+                      tenCmPixels: { type: "number" },
+                      confident: { type: "boolean" },
+                    },
+                    required: ["pointNumber", "tenCmPixels", "confident"],
+                  },
+                },
+              },
+              required: ["spans"],
+            },
+          },
+        },
+      },
+      45_000,
+    );
+    if (!response.ok) return points.map(() => null);
+    const parsed = JSON.parse(await responseOutputText(response)) as {
+      spans: Array<{
+        pointNumber: number;
+        tenCmPixels: number;
+        confident: boolean;
+      }>;
+    };
+    return points.map((_, index) => {
+      const span = parsed.spans.find((item) => item.pointNumber === index + 1);
+      if (!span?.confident) return null;
+      const pixels = Number(span.tenCmPixels);
+      if (!Number.isFinite(pixels)) return null;
+      if (pixels < sceneWidth * 0.008 || pixels > sceneWidth * 0.5) {
+        return null;
+      }
+      return pixels / 10;
+    });
+  } catch (reason) {
+    console.error("Simple composite scale estimation failed", reason);
+    return points.map(() => null);
+  }
 }
 
 async function runLayeredRender(

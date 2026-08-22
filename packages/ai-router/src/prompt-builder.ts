@@ -8,6 +8,32 @@ import type {
 
 export const PROMPT_VERSION = "placement-v2.0.0";
 export const SIMPLE_POINT_PROMPT_VERSION = "simple-multi-point-v3.0.0";
+export const SIMPLE_COMPOSITE_PROMPT_VERSION = "simple-composite-v1.0.0";
+
+/**
+ * Prompt for the composite-then-harmonize pipeline: the objects are already
+ * pasted at final position and size, the model only integrates light and
+ * shadow inside the mask. No coordinates, no centimetres — geometry is done.
+ */
+export function buildSimpleHarmonizePrompt(
+  objectCount: number,
+  letterboxed = false,
+): string {
+  const products = objectCount === 1 ? "product" : `${objectCount} products`;
+  const lines = [
+    `Task: image 1 is the finished composition — the customer's room photograph with ${products} already placed at final position and final size. Reproduce image 1 exactly, only integrating the ${objectCount === 1 ? "product" : "products"} naturally into the room's light.`,
+    `Every product keeps exactly its current position, size, proportions, colors, materials and details as shown in image 1. The remaining images show the same ${products} for appearance reference only — ${objectCount === 1 ? "it is" : "they are"} already placed in image 1.`,
+    "Only in the immediate area around each product: paint a soft, physically correct contact shadow on its supporting surface, matching the direction, softness and color temperature of the shadows already present in the photograph, and blend the product's edges into the scene's light and grain.",
+    "Everything else — walls, floor, furniture, decoration, framing, camera, colors, white balance and grain — stays identical to image 1.",
+    "The output is a clean photograph: no added text, no watermark, no outlines.",
+  ];
+  if (letterboxed) {
+    lines.push(
+      "The flat gray bars on the edges of image 1 are technical padding: keep them exactly as they are.",
+    );
+  }
+  return lines.join("\n");
+}
 
 export type SimplePointPlacementKind = "standing" | "wall" | "flat";
 
