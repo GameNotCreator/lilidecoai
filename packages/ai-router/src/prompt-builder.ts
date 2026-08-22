@@ -8,7 +8,7 @@ import type {
 
 export const PROMPT_VERSION = "placement-v2.0.0";
 export const SIMPLE_POINT_PROMPT_VERSION = "simple-multi-point-v3.0.0";
-export const SIMPLE_COMPOSITE_PROMPT_VERSION = "simple-composite-v1.0.0";
+export const SIMPLE_COMPOSITE_PROMPT_VERSION = "simple-composite-v1.1.0";
 
 /**
  * Prompt for the composite-then-harmonize pipeline: the objects are already
@@ -23,7 +23,9 @@ export function buildSimpleHarmonizePrompt(
   const lines = [
     `Task: image 1 is the finished composition — the customer's room photograph with ${products} already placed at final position and final size. Reproduce image 1 exactly, only integrating the ${objectCount === 1 ? "product" : "products"} naturally into the room's light.`,
     `Every product keeps exactly its current position, size, proportions, colors, materials and details as shown in image 1. The remaining images show the same ${products} for appearance reference only — ${objectCount === 1 ? "it is" : "they are"} already placed in image 1.`,
-    "Only in the immediate area around each product: paint a soft, physically correct contact shadow on its supporting surface, matching the direction, softness and color temperature of the shadows already present in the photograph, and blend the product's edges into the scene's light and grain.",
+    "Only in the immediate area around each product: paint a soft, physically correct contact shadow and blend the product's edges into the scene's light and grain.",
+    "The contact shadow lies flat on the horizontal surface under the product's base, matches the direction, softness and color temperature of the shadows already present, and fades within a few centimetres of the base.",
+    "The wall and the background behind and beside each product keep exactly the brightness and color they have in image 1 — nothing is darkened, tinted or shaded there.",
     "Everything else — walls, floor, furniture, decoration, framing, camera, colors, white balance and grain — stays identical to image 1.",
     "The output is a clean photograph: no added text, no watermark, no outlines.",
   ];

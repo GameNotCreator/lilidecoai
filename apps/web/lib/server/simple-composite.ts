@@ -115,10 +115,10 @@ export function computeTargetPixelSize(
 }
 
 /**
- * The editable region hugs each object's silhouette (dilated ~10 px) plus its
- * contact-shadow ellipse — never a full bounding box. Neighbouring items on a
- * crowded shelf therefore stay outside the model's reach and keep their
- * original pixels; only a thin blend ring and the shadow are regenerated.
+ * The editable region hugs each object's silhouette (dilated ~3 px) plus a
+ * generous contact-shadow ellipse under the base — never a full bounding box.
+ * Neighbouring items and the wall behind the object stay outside the model's
+ * reach; the model only gets the edge-blend ring and the shadow zone.
  */
 export async function createSilhouetteMask(
   width: number,
@@ -140,7 +140,7 @@ export async function createSilhouetteMask(
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">${overlays
       .map(
         (overlay) =>
-          `<ellipse cx="${overlay.left + overlay.widthPx / 2}" cy="${overlay.top + overlay.heightPx * 0.985}" rx="${overlay.widthPx * 0.5}" ry="${Math.max(8, overlay.heightPx * 0.045)}" fill="#ffffff"/>`,
+          `<ellipse cx="${overlay.left + overlay.widthPx / 2}" cy="${overlay.top + overlay.heightPx * 0.985}" rx="${overlay.widthPx * 0.55}" ry="${Math.max(10, overlay.heightPx * 0.06)}" fill="#ffffff"/>`,
       )
       .join("")}</svg>`,
   );
@@ -162,8 +162,8 @@ export async function createSilhouetteMask(
       { input: shadowSvg, blend: "over" as const },
     ])
     .toColourspace("b-w")
-    .blur(5)
-    .threshold(16)
+    .blur(2)
+    .threshold(20)
     .raw()
     .toBuffer();
 
@@ -377,7 +377,7 @@ export async function pasteBackOutsideMask(
   const feathered = await sharp(alpha, {
     raw: { width: sceneWidth, height: sceneHeight, channels: 1 },
   })
-    .blur(4)
+    .blur(3)
     .png()
     .toBuffer();
   const overlay = await sharp(aligned).joinChannel(feathered).png().toBuffer();
