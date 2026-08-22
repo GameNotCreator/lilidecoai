@@ -181,6 +181,43 @@ describe("composite pipeline", () => {
     expect(ring.g).toBeGreaterThan(ring.r);
   });
 
+  it("never stamps outside a non-rectangular silhouette", async () => {
+    // Regression: a circular cutout has transparent bbox corners whose RGB is
+    // black once the alpha is removed; a stamp-channel bug once painted that
+    // black over the scene. The corners must stay untouched scene pixels.
+    const scene = await solidImage(300, 200, { r: 200, g: 30, b: 30 }, "webp");
+    const cutout = await circleCutout(80, "#1e1edc");
+    const composition = await compositeObjectsOnScene(scene, 300, 200, [
+      {
+        cutout,
+        point: { x: 0.5, y: 0.6 },
+        dimensions: { mode: "height_length", heightCm: 60, lengthCm: 60 },
+        pixelsPerCm: 1,
+      },
+    ]);
+    const padded = await padCompositionForAspect(composition, "1536x1024");
+    const modelOutput = await sharp(padded.imageWebp).webp().toBuffer();
+    const final = await pasteBackOutsideMask(composition, padded, modelOutput);
+    const placement = composition.placements[0]!;
+    // Bounding-box top corners, inside the box but far outside the circle.
+    for (const [x, y] of [
+      [placement.left + 2, placement.top + 2],
+      [placement.left + placement.widthPx - 3, placement.top + 2],
+    ] as const) {
+      const pixel = await pixelAt(final, x, y);
+      expect(pixel.r).toBeGreaterThan(150);
+      expect(pixel.g).toBeLessThan(90);
+      expect(pixel.b).toBeLessThan(90);
+    }
+    // The circle core is still the catalog cutout.
+    const core = await pixelAt(
+      final,
+      placement.left + Math.floor(placement.widthPx / 2),
+      placement.top + Math.floor(placement.heightPx / 2),
+    );
+    expect(core.b).toBeGreaterThan(150);
+  });
+
   it("keeps the exact scene size when the aspect already matches", async () => {
     const scene = await solidImage(300, 200, { r: 200, g: 30, b: 30 }, "webp");
     const cutout = await solidImage(40, 80, { r: 30, g: 30, b: 220 });

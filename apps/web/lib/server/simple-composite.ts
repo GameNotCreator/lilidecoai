@@ -388,17 +388,39 @@ export async function pasteBackOutsideMask(
   // The object's pixels stay catalog-sharp at full scene resolution.
   const stamps = await Promise.all(
     composition.overlays.map(async (placed) => {
-      const core = await sharp(placed.png)
+      const alphaPng = await sharp(placed.png)
         .ensureAlpha()
         .extractChannel("alpha")
+        .png()
+        .toBuffer();
+      const corePng = await sharp(alphaPng)
         .blur(2)
         .threshold(200)
         .blur(1)
         .png()
         .toBuffer();
-      const stamp = await sharp(placed.png)
+      // The eroded core is multiplied by the original alpha: outside the
+      // silhouette the stamp is exactly transparent, so the black RGB that
+      // removeAlpha() exposes under transparent pixels can never bleed out.
+      // Two passes: sharp applies composite() at the end of its pipeline, so
+      // the alpha channel it introduces must be stripped in a fresh pipeline
+      // or joinChannel would graft two channels instead of one.
+      const multiplied = await sharp(alphaPng)
+        .composite([{ input: corePng, blend: "multiply" }])
+        .png()
+        .toBuffer();
+      const stampAlpha = await sharp(multiplied)
         .removeAlpha()
-        .joinChannel(core)
+        .toColourspace("b-w")
+        .png()
+        .toBuffer();
+      // removeAlpha and joinChannel cannot share a pipeline: sharp applies
+      // them in a fixed internal order that yields a 3-channel image with no
+      // alpha at all — an opaque tile that would paint its black corners
+      // over the scene.
+      const stampRgb = await sharp(placed.png).removeAlpha().png().toBuffer();
+      const stamp = await sharp(stampRgb)
+        .joinChannel(stampAlpha)
         .png()
         .toBuffer();
       return {
