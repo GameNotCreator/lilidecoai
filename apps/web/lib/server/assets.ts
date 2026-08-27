@@ -4,9 +4,12 @@ import { v2 as cloudinary, type UploadApiResponse } from "cloudinary";
 import { Binary, type Db } from "mongodb";
 import sharp from "sharp";
 
+import { selectOutputSize } from "@lili/geometry";
+
 import { cloudinaryStorageConfigured, serverConfig } from "./config";
 import { collections } from "./mongodb";
 import { sniffImageMime } from "./image-security";
+import { transparencyRatio } from "./simple-composite";
 import type { AssetDocument } from "./types";
 
 const allowedTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -76,6 +79,68 @@ export async function normalizeImage(
     .toColourspace("srgb")
     .webp({ quality: 92, smartSubsample: true, effort: 5 })
     .toBuffer();
+}
+
+/**
+ * Model-based isolation fallback for photos where the local heuristic cannot
+ * separate the product from a busy background: gpt-image-2 re-renders the
+ * product alone on a transparent background. Returns null when unavailable or
+ * when the result is not meaningfully transparent — callers keep the
+ * heuristic cutout in that case.
+ */
+export async function isolateProductWithModel(
+  buffer: Buffer,
+  idempotencyKey: string,
+): Promise<Buffer | null> {
+  if (serverConfig.aiMockMode || !serverConfig.openaiApiKey) return null;
+  try {
+    const metadata = await sharp(buffer).rotate().metadata();
+    const size = selectOutputSize(
+      metadata.width ?? 1024,
+      metadata.height ?? 1024,
+    );
+    const source = await sharp(buffer).rotate().png().toBuffer();
+    const body = new FormData();
+    body.append("model", serverConfig.openaiModel);
+    body.append(
+      "image[]",
+      new Blob([new Uint8Array(source)], { type: "image/png" }),
+      "product-photo.png",
+    );
+    body.append(
+      "prompt",
+      [
+        "Extract the single main product from this photo onto a fully transparent background.",
+        "Reproduce the product pixel-faithfully: same shape, proportions, colors, materials, texture and details, same camera angle. Do not restyle it and do not crop any part of it.",
+        "Remove absolutely everything else: background, supporting surface, shadows, reflections, hands, packaging and props. Only the product remains, surrounded by transparency.",
+      ].join(" "),
+    );
+    body.append("quality", "medium");
+    body.append("size", size);
+    body.append("background", "transparent");
+    body.append("output_format", "png");
+    const response = await fetch(`${serverConfig.openaiBaseUrl}/images/edits`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${serverConfig.openaiApiKey}`,
+        "Idempotency-Key": idempotencyKey,
+      },
+      body,
+      signal: AbortSignal.timeout(120_000),
+    });
+    if (!response.ok) return null;
+    const payload = (await response.json()) as {
+      data?: Array<{ b64_json?: string }>;
+    };
+    const encoded = payload.data?.[0]?.b64_json;
+    if (!encoded) return null;
+    const isolated = Buffer.from(encoded, "base64");
+    if ((await transparencyRatio(isolated)) < 0.08) return null;
+    return isolated;
+  } catch (reason) {
+    console.error("Model-based product isolation failed", reason);
+    return null;
+  }
 }
 
 export async function createCutout(buffer: Buffer): Promise<Buffer> {

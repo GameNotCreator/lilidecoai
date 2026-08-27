@@ -15,11 +15,13 @@ import {
   assetUrl,
   createCutout,
   deleteAsset,
+  isolateProductWithModel,
   normalizeImage,
   readAsset,
   storeAsset,
   validateImage,
 } from "./assets";
+import { transparencyRatio } from "./simple-composite";
 import {
   AuthError,
   authenticateUser,
@@ -449,7 +451,24 @@ async function handleProducts(
     if (!product.assetId) throw new ApiInputError("Photo produit requise");
     const source = await readAsset(db, product.assetId);
     if (!source) return error("Photo produit introuvable", 404);
-    const cutout = await createCutout(source.buffer);
+    let cutout = await createCutout(source.buffer);
+    // The local heuristic only removes uniform backgrounds. When the result
+    // is still an opaque rectangle, fall back to model-based isolation —
+    // pasting an un-cut photo into a room is worse than one paid call.
+    if ((await transparencyRatio(cutout)) < 0.05) {
+      await enforceRateLimit(
+        db,
+        tenant.organizationId,
+        "cutout-isolation",
+        10,
+        600_000,
+      );
+      const isolated = await isolateProductWithModel(
+        source.buffer,
+        `cutout:${product.id}:${product.assetId}`,
+      );
+      if (isolated) cutout = await createCutout(isolated);
+    }
     const asset = await storeAsset(db, {
       organizationId: tenant.organizationId,
       kind: "cutout",
@@ -562,10 +581,7 @@ async function handleScenes(
       300_000,
     );
     const input = placementIntentSchema.parse(await request.json());
-    if (
-      tenant.publicProductId &&
-      input.productId !== tenant.publicProductId
-    ) {
+    if (tenant.publicProductId && input.productId !== tenant.publicProductId) {
       throw new AuthError("Produit non autorisé", 403);
     }
     const product = await c.products.findOne({
@@ -598,17 +614,13 @@ async function handleScenes(
       room: {
         data: new Uint8Array(sceneAsset.buffer),
         mimeType: sceneAsset.asset.contentType as
-          | "image/jpeg"
-          | "image/png"
-          | "image/webp",
+          "image/jpeg" | "image/png" | "image/webp",
         role: "room_original",
       },
       product: {
         data: new Uint8Array(productAsset.buffer),
         mimeType: productAsset.asset.contentType as
-          | "image/jpeg"
-          | "image/png"
-          | "image/webp",
+          "image/jpeg" | "image/png" | "image/webp",
         role: "product_front",
       },
       instruction: input.instruction,
@@ -652,17 +664,14 @@ async function handleScenes(
       return Response.json({
         ...intentMetadata,
         needsClarification: true,
-        rationale:
-          "L’élément présent n’a pas pu être localisé avec certitude.",
+        rationale: "L’élément présent n’a pas pu être localisé avec certitude.",
       });
     }
     const segmented = await selectSegmentationProvider().segment({
       room: {
         data: new Uint8Array(sceneAsset.buffer),
         mimeType: sceneAsset.asset.contentType as
-          | "image/jpeg"
-          | "image/png"
-          | "image/webp",
+          "image/jpeg" | "image/png" | "image/webp",
         role: "room_original",
       },
       point: intent.targetPoint,

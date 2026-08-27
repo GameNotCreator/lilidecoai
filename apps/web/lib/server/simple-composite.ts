@@ -174,6 +174,44 @@ export async function createSilhouetteMask(
   return data;
 }
 
+/** Fraction of pixels that are meaningfully transparent (alpha < 245). */
+export async function transparencyRatio(image: Buffer): Promise<number> {
+  const { data, info } = await sharp(image)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  let transparent = 0;
+  const total = info.width * info.height;
+  for (let i = 3; i < data.length; i += 4) {
+    if ((data[i] ?? 255) < 245) transparent += 1;
+  }
+  return total === 0 ? 0 : transparent / total;
+}
+
+/**
+ * Scene-sized RGBA mask opening one rectangular editable window from a
+ * normalized box (alpha 0 = editable). Used to paste back an obstacle-removal
+ * edit so the model's regeneration stays confined to the removed object.
+ */
+export function createRectMask(
+  width: number,
+  height: number,
+  box: { xMin: number; yMin: number; xMax: number; yMax: number },
+  paddingPx = 14,
+): Buffer {
+  const data = Buffer.alloc(width * height * 4, 255);
+  const minX = Math.max(0, Math.round(box.xMin * width) - paddingPx);
+  const maxX = Math.min(width, Math.round(box.xMax * width) + paddingPx);
+  const minY = Math.max(0, Math.round(box.yMin * height) - paddingPx);
+  const maxY = Math.min(height, Math.round(box.yMax * height) + paddingPx);
+  for (let y = minY; y < maxY; y += 1) {
+    for (let x = minX; x < maxX; x += 1) {
+      data[(y * width + x) * 4 + 3] = 0;
+    }
+  }
+  return data;
+}
+
 export async function compositeObjectsOnScene(
   sceneImage: Buffer,
   sceneWidth: number,

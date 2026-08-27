@@ -23,6 +23,7 @@ import sharp from "sharp";
 import { readAsset, storeAsset } from "./assets";
 import {
   compositeObjectsOnScene,
+  createRectMask,
   padCompositionForAspect,
   pasteBackOutsideMask,
 } from "./simple-composite";
@@ -577,10 +578,78 @@ async function runSimplePointRender(
   const sceneHeight = sceneMetadata.height ?? scene.heightPx;
   const sceneImage = await orientedScene.webp({ quality: 96 }).toBuffer();
 
+  // Replace-at-point: a tap on an existing movable object means "put mine
+  // instead", not "stack on top". Each point is inspected; any obstacle is
+  // removed by a masked edit whose result is itself pasted back so the
+  // regeneration stays confined to the obstacle window.
+  let workingScene: Buffer = sceneImage;
+  const replacedTargets: Array<{ objectIndex: number; name: string }> = [];
+  if (!serverConfig.aiMockMode && serverConfig.openaiApiKey) {
+    const surfaceType = normalizeSurfaceType(
+      input.surfaceType ?? input.placement.surfaceType ?? "tabletop",
+    );
+    await setStage("analyzing_scene", "inspecting_targets");
+    const inspections = await Promise.all(
+      simpleObjects.map((item) =>
+        openAIInspectScene(
+          sceneImage,
+          "image/webp",
+          item.placementPoint,
+          surfaceType,
+        ).catch((reason: unknown) => {
+          console.error("Target inspection failed; inserting instead", reason);
+          return null;
+        }),
+      ),
+    );
+    for (const [index, inspection] of inspections.entries()) {
+      if (!inspection?.obstacleAtPoint || !inspection.obstacleBox) continue;
+      await setStage("removing_target", `removing_object_${index + 1}`);
+      const removed = await openAIRemoveObstacle(
+        workingScene,
+        inspection,
+        requestedSize,
+        `${input.idempotencyKey}:remove:${index}`,
+      ).catch((reason: unknown) => {
+        console.error("Obstacle removal failed; inserting on top", reason);
+        return null;
+      });
+      if (!removed) continue;
+      workingScene = await pasteBackOutsideMask(
+        {
+          imageWebp: workingScene,
+          maskRaw: createRectMask(
+            sceneWidth,
+            sceneHeight,
+            inspection.obstacleBox,
+          ),
+          sceneWidth,
+          sceneHeight,
+          placements: [],
+          overlays: [],
+        },
+        {
+          imageWebp: workingScene,
+          maskPng: Buffer.alloc(0),
+          offsetX: 0,
+          offsetY: 0,
+          paddedWidth: sceneWidth,
+          paddedHeight: sceneHeight,
+          padded: false,
+        },
+        removed,
+      );
+      replacedTargets.push({
+        objectIndex: index,
+        name: inspection.obstacleName ?? "objet existant",
+      });
+    }
+  }
+
   await setStage("analyzing_scene", "estimating_scale");
   const spans = await estimateTenCmSpans(
-    sourceAsset.buffer,
-    sourceAsset.asset.contentType,
+    workingScene,
+    "image/webp",
     simpleObjects.map((item) => item.placementPoint),
     sceneWidth,
     sceneHeight,
@@ -602,7 +671,7 @@ async function runSimplePointRender(
     }),
   );
   const composition = await compositeObjectsOnScene(
-    sceneImage,
+    workingScene,
     sceneWidth,
     sceneHeight,
     simpleObjects.map((item, index) => ({
@@ -716,6 +785,7 @@ async function runSimplePointRender(
       objectCount: simpleObjects.length,
       pipelineStage: "complete",
       compositePlacements: composition.placements,
+      replacedTargets,
     },
     updatedAt: new Date(),
   };
