@@ -100,3 +100,64 @@ Avant le premier déploiement de cette version, inspecter la migration avec
 `npm.cmd run migrate:image-pipeline`, puis l’appliquer explicitement avec
 `npm.cmd run migrate:image-pipeline -- --apply`. Le script ne supprime aucun
 champ et ne journalise jamais l’URI MongoDB.
+
+### Migration obligatoire du lot 2 : propriété des images
+
+Le contrôle d’accès aux images ne se déduit plus de leur type ; il lit la
+`visibility` portée par l’image, et une valeur absente est lue comme **privée**
+([lot 2](professionnalisation-lot-2.md)). Sur une base existante, tant que la
+migration n’a pas tourné, une image catalogue répond donc **403** au lieu qu’un
+upload de visiteur fuie. Le sens fermant est délibéré, mais la migration n’est
+pas optionnelle :
+
+```powershell
+npm.cmd run migrate:asset-visibility
+npm.cmd run migrate:asset-visibility -- --apply
+```
+
+Le premier appel s’exécute à blanc et affiche son plan. **Ne pas appliquer** si,
+sur une base ayant servi du trafic widget ou démo, le compte `private_session`
+vaut zéro : c’est la signature d’un rattachement de session incorrect, et le
+script l’annonce. Les images qu’aucun document ne référence restent privées et
+sont dénombrées séparément.
+
+Après application, vérifier qu’une image du catalogue démo se lit sans session
+et qu’une image importée par un visiteur répond 403 depuis une autre session.
+
+## Livraison contrôlée du lot 1
+
+La configuration `apps/web/vercel.json` exécute maintenant le contrôle de production avant le build. Il vérifie la configuration, l'accès aux modèles via GET (sans génération), MongoDB, la migration et l'authentification Cloudinary. Un échec bloque la construction.
+
+Les variables Vercel sensibles ne sont pas relisibles après stockage ; un export vide ne prouve donc pas leur absence à l'exécution ([documentation Vercel](https://vercel.com/docs/environment-variables/sensitive-environment-variables)). Le contrôle tourne chez Vercel avec `--runtime`. Avec un fichier local contenant de vraies valeurs, il peut aussi être exécuté ainsi, sans afficher les secrets :
+
+```powershell
+node apps/web/scripts/production-preflight.mjs .vercel/production.env
+```
+
+Construire sans basculer le domaine principal, puis inspecter le déploiement et vérifier ses parcours avant promotion :
+
+```powershell
+vercel deploy --prod --skip-domain --yes
+vercel inspect <deployment-id> --logs
+node apps/web/scripts/production-smoke.mjs https://<deployment-url> <fichier-local-du-jeton-de-protection>
+vercel promote <deployment-id> --yes
+node apps/web/scripts/production-smoke.mjs https://lilidecoai-web.vercel.app
+```
+
+Pour une migration explicitement préparée, ajouter uniquement à ce déploiement `--build-env APPLY_IMAGE_PIPELINE_MIGRATION=true`. Ne pas enregistrer ce drapeau dans les variables permanentes du projet. La migration sauvegarde les champs concernés dans `migration_backups_image_pipeline_v1`, ne remplit que les champs manquants et peut être relancée sans réécrire les valeurs existantes.
+
+Le smoke test crée deux sessions invitées et une image synthétique expirant selon la rétention configurée. Il vérifie 25 points, dont l'isolation des scènes entre sessions. Il ne lance ni analyse IA ni génération et ne purge pas les données existantes. Le GET de [description d'un modèle OpenAI](https://developers.openai.com/api/reference/resources/models/methods/retrieve) ne valide pas une génération complète, son coût ou sa qualité.
+
+L'état livré et les limites restantes sont consignés dans [le compte rendu du 6 septembre](production-2026-09-06.md).
+
+## Worker image durable (activation distincte)
+
+Les parcours `simple_point` et `standard` disposent d'un worker Node séparé,
+versionné `render-durable-v2`, désactivé par défaut.
+Il exige MongoDB Atlas/replica set, les mêmes paramètres fournisseurs et une
+révision immutable partagée avec le web. Le worker doit tourner sur un service
+persistant ; il ne s'exécute pas dans la fonction Vercel. Le mode `web` conserve
+l'exécution précédente. Voir [le guide du worker](../infra/render-worker.md)
+pour les commandes, le Dockerfile, la bascule et le drainage des anciennes
+révisions. Aucun worker hébergé ni déploiement de cette bascule n'a été effectué
+dans le lot du 21 septembre.

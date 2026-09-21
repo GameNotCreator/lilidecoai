@@ -58,9 +58,10 @@ tentatives de rendu, analytics et audits.
 3. Il téléverse la photo du lieu, prise à au moins 1,5 mètre.
 4. Il place dans l’ordre jusqu’à trois points rouges numérotés ; chaque point
    reste associé à l’objet portant le même numéro et peut être repositionné.
-5. Next.js transmet la photo du lieu en image 1, puis les objets en images 2 à
-   4, avec le prompt multi-points à `gpt-image-2` via l’API d’édition OpenAI.
-6. Un crédit est débité uniquement après un rendu réussi.
+5. Le serveur construit une composition déterministe, la vérifie avec un modèle
+   de vision, puis l’harmonise avec `gpt-image-2.5-sunburst` en qualité `max`.
+6. Un contrôle compare chaque objet au placement prévu et à sa photo originale.
+   Une correction ciblée est possible ; le crédit n’est débité qu’après validation.
 
 ## Vérification
 
@@ -79,7 +80,8 @@ npm.cmd run test:e2e
    situés hors de ce dossier.
 3. Ajouter `MONGODB_URI`, `MONGODB_DB`, `APP_SESSION_SECRET`, `CRON_SECRET` et
    la variable `CLOUDINARY_URL` copiée depuis Cloudinary.
-4. Ajouter `OPENAI_API_KEY`, définir `OPENAI_MODEL=gpt-image-2`, puis mettre
+4. Ajouter `OPENAI_API_KEY`, définir `OPENAI_MODEL=gpt-image-2.5-sunburst`,
+   `OPENAI_VISION_MODEL=gpt-6-astra`, `OPENAI_QUALITY=max`, puis mettre
    `AI_MOCK_MODE=false`. Aucune clé ne doit être préfixée par `NEXT_PUBLIC_`.
 5. Ajouter `ADMIN_USERNAME` et `ADMIN_PASSWORD_HASH` pour ouvrir `/admin`.
 6. Déployer, puis vérifier `/v1/health`.
@@ -91,6 +93,9 @@ Les détails sont dans [docs/deployment.md](docs/deployment.md).
 - [Architecture](docs/architecture.md)
 - [Back office et banque de produits](docs/back-office.md)
 - [Provider OpenAI](docs/providers.md)
+- [Audit image et améliorations du 20 septembre 2026](docs/audit-image-2026-09-20.md)
+- [Exécution du plan image — état et validations](docs/execution-systeme-image-2026-09-21.md)
+- [Worker de rendu durable et procédure de retour arrière](infra/render-worker.md)
 - [Installation du widget](docs/widget.md)
 - [Sécurité et confidentialité](docs/security.md)
 - [Déploiement](docs/deployment.md)

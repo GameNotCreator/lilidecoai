@@ -11,8 +11,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@lili/analytics": "*",
     "@lili/ai-router": "*",
+    "@lili/analytics": "*",
     "@lili/geometry": "*",
     "@lili/types": "*",
     "@lili/ui": "*",
@@ -26,6 +26,7 @@
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "react-konva": "19.2.5",
+    "server-only": "0.0.1",
     "sharp": "^0.35.3",
     "use-image": "^1.1.4",
     "zod": "4.4.3"

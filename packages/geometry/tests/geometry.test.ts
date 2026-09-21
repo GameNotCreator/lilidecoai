@@ -35,6 +35,11 @@ describe("wall calibration", () => {
       calibrateSegment({ x: 1, y: 1 }, { x: 1.5, y: 1.5 }, 20),
     ).toThrowError(/at least two pixels/);
   });
+  it("rejects non-finite calibration coordinates", () => {
+    expect(() =>
+      calibrateSegment({ x: Number.NaN, y: 0 }, { x: 100, y: 0 }, 100),
+    ).toThrow(GeometryError);
+  });
 });
 
 describe("surface homography", () => {
@@ -68,6 +73,20 @@ describe("surface homography", () => {
       ),
     ).toThrowError(/degenerate/);
   });
+  it("rejects concave corner order instead of producing a folded projection", () => {
+    expect(() =>
+      calibrateSurface(
+        [
+          { x: 0, y: 0 },
+          { x: 200, y: 0 },
+          { x: 50, y: 50 },
+          { x: 0, y: 200 },
+        ],
+        100,
+        100,
+      ),
+    ).toThrow(/degenerate/);
+  });
 });
 
 describe("placement utilities", () => {
@@ -95,6 +114,20 @@ describe("placement utilities", () => {
     });
     expect(result.fits).toBe(true);
     expect(result.productBounds.yMax).toBe(0.72);
+  });
+  it("does not approve a fit when a coordinate or bound is NaN", () => {
+    expect(() =>
+      validatePlacementFit({
+        imageWidth: 1000,
+        imageHeight: 1000,
+        productWidthCm: 20,
+        productHeightCm: 30,
+        xNormalized: Number.NaN,
+        yNormalized: 0.7,
+        scale: 0.1,
+        fitBounds: { xMin: 0.1, yMin: 0.1, xMax: 0.9, yMax: 0.9 },
+      }),
+    ).toThrow(GeometryError);
   });
 
   it("accepts exact contact with the support bottom plane", () => {

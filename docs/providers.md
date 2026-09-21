@@ -4,10 +4,11 @@
 
 Le parcours public `simple_point` reste entièrement côté serveur.
 
-| Étape                                    | Fournisseur | Modèle par défaut        |
-| ---------------------------------------- | ----------- | ------------------------ |
-| Ajout depuis un point, zone libre ou occupée | OpenAI   | `gpt-image-2`            |
-| Tests et développement sans clé          | Mock local  | `mock-image-v2`          |
+| Étape                                        | Fournisseur | Modèle par défaut                        |
+| -------------------------------------------- | ----------- | ---------------------------------------- |
+| Ajout depuis un point, zone libre ou occupée | OpenAI      | `gpt-image-2.5-sunburst` (qualité `max`) |
+| Échelle, précontrôle et contrôle final       | OpenAI      | `gpt-6-astra`                            |
+| Tests et développement sans clé              | Mock local  | `mock-image-v2`                          |
 
 La démo choisit explicitement OpenAI, même si les anciens fournisseurs restent
 derrière les interfaces communes pour les parcours marchands existants.
@@ -20,21 +21,69 @@ erreur normalisée et nombre de tentatives.
 
 ## Pipeline
 
-1. L’image 1 est la photo originale du lieu ; les images 2 à 4 sont les objets
-   fournis dans l’ordre de sélection.
-2. Jusqu’à trois clics sont convertis en coordonnées pixel et normalisées, puis
-   associés aux objets et points portant les mêmes numéros.
-3. `buildSimplePointPrompt` ajoute pour chaque objet son point, sa longueur, sa
-   hauteur et les contraintes de préservation de la photo.
-5. L’endpoint `/v1/images/edits` exécute une seule édition avec
-   `model=gpt-image-2`. Le modèle reçoit les images en haute fidélité par
-   défaut, conformément à la documentation OpenAI.
+La géométrie n’est jamais demandée au modèle. Position, taille, ordre de
+profondeur et rognage sont calculés par `computeSimplePlacement`
+(`packages/geometry/src/simple-placement.ts`), la même fonction pure côté
+navigateur et côté serveur : l’aperçu que le client voit avant de payer est
+celui que le serveur composite.
+
+1. **Détourage** (`/v1/products/:id/prepare`). `prepareCutout` produit un
+   masque local : suppression du fond joignable depuis le bord, nettoyage des
+   composantes parasites, décontamination alpha, séparation de l’ombre de
+   contact et mesure de la ligne de base. Il retourne aussi des drapeaux de
+   qualité ; un échec dur (rectangle opaque, forme creuse, fond enfermé, bande
+   d’ombre, fond chargé) doit être corrigé avant génération. Le produit
+   conserve les pixels de sa photo source et `cutout` : dimensions, `baseRowFraction`,
+   provenance, `synthetic` et avertissements affichés au client.
+2. **Échelle et lumière** (`POST /v1/scenes/:id/scale`, gratuit pour le
+   client). Un appel `/v1/responses` sur une copie de la photo où chaque point
+   porte un anneau rouge numéroté. Le modèle rend, par point, la portée d’un
+   segment de 10 cm vertical pour les objets debout/muraux, horizontal pour
+   les objets plats, le repère utilisé et sa taille supposée, la
+   nature et le matériau du support, plus la lumière dominante de la pièce. Le
+   code recalcule et vérifie : un repère hors plage ou incohérent de plus de
+   le span déclaré est rejeté, et l’échelle retombe en cascade
+   (`vision` → `vision_coarse` → `vision_interpolated` →
+   `assumed_room_width`). Le résultat est mis en cache dans
+   `scene.analysis.simpleScale` : la vérification avant paiement et le rendu
+   payant partagent un seul appel.
+3. **Pré-vol.** `planSimplePlacements` refuse, avant toute génération d’image,
+   un objet qui ne tient pas au point demandé ou deux objets qui se
+   chevauchent sur la même surface. L’étape 2 la précède nécessairement (il
+   faut l’échelle pour calculer les tailles) mais son résultat est en cache.
+4. **Remplacement au point.** Chaque point est inspecté sur une copie marquée ;
+   une boîte qui ne contient pas le point tapé, ou qui recouvre une boîte déjà
+   traitée, est ignorée. La suppression passe par le même chemin de
+   letterboxing que le rendu final, puis est recollée avec un fondu large.
+5. **Composite déterministe.** Les objets sont collés dans l’ordre de
+   profondeur, avec une ellipse d’ombre indicative bornée au masque. Le
+   composite est stocké (`compositeUrl`) **avant** l’appel payant : un rendu en
+   échec conserve un aperçu honnête.
+6. **Précontrôle et harmonisation.** Une analyse visuelle compare la composition,
+   la pièce et les originaux produit avant l’édition. `/v1/images/edits`
+   utilise `OPENAI_MODEL`, le composite en image 1 et les produits ensuite,
+   du plus proche au plus lointain. `buildSimpleHarmonizePrompt`
+   (`simple-composite-v3.0.0`) demande contact, ombres, contours et ajustement
+   lumineux discret en préservant strictement position, taille et identité.
+7. **Recollage.** Hors du masque, chaque pixel provient du composite ; au cœur
+   de chaque objet, le détourage catalogue est réutilisé avec un transfert de
+   luminance borné à ±12 %. Le résultat est encodé sans perte.
+8. **Contrôle final.** Pièce originale, composition attendue, rendu et tous les
+   originaux sont comparés. Chaque objet doit passer les vérifications de
+   position, taille, identité, contact, contours, ombres et occlusion.
+   Une reprise ciblée est possible si le temps restant le permet ; deux
+   éditions maximum. Aucun final n’est livré si le contrôle est indisponible.
 
 ## Variables serveur
 
 ```text
 OPENAI_API_KEY=
-OPENAI_MODEL=gpt-image-2
+OPENAI_MODEL=gpt-image-2.5-sunburst
+OPENAI_VISION_MODEL=gpt-6-astra
+OPENAI_QUALITY=max
+OPENAI_SERVICE_TIER=default
+OPENAI_MAX_COST_USD=5
+RENDER_MAX_COST_USD=20
 OPENAI_IMAGE_ENABLED=true
 AI_MOCK_MODE=true
 ```
@@ -52,4 +101,5 @@ couvre l’édition et le parcours complet sans appel OpenAI.
 ## Documentation officielle vérifiée
 
 - [Génération et édition d’images OpenAI](https://developers.openai.com/api/docs/guides/image-generation)
-- [Modèle GPT Image 2](https://developers.openai.com/api/docs/models/gpt-image-2)
+- [Modèle GPT Image 2.5 Sunburst](https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst)
+- [Audit, limites et architecture de montée en charge](audit-image-2026-09-20.md)

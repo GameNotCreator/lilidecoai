@@ -38,11 +38,7 @@ export async function POST(request: Request): Promise<Response> {
         } else if (action === "archive") {
           await setProductStatus(db, product, "archived");
         } else {
-          await setProductStatus(
-            db,
-            product,
-            product.cutoutAssetId ? "ready" : "draft",
-          );
+          await setProductStatus(db, product, "draft");
         }
         succeeded.push(id);
       } catch (reason) {

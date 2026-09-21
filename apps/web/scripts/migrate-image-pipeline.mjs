@@ -55,6 +55,26 @@ try {
   );
 
   if (apply) {
+    const backups = database.collection("migration_backups_image_pipeline_v1");
+    for (const [collection, documents] of [
+      ["products", legacyProducts],
+      ["renders", legacyRenders],
+    ]) {
+      for (const document of documents) {
+        await backups.updateOne(
+          { _id: `${collection}:${document._id}` },
+          {
+            $setOnInsert: {
+              collection,
+              before: document,
+              createdAt: new Date(),
+            },
+          },
+          { upsert: true },
+        );
+      }
+    }
+    console.log("Sauvegarde des champs concernés terminée avant migration.");
     for (const product of legacyProducts) {
       await products.updateOne(
         { _id: product._id, views: { $exists: false } },
@@ -115,7 +135,22 @@ try {
         if (render[key] !== undefined) delete set[key];
       }
       if (Object.keys(set).length > 0) {
-        await renders.updateOne({ _id: render._id }, { $set: set });
+        await renders.updateOne({ _id: render._id }, [
+          {
+            $set: Object.fromEntries(
+              Object.entries(set).map(([key, value]) => [
+                key,
+                {
+                  $cond: [
+                    { $eq: [{ $type: `$${key}` }, "missing"] },
+                    { $literal: value },
+                    `$${key}`,
+                  ],
+                },
+              ]),
+            ),
+          },
+        ]);
       }
     }
     console.log("Migration terminée sans suppression de données.");

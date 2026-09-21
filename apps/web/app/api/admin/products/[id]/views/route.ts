@@ -5,6 +5,7 @@ import {
   AdminProductError,
   adminProductResponse,
   findProduct,
+  syncProductAssetVisibility,
 } from "@/lib/server/admin-products";
 import { withAdmin } from "@/lib/server/admin-route";
 import {
@@ -15,6 +16,7 @@ import {
   validateImage,
 } from "@/lib/server/assets";
 import { collections } from "@/lib/server/mongodb";
+import { productAssetVisibility } from "@/lib/server/product-visibility";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -49,6 +51,14 @@ export async function POST(
     const asset = await storeAsset(db, {
       organizationId: organization.id,
       kind: viewType === "front" ? "product" : "product_view",
+      visibility: productAssetVisibility(
+        viewType === "front"
+          ? { ...product, status: "processing" }
+          : product,
+      ),
+      // A temporary product's images must not outlive it: the public routes
+      // already inherit this, and the purge only ever reads `expiresAt`.
+      ...(product.expiresAt ? { expiresAt: product.expiresAt } : {}),
       buffer: normalized,
       contentType: "image/webp",
     });
@@ -87,12 +97,21 @@ export async function POST(
             ? { assetId: asset.id, status: "processing" as const }
             : {}),
         },
+        // A new front photo invalidates the cutout made from the old one.
+        // Keeping it left the product describing one photo and rendering
+        // another — the identity hole PRO-008 closes, reached from the back
+        // office rather than from /prepare.
+        ...(viewType === "front"
+          ? { $unset: { cutoutAssetId: "", cutout: "" } }
+          : {}),
       },
     );
-    return Response.json(
-      adminProductResponse(await findProduct(db, organization.id, id)),
-      { status: 201 },
-    );
+    if (viewType === "front" && product.cutoutAssetId) {
+      await deleteAsset(db, product.cutoutAssetId).catch(() => undefined);
+    }
+    const updated = await findProduct(db, organization.id, id);
+    await syncProductAssetVisibility(db, updated);
+    return Response.json(adminProductResponse(updated), { status: 201 });
   });
 }
 
@@ -120,7 +139,8 @@ export async function DELETE(
         { id: product.id, organizationId: organization.id },
         {
           $set: { views, status: "draft", updatedAt: new Date() },
-          $unset: { assetId: "", cutoutAssetId: "" },
+          // The measurements describe an image that no longer exists.
+          $unset: { assetId: "", cutoutAssetId: "", cutout: "" },
         },
       );
     } else {
@@ -129,8 +149,8 @@ export async function DELETE(
         { $set: { views, updatedAt: new Date() } },
       );
     }
-    return Response.json(
-      adminProductResponse(await findProduct(db, organization.id, id)),
-    );
+    const updated = await findProduct(db, organization.id, id);
+    await syncProductAssetVisibility(db, updated);
+    return Response.json(adminProductResponse(updated));
   });
 }

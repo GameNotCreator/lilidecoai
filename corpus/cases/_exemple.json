@@ -1,0 +1,56 @@
+{
+  "_lisezMoi": "MODÈLE, PAS UN CAS. Les fichiers dont le nom commence par un souligné sont ignorés par le runner. Copiez celui-ci sous un vrai identifiant, par exemple vase-salon-01.json, et remplissez-le.",
+  "schemaVersion": 1,
+  "split": "pilot",
+  "id": "exemple-a-remplacer",
+  "stratum": "opaque_simple",
+
+  "provenance": {
+    "authorisation": "",
+    "capturedAt": "",
+    "photographer": "",
+    "licence": "",
+    "note": "Sans authorisation renseignée, le cas est refusé. C'est voulu : « sources autorisées » est la première exigence du ticket."
+  },
+
+  "room": {
+    "file": "exemple-piece.jpg",
+    "note": "Photo de la pièce, telle qu'un client la prendrait."
+  },
+
+  "product": {
+    "file": "exemple-produit.jpg",
+    "name": "Vase en grès",
+    "objectType": "vase",
+    "material": "grès mat",
+    "placementType": "floor",
+    "dimensionsCm": {
+      "width": 24,
+      "height": 42,
+      "depth": 24
+    },
+    "note": "Dimensions MESURÉES sur l'objet réel. Les estimer rend le cas trompeur, pas seulement inutile."
+  },
+
+  "surfaceType": "floor",
+
+  "placements": [
+    {
+      "point": { "x": 0.5, "y": 0.72 },
+      "kind": "standing",
+      "dimensionPair": {
+        "mode": "height_length",
+        "heightCm": 42,
+        "lengthCm": 24
+      }
+    }
+  ],
+
+  "groundTruth": {
+    "referencePhoto": "",
+    "measured": [],
+    "note": "Idéalement une photo du produit RÉELLEMENT posé à cet endroit. Sans elle, le jugement reste une appréciation humaine et non une précision métrique — l'audit demande de ne pas confondre les deux."
+  },
+
+  "expectation": "Le vase repose sur le sol au point indiqué, à sa taille réelle, sans que le décor change ailleurs."
+}

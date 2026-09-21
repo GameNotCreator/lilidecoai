@@ -134,6 +134,14 @@ const pipelineCopy: Record<string, { title: string; detail: string }> = {
 };
 
 function currentPipelineCopy(render: Render) {
+  if (render.status === "queued")
+    return {
+      title: render.execution?.retrying
+        ? "Reprise en attente…"
+        : "Rendu en attente…",
+      detail:
+        "Le traitement continue en arrière-plan. Votre placement est conservé.",
+    };
   const stage =
     render.pipelineState ??
     (typeof render.placement?.pipelineStage === "string"
@@ -185,7 +193,9 @@ export function VisualizerStudio({
     () => products.find((item) => item.id === productId) ?? null,
     [products, productId],
   );
-  const pendingRenderId = render?.status === "processing" ? render.id : null;
+  const renderPending =
+    render?.status === "processing" || render?.status === "queued";
+  const pendingRenderId = renderPending ? render.id : null;
 
   useEffect(() => {
     async function load() {
@@ -366,9 +376,7 @@ export function VisualizerStudio({
     }
   }
 
-  async function requestRender(
-    prepared: PreparedRenderInput,
-  ): Promise<Render> {
+  async function requestRender(prepared: PreparedRenderInput): Promise<Render> {
     if (!scene || !product) throw new Error("Photos introuvables");
     return api<Render>(`/v1/renders/${prepared.outputQuality}`, {
       method: "POST",
@@ -944,12 +952,16 @@ export function VisualizerStudio({
         {step === 3 && scene && render && (
           <div className="result-layout">
             <div className="compare-frame">
-              {render.resultUrl ? (
+              {render.resultUrl || render.compositeUrl ? (
                 <>
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
-                    src={render.resultUrl}
-                    alt="Rendu avec le produit intégré"
+                    src={render.resultUrl ?? render.compositeUrl ?? ""}
+                    alt={
+                      render.status === "succeeded"
+                        ? "Rendu avec le produit intégré"
+                        : "Aperçu du placement non validé"
+                    }
                   />
                   <div
                     className="before-layer"
@@ -961,7 +973,11 @@ export function VisualizerStudio({
                     <img src={scene.imageUrl} alt="Photo avant intégration" />
                   </div>
                   <span className="before-label">Avant</span>
-                  <span className="after-label">Après</span>
+                  <span className="after-label">
+                    {render.status === "succeeded"
+                      ? "Après"
+                      : "Aperçu non validé"}
+                  </span>
                   <input
                     aria-label="Comparer avant et après"
                     className="compare-range"
@@ -1002,24 +1018,26 @@ export function VisualizerStudio({
               <Badge
                 tone={render.status === "succeeded" ? "positive" : "warning"}
               >
-                {render.status === "processing" && (
+                {renderPending && (
                   <LoaderCircle className="spin refining-icon" size={14} />
                 )}
-                {render.status === "processing"
+                {renderPending
                   ? currentPipelineCopy(render).title
                   : render.status === "failed"
                     ? "Placement impossible"
-                    : "Rendu contrôlé"}
+                    : render.qualityDecision?.status === "simulated"
+                      ? "Simulation"
+                      : "Rendu contrôlé"}
               </Badge>
               <h2>
-                {render.status === "processing"
+                {renderPending
                   ? "Nous avançons étape par étape."
                   : render.status === "failed"
                     ? "Nous préférons vous arrêter ici."
                     : "Voilà le résultat."}
               </h2>
               <p className="muted">
-                {render.status === "processing"
+                {renderPending
                   ? currentPipelineCopy(render).detail
                   : render.status === "failed"
                     ? (render.error ?? "Essayez une autre zone.")
@@ -1030,11 +1048,16 @@ export function VisualizerStudio({
               {render.status === "succeeded" && (
                 <>
                   <div className="score-row">
-                    <span>Score de fidélité</span>
+                    <span>Évaluation visuelle</span>
                     <strong>
-                      {Math.round(Number(render.qualityScore ?? 0) * 100)}%
+                      {render.qualityScore === null
+                        ? "Non évaluée"
+                        : `${Math.round(render.qualityScore * 100)}%`}
                     </strong>
                   </div>
+                  {render.qualityDecision?.status === "simulated" && (
+                    <p>Simulation — fidélité visuelle non évaluée.</p>
+                  )}
                   <div className="render-facts">
                     <span>
                       {render.placement?.perspective &&
@@ -1095,7 +1118,7 @@ export function VisualizerStudio({
                   </button>
                 </div>
               )}
-              {render.status !== "processing" && (
+              {!renderPending && (
                 <div className="result-secondary-actions">
                   <button
                     className="back-link"
@@ -1122,7 +1145,6 @@ export function VisualizerStudio({
       </div>
     </section>
   );
-
 }
 
 const surfaceChoices: Array<[string, string]> = [

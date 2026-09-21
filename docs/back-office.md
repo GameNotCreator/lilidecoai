@@ -114,13 +114,18 @@ modifié ce fichier, redémarrez `npm run dev`.
 ## Cycle de vie
 
 ```text
-draft ──photo──▶ processing ──détourage──▶ ready ──▶ archived
-  ▲                                          │           │
-  └──────────── dépublier ◀──────────────────┘  restaurer┘
+draft ──photo──▶ processing ──détourage──▶ draft ──publier──▶ ready
+  ▲                                             ▲              │
+  └──────── restaurer ◀──── archived ◀──────────┴── dépublier ─┘
 ```
 
 - Une fiche ne peut passer en `ready` que si elle possède un détourage ; sinon
   l’API répond 422.
+- Le détourage prépare l’image sans publier la fiche. Seule l’action
+  **Publier sur le site** rend le produit et ses images accessibles au public.
+- Dépublier ou restaurer remet la fiche en brouillon et privatise toutes ses
+  images. Les produits temporaires d’un visiteur restent privés même lorsqu’ils
+  sont prêts à être rendus.
 - **Archiver** conserve la fiche et l’historique des rendus, mais la retire du
   site. **Supprimer définitivement** efface la fiche et toutes ses images, y
   compris sur Cloudinary.

@@ -25,11 +25,23 @@
     "test": "npm run test:unit",
     "test:unit": "npm run test --workspace @lili/geometry && npm run test --workspace @lili/ai-router && npm run test --workspace @lili/types && npm run test --workspace @visualizer/web",
     "test:e2e": "playwright test",
+    "test:e2e:isolated": "node apps/web/scripts/test-e2e-isolated.mjs",
     "migrate:image-pipeline": "node apps/web/scripts/migrate-image-pipeline.mjs",
+    "migrate:asset-visibility": "node apps/web/scripts/migrate-asset-visibility.mjs",
+    "migrate:cutout-provenance": "node apps/web/scripts/migrate-cutout-provenance.mjs",
+    "corpus:run": "node apps/web/scripts/corpus-run.mjs",
+    "corpus:aggregate": "node apps/web/scripts/corpus-aggregate.mjs",
+    "corpus:compare": "node apps/web/scripts/corpus-comparison.mjs",
+    "corpus:validate": "node apps/web/scripts/corpus-validate.mjs",
+    "worker:render": "node --conditions=react-server --env-file-if-exists=.env --import tsx apps/web/scripts/render-worker.ts",
+    "test:durable": "npm run test --workspace @visualizer/web -- tests/durable-steps.test.ts tests/durable-queue.test.ts",
+    "test:durable:integration": "node apps/web/scripts/test-durable-integration.mjs",
     "format": "prettier --write ."
   },
   "devDependencies": {
     "@playwright/test": "1.62.1",
-    "prettier": "^3.6.2"
+    "mongodb-memory-server": "10.2.3",
+    "prettier": "^3.6.2",
+    "tsx": "4.20.6"
   }
 }

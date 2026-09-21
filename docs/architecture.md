@@ -59,7 +59,51 @@ Le script `npm run migrate:image-pipeline` est une simulation par défaut. Il
 ajoute les champs compatibles aux anciens documents seulement avec `-- --apply`
 et ne supprime aucune donnée.
 
+## Parcours `simple_point`
+
+Le parcours public ne demande aucune géométrie au modèle. Une seule fonction
+pure, `computeSimplePlacement` dans `packages/geometry`, décide la taille en
+pixels, l’ancrage de la base, l’ordre de profondeur et le rognage par le
+cadre ; elle tourne à l’identique dans le navigateur et sur le serveur.
+
+```mermaid
+flowchart TD
+    P["Photos produits"] --> C["prepareCutout: matte, ombre, ligne de base"]
+    C -->|"échec dur"| M["Correction du détourage requise"]
+    C --> C2
+    R["Photo du lieu"] --> S["POST /scenes/:id/scale (gratuit, en cache)"]
+    T["Points tapés"] --> S
+    S --> G["computeSimplePlacement"]
+    C2 --> G
+    G --> A["Aperçu client, badges d’échelle, curseurs"]
+    G --> V["planSimplePlacements: pré-vol 422"]
+    V --> O{"Obstacle au point ?"}
+    O -->|"oui"| X["Suppression masquée + recollage"]
+    O -->|"non"| K
+    X --> K["Composite déterministe stocké"]
+    K --> Q["Précontrôle visuel de la composition"]
+    Q --> H["GPT Image 2.5 Sunburst : contact, bords et lumière"]
+    H --> B["Recollage hors masque + re-tampon d’identité"]
+    B --> VQ["Contrôle visuel de chaque objet"]
+    VQ -->|"Reprise ciblée, max. 1, si délai suffisant"| H
+    VQ -->|"Accepté"| OK["Livraison et débit"]
+```
+
+Trois garanties tiennent par construction et non par prompt : la base d’un
+objet ne bouge jamais du point tapé (le cadre le rogne, il n’est pas
+déplacé) ; hors du masque, chaque pixel vient du composite ; et le cœur de
+chaque objet réutilise le détourage catalogue avec une correction de luminance
+basse fréquence bornée à ±12 %. L’échelle et sa
+provenance (`vision`, `vision_coarse`, `vision_interpolated`,
+`assumed_room_width`, `user`) remontent jusqu’à l’interface, qui ne présente
+jamais une estimation comme une mesure.
+
 ## Limites connues
+
+L’exécution différée reste limitée à la durée de la route web. Le plan de
+file persistante, de reprise par étape et de concurrence bornée est détaillé
+dans [l’audit du 20 septembre](audit-image-2026-09-20.md). Il n’est pas encore
+déployé ; les délais sont bornés et un contrôle indisponible interdit la livraison.
 
 - Sans calibration réelle, l’échelle reste estimée et l’interface l’indique.
 - La segmentation compatible point/masque est interchangeable ; le backend

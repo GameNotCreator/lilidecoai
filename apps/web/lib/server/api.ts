@@ -5,6 +5,8 @@ import {
   renderRequestSchema,
   sceneAnalysisRequestSchema,
   segmentationRequestSchema,
+  simplePlacementKindSchema,
+  type CutoutMetadata,
 } from "@lili/types";
 import type { Db } from "mongodb";
 import sharp from "sharp";
@@ -13,15 +15,14 @@ import { z } from "zod";
 import {
   ApiInputError,
   assetUrl,
-  createCutout,
   deleteAsset,
-  isolateProductWithModel,
   normalizeImage,
+  prepareCutout,
   readAsset,
+  privateVisibility,
   storeAsset,
   validateImage,
 } from "./assets";
-import { transparencyRatio } from "./simple-composite";
 import {
   AuthError,
   authenticateUser,
@@ -33,7 +34,18 @@ import {
   tenantForRequest,
   type Tenant,
 } from "./auth";
+import {
+  archiveExpiry,
+  productImageAssetIds,
+  syncProductAssetVisibility,
+} from "./admin-products";
 import { cloudinaryStorageConfigured, serverConfig } from "./config";
+import {
+  CUTOUT_VERSION,
+  CutoutUnusableError,
+  cutoutTrust,
+  cutoutVerdict,
+} from "./cutout-identity";
 import { CreditError, getCredits } from "./credits";
 import { collections, database, pingMongo } from "./mongodb";
 import {
@@ -42,7 +54,16 @@ import {
   selectSegmentationProvider,
 } from "./ai";
 import { enforceRateLimit } from "./rate-limit";
+import { getOrEstimateSceneScale } from "./scale-estimation";
 import { createRender, RenderError, type DeferRenderTask } from "./rendering";
+import { stopRender } from "./render-lifecycle";
+import { checkpointAssetIds } from "./checkpoint-assets";
+import { buildRetryInput } from "./render-request";
+import {
+  productAssetVisibility,
+  productListFilter,
+  productOwnerSession,
+} from "./product-visibility";
 import { productResponse, renderResponse, sceneResponse } from "./serializers";
 import { ensureDemoCredits, ensureDemoSeed } from "./seed";
 import type {
@@ -52,9 +73,7 @@ import type {
   SegmentationDocument,
 } from "./types";
 import {
-  DEMO_CATALOG_USER_ID,
   DEMO_MERCHANT_SLUG,
-  DEMO_PRODUCT_ID,
 } from "./types";
 
 const productCreateSchema = z.object({
@@ -95,6 +114,19 @@ const productCreateSchema = z.object({
 const placementIntentSchema = z.object({
   productId: z.string().uuid(),
   instruction: z.string().trim().max(1_500).default(""),
+});
+
+const sceneScaleSchema = z.object({
+  points: z
+    .array(
+      z.object({
+        x: z.number().finite().min(0).max(1),
+        y: z.number().finite().min(0).max(1),
+      }),
+    )
+    .min(1)
+    .max(3),
+  kinds: z.array(simplePlacementKindSchema).max(3).optional(),
 });
 
 export async function dispatchApi(
@@ -217,13 +249,13 @@ async function handleAuth(
   if (path[0] === "guest" && request.method === "POST") {
     await ensureDemoSeed(db);
     await ensureDemoCredits(db);
-    const guestInput = z
-      .object({ sessionId: z.string().uuid().optional() })
-      .parse(await request.json().catch(() => ({})));
+    // The body may still carry a `sessionId`; it is deliberately ignored.
+    // A visitor session is what scopes their uploaded photos, so an identity
+    // anyone can claim by sending its identifier is not an identity. Continuity
+    // across a reload comes from the cookie, which the browser cannot forge.
     const currentTenant = await tenantForRequest(request).catch(() => null);
     const session = await createGuestSession(
       currentTenant?.role === "guest" ? currentTenant : undefined,
-      guestInput.sessionId,
     );
     return Response.json(
       { authenticated: true, role: "guest", accessToken: session.token },
@@ -295,22 +327,7 @@ async function handleProducts(
   const c = collections(db);
   if (path.length === 0 && request.method === "GET") {
     const products = await c.products
-      .find({
-        organizationId: tenant.organizationId,
-        status: { $ne: "archived" },
-        ...(tenant.publicProductId
-          ? { id: tenant.publicProductId, status: "ready" as const }
-          : {}),
-        ...(tenant.role === "guest"
-          ? {
-              $or: [
-                { createdByUserId: DEMO_CATALOG_USER_ID },
-                { createdByUserId: tenant.userId },
-                { id: DEMO_PRODUCT_ID },
-              ],
-            }
-          : {}),
-      })
+      .find(productListFilter(tenant))
       .sort({ createdAt: -1 })
       .toArray();
     return Response.json(products.map(productResponse));
@@ -374,10 +391,23 @@ async function handleProducts(
     );
   }
   if (path.length === 1 && request.method === "DELETE") {
+    // Archiving hides the product; its images used to stay forever, because
+    // nothing ever stamped an expiry on them and the purge only reads
+    // `expiresAt`. They now follow the room-photo retention — and
+    // `setProductStatus` lifts that stamp again if the product is restored.
+    const expiresAt = archiveExpiry();
+    await syncProductAssetVisibility(db, product, "archived");
     await c.products.updateOne(
       { id: product.id },
-      { $set: { status: "archived", updatedAt: new Date() } },
+      { $set: { status: "archived", expiresAt, updatedAt: new Date() } },
     );
+    const imageIds = productImageAssetIds(product);
+    if (imageIds.length) {
+      await c.assets.updateMany(
+        { id: { $in: imageIds }, expiresAt: { $exists: false } },
+        { $set: { expiresAt } },
+      );
+    }
     return new Response(null, { status: 204 });
   }
   if (path[1] === "assets" && request.method === "POST") {
@@ -398,6 +428,7 @@ async function handleProducts(
     const asset = await storeAsset(db, {
       organizationId: tenant.organizationId,
       kind: viewType === "front" ? "product" : "product_view",
+      visibility: productAssetVisibility({ ...product, status: "processing" }),
       buffer: normalized,
       contentType: "image/webp",
       ...(product.expiresAt ? { expiresAt: product.expiresAt } : {}),
@@ -435,44 +466,64 @@ async function handleProducts(
           status: "processing",
           updatedAt: new Date(),
         },
+        // A new front photo invalidates the cutout made from the old one —
+        // the same drift the back-office route had, now mirrored here. Kept,
+        // the product would size and anchor from one photo and render another.
+        ...(viewType === "front"
+          ? { $unset: { cutoutAssetId: "", cutout: "" } }
+          : {}),
       },
     );
-    return Response.json(
-      productResponse({
-        ...product,
-        assetId: nextAssetId,
-        views,
-        status: "processing",
-        updatedAt: new Date(),
-      }),
-    );
+    if (viewType === "front" && product.cutoutAssetId) {
+      await deleteAsset(db, product.cutoutAssetId).catch(() => undefined);
+    }
+    const updated = await c.products.findOne({
+      id: product.id,
+      organizationId: product.organizationId,
+    });
+    if (!updated) return error("Produit introuvable", 404);
+    await syncProductAssetVisibility(db, updated);
+    return Response.json(productResponse(updated));
   }
   if (path[1] === "prepare" && request.method === "POST") {
     if (!product.assetId) throw new ApiInputError("Photo produit requise");
     const source = await readAsset(db, product.assetId);
     if (!source) return error("Photo produit introuvable", 404);
-    let cutout = await createCutout(source.buffer);
-    // The local heuristic only removes uniform backgrounds. When the result
-    // is still an opaque rectangle, fall back to model-based isolation —
-    // pasting an un-cut photo into a room is worse than one paid call.
-    if ((await transparencyRatio(cutout)) < 0.05) {
-      await enforceRateLimit(
-        db,
-        tenant.organizationId,
-        "cutout-isolation",
-        10,
-        600_000,
-      );
-      const isolated = await isolateProductWithModel(
-        source.buffer,
-        `cutout:${product.id}:${product.assetId}`,
-      );
-      if (isolated) cutout = await createCutout(isolated);
-    }
+    const cutout = await prepareCutout(source.buffer);
+    const warnings = [...cutout.warnings];
+    // PRO-008 / A03. The model used to RE-RENDER the product here whenever the
+    // local matte struggled, and that image became the cutout — that is, the
+    // identity reference the render composites and re-stamps over its own
+    // output. The only check was that the result was transparent enough, never
+    // that it was still the customer's object.
+    //
+    // It cannot be salvaged by using the model's alpha over the original
+    // pixels either: `selectOutputSize` quantises the request to three aspect
+    // buckets, no mask is sent, and the answer comes back at 0.5-0.75x the
+    // source resolution, so nothing relates the two grids. The call is gone.
+    //
+    // What replaces it is a verdict. Two outcomes are genuinely unusable and
+    // are refused; every softer doubt is recorded and still shipped, because
+    // its frequency on real photos has never been measured and refusing on a
+    // guess would turn away customers whose photo works.
+    const verdict = cutoutVerdict(cutout.quality);
+    if (!verdict.usable) throw new CutoutUnusableError(verdict);
+    const metadata: CutoutMetadata = {
+      widthPx: cutout.widthPx,
+      heightPx: cutout.heightPx,
+      baseRowFraction: cutout.baseRowFraction,
+      source: "heuristic",
+      synthetic: false,
+      shadowRemoved: cutout.shadowRemoved,
+      warnings,
+      cutoutVersion: CUTOUT_VERSION,
+      verdict,
+    };
     const asset = await storeAsset(db, {
       organizationId: tenant.organizationId,
       kind: "cutout",
-      buffer: cutout,
+      visibility: productAssetVisibility(product),
+      buffer: cutout.buffer,
       contentType: "image/webp",
       ...(product.expiresAt ? { expiresAt: product.expiresAt } : {}),
     });
@@ -482,19 +533,19 @@ async function handleProducts(
       {
         $set: {
           cutoutAssetId: asset.id,
+          cutout: metadata,
           status: "ready",
           updatedAt: new Date(),
         },
       },
     );
-    return Response.json(
-      productResponse({
-        ...product,
-        cutoutAssetId: asset.id,
-        status: "ready",
-        updatedAt: new Date(),
-      }),
-    );
+    const updated = await c.products.findOne({
+      id: product.id,
+      organizationId: product.organizationId,
+    });
+    if (!updated) return error("Produit introuvable", 404);
+    await syncProductAssetVisibility(db, updated);
+    return Response.json(productResponse(updated));
   }
   if (path[1] === "anchor" && request.method === "POST") {
     const anchor = z
@@ -521,6 +572,9 @@ async function handleScenes(
 ): Promise<Response> {
   const c = collections(db);
   if (path.length === 0 && request.method === "POST") {
+    // Uploading a room photo is free of model cost but not of storage, and it
+    // is the entry point of every paid step that follows.
+    await enforcePaidLimit(db, tenant, "scene-upload", 20, 500, 600_000);
     const form = await request.formData();
     if (form.get("consent") !== "true") {
       throw new ApiInputError("Le consentement est requis");
@@ -537,6 +591,7 @@ async function handleScenes(
     const asset = await storeAsset(db, {
       organizationId: tenant.organizationId,
       kind: "scene",
+      visibility: privateVisibility(tenant.publicSessionId),
       buffer,
       contentType: "image/webp",
       expiresAt,
@@ -592,6 +647,12 @@ async function handleScenes(
     if (!product?.cutoutAssetId) {
       throw new ApiInputError("Produit prêt introuvable");
     }
+    // PRO-008. `ready` records that a cutout exists, nothing about where its
+    // pixels came from. This analysis is a paid vision call spent on that
+    // cutout, and the render would refuse the same product right after it —
+    // refuse here, before the money goes. Found by the adversarial review.
+    const intentTrust = cutoutTrust(product.cutout);
+    if (!intentTrust.trusted) throw new ApiInputError(intentTrust.message);
     const [sceneAsset, productAsset] = await Promise.all([
       readAsset(db, scene.assetId),
       readAsset(db, product.cutoutAssetId),
@@ -687,6 +748,7 @@ async function handleScenes(
     const maskAsset = await storeAsset(db, {
       organizationId: tenant.organizationId,
       kind: "mask",
+      visibility: privateVisibility(tenant.publicSessionId),
       buffer: Buffer.from(segmented.mask.data),
       contentType: "image/png",
       expiresAt: scene.expiresAt,
@@ -794,6 +856,7 @@ async function handleScenes(
     const maskAsset = await storeAsset(db, {
       organizationId: tenant.organizationId,
       kind: "mask",
+      visibility: privateVisibility(tenant.publicSessionId),
       buffer: Buffer.from(segmented.mask.data),
       contentType: "image/png",
       expiresAt: scene.expiresAt,
@@ -857,6 +920,7 @@ async function handleScenes(
       const maskAsset = await storeAsset(db, {
         organizationId: tenant.organizationId,
         kind: "mask",
+        visibility: privateVisibility(tenant.publicSessionId),
         buffer: corrected,
         contentType: "image/png",
         expiresAt: scene.expiresAt,
@@ -894,6 +958,22 @@ async function handleScenes(
       { $push: { "analysis.manualSurfaces": surface } },
     );
     return Response.json(surface, { status: 201 });
+  }
+  if (path[1] === "scale" && request.method === "POST") {
+    // Free pre-flight: the customer sees the measured scale before paying,
+    // and the render reuses this exact cached answer.
+    await enforcePaidLimit(db, tenant, "scene-scale", 10, 300, 300_000);
+    const input = sceneScaleSchema.parse(await request.json());
+    const kinds = input.points.map(
+      (_, index) => input.kinds?.[index] ?? "standing",
+    );
+    const result = await getOrEstimateSceneScale(
+      db,
+      scene,
+      input.points,
+      kinds,
+    );
+    return Response.json({ spans: result.spans, lighting: result.lighting });
   }
   if (path[1] === "calibrate" && request.method === "POST") {
     const input = z
@@ -991,7 +1071,7 @@ async function handleRenders(
     request.method === "POST" &&
     (path.length === 0 || qualityEndpoint !== null)
   ) {
-    await enforceRateLimit(db, tenant.organizationId, "render", 12, 600_000);
+    await enforcePaidLimit(db, tenant, "render", 12, 200, 600_000);
     const body = (await request.json()) as Record<string, unknown>;
     const input = renderRequestSchema.parse({
       ...body,
@@ -1080,25 +1160,24 @@ async function handleRenders(
     return Response.json(renderResponse(render));
   }
   if (path.length === 1 && request.method === "DELETE") {
-    if (render.resultAssetId) await deleteAsset(db, render.resultAssetId);
-    await c.renders.updateOne(
-      { id: render.id },
-      { $set: { status: "deleted", updatedAt: new Date() } },
-    );
+    const stopped = await stopRender(db, render, "delete");
+    // Everything the render minted goes with it: the delivered image, the
+    // deterministic composite, and any stage a corpus run captured. Leaving
+    // the latter kept the customer's intermediate photos readable until the
+    // scene expired, after they asked for the render to be gone.
+    const minted = [
+      stopped.resultAssetId,
+      stopped.compositeAssetId,
+      ...Object.values(stopped.stages ?? {}),
+      ...checkpointAssetIds(stopped.execution?.steps),
+    ].filter((id): id is string => Boolean(id));
+    await Promise.allSettled(minted.map((id) => deleteAsset(db, id)));
     return new Response(null, { status: 204 });
   }
   if (path[1] === "cancel" && request.method === "POST") {
-    if (render.status === "succeeded" || render.status === "failed") {
-      return Response.json(renderResponse(render));
-    }
-    const update = {
-      status: "cancelled" as const,
-      pipelineState: "refunded" as const,
-      cancelledAt: new Date(),
-      updatedAt: new Date(),
-    };
-    await c.renders.updateOne({ id: render.id }, { $set: update });
-    return Response.json(renderResponse({ ...render, ...update }));
+    return Response.json(
+      renderResponse(await stopRender(db, render, "cancel")),
+    );
   }
   if (path[1] === "feedback" && request.method === "POST") {
     const feedback = z
@@ -1126,29 +1205,12 @@ async function handleRenders(
     return Response.json({ saved: true }, { status: 201 });
   }
   if (path[1] === "retry" && request.method === "POST") {
-    const retryInput = {
-      placement: render.placement,
-      mode: render.mode ?? "insert",
-      placementPoint: render.placementPoint ?? {
-        x: Number(render.placement.xNormalized ?? 0.5),
-        y: Number(render.placement.yNormalized ?? 0.7),
-      },
-      ...(render.targetPoint ? { targetPoint: render.targetPoint } : {}),
-      ...(render.targetMaskId ? { targetMaskId: render.targetMaskId } : {}),
-      ...(render.targetMaskAssetId
-        ? { targetMaskAssetId: render.targetMaskAssetId }
-        : {}),
-      ...(render.surfaceType ? { surfaceType: render.surfaceType } : {}),
-      outputQuality: render.outputQuality ?? "final",
-      preserveBackground: render.preserveBackground ?? true,
-      userInstructions: render.userInstructions ?? "",
-      idempotencyKey: `${render.idempotencyKey}:retry:${crypto.randomUUID()}`,
-      quality: "high",
-    };
+    await enforcePaidLimit(db, tenant, "render", 12, 200, 600_000);
+    const retryInput = buildRetryInput(render);
     const result = await createRender(
       db,
       tenant.organizationId,
-      retryInput as unknown as Parameters<typeof createRender>[2],
+      retryInput,
       tenant.publicSessionId,
       deferRenderTask,
     );
@@ -1240,6 +1302,53 @@ async function publicVisualizer(
     { headers: { "Set-Cookie": session.cookie } },
   );
 }
+
+/**
+ * Every visitor of the public demo shares the demo organization, so an
+ * organization-wide window on a paid action would let one visitor exhaust the
+ * quota for everybody. Those windows are counted per visitor instead.
+ */
+function visitorScope(tenant: Tenant): string | undefined {
+  if (tenant.publicSessionId) return tenant.publicSessionId;
+  return tenant.role === "guest" ? tenant.userId : undefined;
+}
+
+/**
+ * A paid action is counted twice: once per visitor, so one person cannot
+ * exhaust the shared demo quota for everybody, and once for the organization
+ * as a whole, so the demo keeps an absolute ceiling that no number of fresh
+ * guest sessions can lift. A per-visitor window alone is not a spending cap —
+ * `/v1/auth/guest` hands out visitor identities for free.
+ */
+async function enforcePaidLimit(
+  db: Db,
+  tenant: Tenant,
+  action: string,
+  perVisitor: number,
+  perOrganization: number,
+  windowMs: number,
+): Promise<void> {
+  const scope = visitorScope(tenant);
+  if (scope) {
+    await enforceRateLimit(
+      db,
+      tenant.organizationId,
+      action,
+      perVisitor,
+      windowMs,
+      scope,
+    );
+  }
+  await enforceRateLimit(
+    db,
+    tenant.organizationId,
+    action,
+    perOrganization,
+    windowMs,
+  );
+}
+
+export { productAssetVisibility, productOwnerSession };
 
 function requireMerchant(tenant: Tenant): void {
   if (

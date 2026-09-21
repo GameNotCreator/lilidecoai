@@ -233,6 +233,8 @@ export function WidgetPage() {
 
 interface CreditData {
   balance: number;
+  /** Held by renders in flight; absent for a guest or public session. */
+  reserved?: number;
   transactions: Array<{
     id: string;
     type: string;
@@ -255,7 +257,11 @@ export function CreditsPage() {
       <AppHead
         eyebrow="Portefeuille"
         title={`${data.balance} crédits disponibles.`}
-        text="Une réservation n’altère pas le solde. Le débit n’est capturé qu’après un rendu accepté."
+        text={
+          data.reserved
+            ? `${data.reserved} crédit${data.reserved > 1 ? "s" : ""} réservé${data.reserved > 1 ? "s" : ""} par un rendu en cours : retiré du solde disponible, débité seulement si le rendu est accepté, rendu sinon.`
+            : "Un crédit est réservé au lancement d’un rendu, retiré du solde disponible, puis débité seulement si le rendu est accepté et rendu sinon."
+        }
       />
       <div className="app-card transaction-card">
         <div className="app-card-title">

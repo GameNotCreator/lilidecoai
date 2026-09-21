@@ -14,6 +14,7 @@ import {
 import { assetUrl, deleteAsset } from "./assets";
 import { serverConfig } from "./config";
 import { collections } from "./mongodb";
+import { storedProductAssetAccess } from "./product-visibility";
 import { productResponse } from "./serializers";
 import {
   DEMO_CATALOG_USER_ID,
@@ -82,14 +83,11 @@ export async function listProducts(
 }> {
   const c = collections(db);
   const base = baseFilter(organizationId, query);
-  const filter: Filter<ProductDocument> = {
-    ...base,
-    ...statusFilter(query.status),
-  };
+  const filter = productQueryFilter(organizationId, query);
   const [items, total, counts] = await Promise.all([
     c.products
       .find(filter)
-      .sort(sortSpec(query.sort))
+      .sort(productSortSpec(query.sort))
       .skip((query.page - 1) * query.pageSize)
       .limit(query.pageSize)
       .toArray(),
@@ -174,18 +172,11 @@ export async function updateProduct(
     ...fields,
     updatedAt: new Date(),
   };
-  if (patch.status) {
-    next.status = resolveStatus(patch.status, next);
-    next.archivedAt = next.status === "archived" ? new Date() : null;
-  }
   await collections(db).products.updateOne(
     { id: product.id, organizationId: product.organizationId },
     {
       $set: {
         ...fields,
-        ...(patch.status
-          ? { status: next.status, archivedAt: next.archivedAt }
-          : {}),
         updatedAt: next.updatedAt,
       },
     },
@@ -193,18 +184,111 @@ export async function updateProduct(
   return next;
 }
 
+/**
+ * Archiving stamps a retention on the product and its images so they are
+ * eventually purged; restoring it must lift that stamp again, or the purge
+ * destroys the images of a product that is live once more.
+ */
 export async function setProductStatus(
   db: Db,
   product: ProductDocument,
   status: (typeof productStatuses)[number],
 ): Promise<ProductDocument> {
+  const c = collections(db);
   const resolved = resolveStatus(status, product);
   const archivedAt = resolved === "archived" ? new Date() : null;
-  await collections(db).products.updateOne(
+  const assetIds = imageAssetIds(product);
+  const updatedAt = new Date();
+  if (resolved === "archived") {
+    const expiresAt = archiveExpiry();
+    // Hide the bytes before hiding the catalogue row. If the following write
+    // fails, images fail closed instead of remaining public after archiving.
+    await syncProductAssetVisibility(db, product, resolved);
+    await c.products.updateOne(
+      { id: product.id, organizationId: product.organizationId },
+      {
+        $set: { status: resolved, archivedAt, expiresAt, updatedAt },
+      },
+    );
+    if (assetIds.length) {
+      await c.assets.updateMany(
+        { id: { $in: assetIds }, expiresAt: { $exists: false } },
+        { $set: { expiresAt } },
+      );
+    }
+    return {
+      ...product,
+      status: resolved,
+      archivedAt,
+      expiresAt,
+      updatedAt,
+    };
+  }
+  if (resolved !== "ready") {
+    await syncProductAssetVisibility(db, product, resolved);
+  }
+  await c.products.updateOne(
     { id: product.id, organizationId: product.organizationId },
-    { $set: { status: resolved, archivedAt, updatedAt: new Date() } },
+    {
+      $set: { status: resolved, archivedAt, updatedAt },
+      $unset: { expiresAt: "" },
+    },
   );
-  return { ...product, status: resolved, archivedAt, updatedAt: new Date() };
+  if (assetIds.length) {
+    await c.assets.updateMany(
+      { id: { $in: assetIds } },
+      { $unset: { expiresAt: "" } },
+    );
+  }
+  if (resolved === "ready") {
+    // The product becomes visible before its images. This ordering avoids a
+    // public image ever belonging to a draft if the product update fails.
+    await syncProductAssetVisibility(db, product, resolved);
+  }
+  const restored = { ...product, status: resolved, archivedAt, updatedAt };
+  delete restored.expiresAt;
+  return restored;
+}
+
+/** Retention given to an archived product and its images. */
+export function archiveExpiry(): Date {
+  return new Date(
+    Date.now() + serverConfig.roomRetentionHours * 60 * 60 * 1000,
+  );
+}
+
+export function productImageAssetIds(product: ProductDocument): string[] {
+  return imageAssetIds(product);
+}
+
+/** Keep every image attached to a product aligned with its publication state. */
+export async function syncProductAssetVisibility(
+  db: Db,
+  product: ProductDocument,
+  status: ProductDocument["status"] = product.status,
+): Promise<void> {
+  const assetIds = imageAssetIds(product);
+  if (!assetIds.length) return;
+  const access = storedProductAssetAccess({ ...product, status });
+  if (access.ownerSessionId) {
+    await collections(db).assets.updateMany(
+      { id: { $in: assetIds } },
+      {
+        $set: {
+          visibility: "private",
+          ownerSessionId: access.ownerSessionId,
+        },
+      },
+    );
+    return;
+  }
+  await collections(db).assets.updateMany(
+    { id: { $in: assetIds } },
+    {
+      $set: { visibility: access.visibility },
+      $unset: { ownerSessionId: "" },
+    },
+  );
 }
 
 /** Copies everything but the images, which stay attached to the original. */
@@ -230,6 +314,10 @@ export async function duplicateProduct(
   delete (copy as { _id?: unknown })._id;
   delete copy.assetId;
   delete copy.cutoutAssetId;
+  // The cutout measurements belong to a photo the copy does not have. Left
+  // behind they would size and anchor the duplicate from an image it never
+  // carried.
+  delete copy.cutout;
   delete copy.views;
   delete copy.expiresAt;
   await collections(db).products.insertOne(copy);
@@ -237,6 +325,12 @@ export async function duplicateProduct(
 }
 
 /** Removes the retention clock a temporary (guest) product carries. */
+/**
+ * Adopts a product into the merchant catalogue: it stops belonging to the
+ * visitor session that created it, stops expiring — and its images become
+ * catalogue content. Without that last step the product would sit in the
+ * catalogue with images only its original visitor session could read.
+ */
 export async function persistProduct(
   db: Db,
   product: ProductDocument,
@@ -250,9 +344,15 @@ export async function persistProduct(
   );
   const assetIds = imageAssetIds(product);
   if (assetIds.length) {
+    await syncProductAssetVisibility(db, {
+      ...product,
+      createdByUserId: DEMO_CATALOG_USER_ID,
+    });
     await collections(db).assets.updateMany(
       { id: { $in: assetIds } },
-      { $unset: { expiresAt: "" } },
+      {
+        $unset: { expiresAt: "" },
+      },
     );
   }
 }
@@ -425,6 +525,17 @@ function baseFilter(
   return filter;
 }
 
+/** Shared by the table and CSV export so both surfaces show the same set. */
+export function productQueryFilter(
+  organizationId: string,
+  query: ListQuery,
+): Filter<ProductDocument> {
+  return {
+    ...baseFilter(organizationId, query),
+    ...statusFilter(query.status),
+  };
+}
+
 function statusFilter(
   status: ListQuery["status"],
 ): Filter<ProductDocument> {
@@ -433,7 +544,7 @@ function statusFilter(
   return { status };
 }
 
-function sortSpec(sort: ListQuery["sort"]): Sort {
+export function productSortSpec(sort: ListQuery["sort"]): Sort {
   if (sort === "recent") return { createdAt: -1 };
   if (sort === "name") return { name: 1 };
   if (sort === "price_desc") return { priceCents: -1, updatedAt: -1 };

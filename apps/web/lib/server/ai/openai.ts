@@ -9,6 +9,11 @@ import type {
 } from "@lili/ai-router";
 
 import { serverConfig } from "../config";
+import {
+  imageCostAllowance,
+  imageQualityForModel,
+  imageUsageCost,
+} from "./openai-image-settings";
 
 export class OpenAIImageProvider
   implements ImageEditingProvider, ImageGenerationProvider
@@ -39,6 +44,19 @@ export class OpenAIImageProvider
     request: ImageGenerationRequest | ImageEditingRequest,
   ): Promise<ProviderAttemptResult> {
     const startedAt = Date.now();
+    const timeoutMs = Math.min(
+      180_000,
+      (request.deadlineMs ?? startedAt + 225_000) - startedAt - 45_000,
+    );
+    if (timeoutMs < 10_000)
+      return failure(
+        this.model,
+        crypto.randomUUID(),
+        0,
+        "render_deadline",
+        "Le délai restant ne permet plus une génération suivie de son contrôle qualité.",
+        false,
+      );
     const body = new FormData();
     body.append("model", this.model);
     const references = request.references ?? [];
@@ -89,11 +107,11 @@ export class OpenAIImageProvider
       );
     }
     body.append("prompt", request.prompt);
-    body.append("quality", request.quality);
+    body.append("quality", imageQualityForModel(this.model, request.quality));
     body.append("size", request.size);
     body.append("background", "opaque");
     body.append("output_format", "webp");
-    body.append("output_compression", "90");
+    body.append("output_compression", "100");
 
     let response: Response;
     try {
@@ -104,7 +122,7 @@ export class OpenAIImageProvider
           "Idempotency-Key": request.idempotencyKey,
         },
         body,
-        signal: AbortSignal.timeout(180_000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (reason) {
       const timeout =
@@ -119,12 +137,15 @@ export class OpenAIImageProvider
           ? "OpenAI a dépassé le temps de traitement autorisé."
           : "Impossible de joindre le service d’image OpenAI.",
         true,
+        // A dropped connection cannot prove the provider did not run the job.
+        estimateOpenAICost(request.quality, request.size, this.model),
       );
     }
     const requestId =
       response.headers.get("x-request-id") ?? crypto.randomUUID();
     const payload = (await response.json().catch(() => ({}))) as {
       data?: Array<{ b64_json?: string }>;
+      usage?: Record<string, unknown>;
       error?: {
         code?: string;
         type?: string;
@@ -150,6 +171,9 @@ export class OpenAIImageProvider
           response.status === 408 ||
             response.status === 429 ||
             response.status >= 500,
+          response.status >= 500 || response.status === 408
+            ? estimateOpenAICost(request.quality, request.size, this.model)
+            : 0,
         ),
         safety: {
           blocked,
@@ -167,6 +191,8 @@ export class OpenAIImageProvider
         "empty_image_response",
         "OpenAI n’a retourné aucune image.",
         false,
+        // HTTP 200: the model ran, and the call is billed.
+        estimateOpenAICost(request.quality, request.size, this.model),
       );
     }
     return {
@@ -175,7 +201,10 @@ export class OpenAIImageProvider
       requestId,
       status: "succeeded",
       durationMs: Date.now() - startedAt,
-      estimatedCostUsd: estimateOpenAICost(request.quality, request.size),
+      estimatedCostUsd:
+        imageUsageCost(this.model, payload.usage) ??
+        estimateOpenAICost(request.quality, request.size, this.model),
+      usage: payload.usage,
       images: [
         {
           data: new Uint8Array(Buffer.from(encoded, "base64")),
@@ -188,6 +217,15 @@ export class OpenAIImageProvider
   }
 }
 
+/**
+ * A13 of the audit: every failure used to be reported as costing nothing.
+ * A request that reached the model and then timed out was very likely run and
+ * billed, and recording it as free both understated the cost per accepted
+ * render and let a job that kept timing out run for ever under its budget.
+ *
+ * `estimatedCostUsd` is a conservative allowance when the call's outcome is
+ * unknown. A network error cannot prove generation never started.
+ */
 function failure(
   model: string,
   requestId: string,
@@ -195,6 +233,7 @@ function failure(
   code: string,
   message: string,
   retryable: boolean,
+  estimatedCostUsd = 0,
 ): ProviderAttemptResult {
   return {
     provider: "openai",
@@ -202,7 +241,7 @@ function failure(
     requestId,
     status: "failed",
     durationMs,
-    estimatedCostUsd: 0,
+    estimatedCostUsd,
     images: [],
     error: { code, message, retryable },
     safety: { blocked: false },
@@ -210,14 +249,16 @@ function failure(
   };
 }
 
-function estimateOpenAICost(
+/**
+ * Planning allowance for an edit. Actual returned token usage supersedes it.
+ * GPT Image 2.5 consumption cannot be inferred from the GPT Image 2 rate card.
+ */
+export function estimateOpenAICost(
   quality: ImageGenerationRequest["quality"],
   size: ImageGenerationRequest["size"],
+  model = serverConfig.openaiModel,
 ): number {
-  const square = size === "1024x1024";
-  if (quality === "low") return square ? 0.006 : 0.005;
-  if (quality === "medium") return square ? 0.053 : 0.041;
-  return square ? 0.211 : 0.165;
+  return imageCostAllowance(model, quality, size);
 }
 
 function extension(mimeType: string): string {

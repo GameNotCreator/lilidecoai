@@ -1,4 +1,7 @@
+import type { CutoutMetadata, QualityDecision } from "@lili/types";
+import type { RenderRequestSnapshot } from "./render-request";
 import type { Binary } from "mongodb";
+import type { DurableExecution } from "./durable-types";
 
 export const DEMO_ORGANIZATION_ID = "00000000-0000-4000-8000-000000000001";
 export const DEMO_USER_ID = "00000000-0000-4000-8000-000000000002";
@@ -17,6 +20,17 @@ export interface AssetDocument {
   id: string;
   organizationId: string;
   kind: "product" | "product_view" | "cutout" | "scene" | "render" | "mask";
+  /**
+   * Whether the image is part of a published catalogue (readable by anyone)
+   * or private. Optional only for documents written before the field existed;
+   * `asset-access.ts` reads a missing value as private.
+   */
+  visibility?: "published" | "private";
+  /**
+   * The visitor session that owns a private upload, when one does. Absent
+   * means the asset belongs to the organization itself.
+   */
+  ownerSessionId?: string;
   contentType: string;
   bytes?: Binary;
   cloudinaryPublicId?: string;
@@ -26,6 +40,8 @@ export interface AssetDocument {
   size: number;
   createdAt: Date;
   expiresAt?: Date;
+  /** Set by the purge when it claims this asset for destruction. */
+  purgeClaimedAt?: Date;
 }
 
 export type ProductViewType =
@@ -84,6 +100,8 @@ export interface ProductDocument {
   status: "draft" | "processing" | "ready" | "archived";
   assetId?: string;
   cutoutAssetId?: string;
+  /** Measurements and provenance of the stored cutout (set by /prepare). */
+  cutout?: CutoutMetadata;
   views?: ProductViewDocument[];
   anchor?: {
     anchorType: string;
@@ -120,13 +138,28 @@ export interface CalibrationDocument {
   createdAt: Date;
 }
 
+/** Provenance summary of a simple_point render, for support and QA. */
+export interface RenderAuditDocument {
+  scaleSources: string[];
+  scaleFallbackFired: boolean;
+  cutoutSources: string[];
+  cutoutWarnings: string[];
+  obstaclesRemoved: number;
+  obstaclesSkipped: number;
+}
+
 export interface RenderDocument {
+  execution?: DurableExecution;
   id: string;
   organizationId: string;
   sceneId: string;
   productId: string;
   calibrationId?: string;
   idempotencyKey: string;
+  requestSnapshot?: RenderRequestSnapshot;
+  qualityDecision?: QualityDecision;
+  finalizationToken?: string;
+  finalizationStartedAt?: Date;
   status:
     "queued" | "processing" | "succeeded" | "failed" | "cancelled" | "deleted";
   pipelineState?:
@@ -168,6 +201,24 @@ export interface RenderDocument {
   latencyMs?: number;
   estimatedCostUsd?: number;
   promptVersion?: string;
+  /**
+   * The engine that produced this render, resolved at runtime rather than read
+   * from configuration defaults — every model id is environment-overridable,
+   * and `aiMockMode` is derived and fails toward mock. Without this a corpus
+   * baseline compares runs whose engine may silently differ (PRO-007).
+   */
+  engineVersions?: {
+    placementGeometry: string;
+    composite: string;
+    scaleEstimation: string;
+    quality: string;
+    prompt: string;
+    /** True when no paid provider ran: the images are synthetic. */
+    mockMode: boolean;
+    imageQuality: string;
+    editModel: string;
+    visionModel: string;
+  };
   selectedResultAssetId?: string;
   feedback?: { rating?: number; comment?: string; createdAt: Date };
   preserveBackground?: boolean;
@@ -178,6 +229,25 @@ export interface RenderDocument {
   model: string | null;
   requestedSize: "1024x1024" | "1536x1024" | "1024x1536";
   resultAssetId?: string;
+  /** Deterministic composite stored before the paid edit (simple_point). */
+  compositeAssetId?: string;
+  /**
+   * Intermediate images kept when stage capture is on, by stage name. Present
+   * only for a run started with `RENDER_STAGE_CAPTURE=true`; see
+   * `render-capture.ts`.
+   */
+  stages?: Partial<Record<string, string>>;
+  audit?: RenderAuditDocument;
+  /**
+   * Running total of every paid provider call this render made, including the
+   * ones that failed. `estimatedCostUsd` above stays the cost of the final
+   * image edit alone, for the responses that already read it.
+   */
+  usageTotals?: {
+    calls: number;
+    estimatedCostUsd: number;
+    unknownOutcomeCalls: number;
+  };
   error?: string;
   qualityScore: number | null;
   creditCharged: boolean;
@@ -203,6 +273,13 @@ export interface RenderAttemptDocument {
   retryable?: boolean;
   degradedMode?: boolean;
   outputAssetIds?: string[];
+  /**
+   * `unknown` marks a call whose provider-side outcome could not be
+   * established — a timeout or a lost response. Absent on rows written before
+   * this field existed, where `status` was the whole story.
+   */
+  usageOutcome?: "succeeded" | "failed" | "unknown";
+  usage?: Record<string, unknown>;
   latencyMs: number;
   estimatedCostUsd: number;
   error?: string;
@@ -247,7 +324,15 @@ export interface RateLimitDocument {
 
 export interface WalletDocument {
   organizationId: string;
+  /** Spendable now: excludes anything held by a render in flight. */
   balance: number;
+  /** Held for renders in flight; equals `holds.length`. */
+  reserved?: number;
+  holds?: Array<{ key: string; reservedAt: Date }>;
+  /**
+   * Keys already captured. Append-only, so a replayed capture is refused
+   * forever; it grows with every render and is never pruned.
+   */
   processedKeys: string[];
   updatedAt: Date;
 }

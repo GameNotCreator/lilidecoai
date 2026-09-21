@@ -22,6 +22,7 @@ import type {
 import sharp from "sharp";
 
 import { serverConfig } from "../config";
+import { durableContext } from "../durable-context";
 import { buildGoogleImageResponseFormat } from "./google-image-config";
 
 type GooglePart = {
@@ -53,6 +54,14 @@ interface GoogleCallResult {
   requestId: string;
   durationMs: number;
   attemptCount: number;
+  /**
+   * Attempts that timed out. Each one reached the model and may have been
+   * generated and billed, and only the LAST error survives in `error` — so
+   * `error.code === "timeout"` neither proves nor counts them. A13 of the
+   * audit: pricing those at zero understated the cost of exactly the calls
+   * that dominate it.
+   */
+  timedOutAttempts: number;
   error?: NormalizedProviderError;
 }
 
@@ -152,8 +161,17 @@ export class GoogleImageProvider
       },
     });
 
+    const unitCostUsd = estimateGoogleCost(
+      this.model,
+      imageSize,
+      references.length,
+    );
+    const timedOutCostUsd = unitCostUsd * result.timedOutAttempts;
     if (!result.payload || result.error) {
-      return failedResult(this.model, result);
+      // Priced by how many attempts actually timed out, not by the last
+      // error's code: a timeout followed by a 429 would otherwise be free, and
+      // a 429 followed by a timeout would be charged twice.
+      return failedResult(this.model, result, timedOutCostUsd);
     }
     const candidate = result.payload.candidates?.[0];
     const images = (candidate?.content?.parts ?? [])
@@ -181,7 +199,9 @@ export class GoogleImageProvider
         requestId: result.requestId,
         status: "failed",
         durationMs: result.durationMs,
-        estimatedCostUsd: 0,
+        // A block is refused before generation; an empty answer to an
+        // otherwise valid HTTP 200 means the model ran.
+        estimatedCostUsd: (blocked ? 0 : unitCostUsd) + timedOutCostUsd,
         images: [],
         error: {
           code: blocked ? "safety_blocked" : "empty_image_response",
@@ -205,11 +225,7 @@ export class GoogleImageProvider
       requestId: result.requestId,
       status: "succeeded",
       durationMs: result.durationMs,
-      estimatedCostUsd: estimateGoogleCost(
-        this.model,
-        imageSize,
-        references.length,
-      ),
+      estimatedCostUsd: unitCostUsd + timedOutCostUsd,
       images,
       safety: {
         blocked: false,
@@ -375,9 +391,7 @@ export class GooglePointSegmentationProvider implements SegmentationProvider {
   }
 }
 
-export class GooglePlacementIntentProvider
-  implements PlacementIntentProvider
-{
+export class GooglePlacementIntentProvider implements PlacementIntentProvider {
   readonly name = "google-placement-intent";
 
   constructor(readonly model: string) {}
@@ -490,8 +504,13 @@ async function callGoogleModel(
   body: Record<string, unknown>,
 ): Promise<GoogleCallResult> {
   const startedAt = Date.now();
-  const maximumAttempts = 1 + serverConfig.googleMaxRetries;
+  // The durable queue owns retry/backoff. Never replay an uncertain paid edit
+  // inside an adapter before its outcome can be persisted.
+  const maximumAttempts = durableContext.getStore()
+    ? 1
+    : 1 + serverConfig.googleMaxRetries;
   let lastError: NormalizedProviderError | undefined;
+  let timedOutAttempts = 0;
   for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
     try {
       const response = await fetch(
@@ -519,6 +538,7 @@ async function callGoogleModel(
           requestId,
           durationMs: Date.now() - startedAt,
           attemptCount: attempt,
+          timedOutAttempts,
         };
       }
       lastError = normalizeGoogleError(response.status, payload);
@@ -527,11 +547,13 @@ async function callGoogleModel(
           requestId,
           durationMs: Date.now() - startedAt,
           attemptCount: attempt,
+          timedOutAttempts,
           error: lastError,
         };
       }
     } catch (reason) {
       const timeout = isTimeoutError(reason);
+      if (timeout) timedOutAttempts += 1;
       lastError = {
         code: timeout ? "timeout" : "network_error",
         message: timeout
@@ -544,6 +566,7 @@ async function callGoogleModel(
           requestId: crypto.randomUUID(),
           durationMs: Date.now() - startedAt,
           attemptCount: attempt,
+          timedOutAttempts,
           error: lastError,
         };
       }
@@ -553,6 +576,7 @@ async function callGoogleModel(
     requestId: crypto.randomUUID(),
     durationMs: Date.now() - startedAt,
     attemptCount: maximumAttempts,
+    timedOutAttempts,
     error: lastError ?? {
       code: "unknown",
       message: "Erreur Google inconnue.",
@@ -590,9 +614,16 @@ function imagePart(reference: ImageReference) {
   };
 }
 
+/**
+ * A13 of the audit: a failure used to be reported as costing nothing, so a
+ * call that reached the model and timed out was recorded as free. The cost
+ * passed here is what the call may have cost; zero means the provider refused
+ * it before running — a 4xx, a safety block, a connection that never landed.
+ */
 function failedResult(
   model: string,
   result: GoogleCallResult,
+  estimatedCostUsd = 0,
 ): ProviderAttemptResult {
   return {
     provider: "google",
@@ -600,7 +631,7 @@ function failedResult(
     requestId: result.requestId,
     status: "failed",
     durationMs: result.durationMs,
-    estimatedCostUsd: 0,
+    estimatedCostUsd,
     images: [],
     error: result.error ?? {
       code: "unknown",

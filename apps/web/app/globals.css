@@ -4077,6 +4077,10 @@ button {
     #fff;
 }
 
+.simple-object-upload.has-cutout {
+  border-color: #bcd7c3;
+}
+
 .simple-object-upload img {
   width: 100%;
   height: 158px;
@@ -4118,6 +4122,59 @@ button {
   font-weight: 800;
 }
 
+/* Cutout-quality and front-view notices: a caution, never a hard error. */
+.simple-object-notices {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.simple-object-notices li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border: 1px solid #dfd8c7;
+  border-radius: 12px;
+  padding: 9px 11px;
+  color: #5f4d24;
+  background: #fffaf0;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.simple-object-notices li svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.simple-object-notices li span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.simple-object-flag {
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  align-items: center;
+  gap: 5px;
+  margin-top: 9px;
+  border: 1px solid #dfd8c7;
+  border-radius: 999px;
+  padding: 5px 10px;
+  color: #5f4d24;
+  background: #fffaf0;
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+
+.simple-object-flag svg {
+  flex: 0 0 auto;
+}
+
 .simple-size-inputs {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -4149,6 +4206,17 @@ button {
   margin-right: 14px;
   color: #777;
   font-size: 0.74rem;
+}
+
+.simple-object-notice-hint {
+  margin: 0 0 16px;
+  border: 1px solid #dfd8c7;
+  border-radius: 13px;
+  padding: 11px 13px;
+  color: #5f4d24;
+  background: #fffaf0;
+  font-size: 0.82rem;
+  line-height: 1.5;
 }
 
 .simple-dimension-block {
@@ -4206,10 +4274,30 @@ button {
   font-weight: 750;
 }
 
-.simple-segmented button.selected {
+.simple-segmented button.selected,
+.simple-segmented button[aria-pressed="true"] {
   color: #111;
   background: #fff;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.simple-segmented button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+/* Three-way pose control: wraps by itself before the labels get squeezed. */
+.simple-kind-segmented {
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 3px;
+}
+
+.simple-kind-segmented button {
+  min-height: 44px;
+  padding: 6px 7px;
+  font-size: 0.76rem;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
 }
 
 .simple-unit-input {
@@ -4332,6 +4420,23 @@ button {
   color: #666;
   font-size: 0.84rem;
   line-height: 1.45;
+}
+
+.simple-room-card .simple-demo-title {
+  margin-bottom: 22px;
+}
+
+.simple-room-card .photo-guideline {
+  margin-bottom: 18px;
+}
+
+.simple-room-upload {
+  min-height: 300px;
+  border-radius: 22px;
+}
+
+.simple-room-upload strong {
+  font-size: 1.08rem;
 }
 
 .simple-placement-objects {
@@ -4469,6 +4574,13 @@ button {
   border-color: #111;
 }
 
+.point-picker-block {
+  border: 1px solid #e2e2e2;
+  border-radius: 20px;
+  padding: 14px;
+  background: #fafafa;
+}
+
 .simple-point-picker {
   position: relative;
   display: block;
@@ -4482,20 +4594,58 @@ button {
   touch-action: manipulation;
 }
 
+/*
+ * The picker is also the tap frame: the component sets an inline
+ * `aspect-ratio` and width so the element box equals the painted photo, and
+ * `normalizeTap` divides by that raw bounding rect. Never reintroduce
+ * `object-fit` or `max-height` here — either one letterboxes the photo inside
+ * the box and every tap then maps to the wrong pixel.
+ */
 .simple-point-picker img {
   display: block;
   width: 100%;
-  height: auto;
-  max-height: 640px;
-  object-fit: contain;
+  height: 100%;
 }
 
 .simple-point-picker.points-complete {
   cursor: default;
 }
 
+.simple-point-stage {
+  display: block;
+  width: 100%;
+}
+
+.simple-point-frame {
+  position: relative;
+  display: block;
+  max-width: 100%;
+  margin: 0 auto;
+  /* No border: it would sit between the tapped rect and the painted pixels. */
+  border: 0;
+  box-shadow: 0 0 0 1px #d5d5d5;
+  cursor: crosshair;
+}
+
+/*
+ * Stays in flow so it fills the frame exactly whether the height comes from
+ * the inline aspect-ratio or, as a fallback, from the photo itself.
+ */
+.simple-point-photo {
+  height: 100%;
+  max-height: none;
+}
+
+/* Deterministic preview of the server composite: percentage box, no easing. */
+.simple-point-overlay {
+  position: absolute;
+  transition: none;
+  pointer-events: none;
+}
+
 .simple-red-dot {
   position: absolute;
+  z-index: 20;
   display: grid;
   width: 28px;
   height: 28px;
@@ -4512,6 +4662,48 @@ button {
   font-size: 0.74rem;
   font-weight: 900;
   line-height: 1;
+}
+
+.simple-red-dot.colliding {
+  background: #8c1d1d;
+  box-shadow:
+    0 0 0 2px rgba(0, 0, 0, 0.45),
+    0 0 0 8px rgba(224, 0, 0, 0.28),
+    0 5px 14px rgba(0, 0, 0, 0.34);
+}
+
+/* Scale read-out pinned above its point. Estimates never look validated. */
+.simple-point-badge {
+  position: absolute;
+  z-index: 21;
+  max-width: min(230px, 78%);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 5px 10px;
+  color: #fff;
+  background: rgba(17, 17, 17, 0.82);
+  transform: translate(-50%, calc(-50% - 27px));
+  pointer-events: none;
+  font-size: 0.66rem;
+  font-weight: 750;
+  line-height: 1.3;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.simple-point-badge.low {
+  color: #5f4d24;
+  border-color: #cbbf9f;
+  border-style: dashed;
+  background: rgba(255, 250, 240, 0.95);
+}
+
+.simple-point-badge.none {
+  color: #4a4a4a;
+  border-color: #c7c7c7;
+  border-style: dashed;
+  background: rgba(255, 255, 255, 0.95);
 }
 
 .point-coordinates {
@@ -4532,6 +4724,124 @@ button {
 .point-coordinates.ready {
   color: #174f27;
   background: #eef8f0;
+}
+
+.simple-scale-summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 9px;
+  flex-wrap: wrap;
+}
+
+.simple-scale-summary > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #d8d8d8;
+  border-radius: 999px;
+  padding: 6px 11px;
+  color: #3f3f3f;
+  background: #f7f7f7;
+  font-size: 0.75rem;
+  font-weight: 750;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.simple-scale-summary > span svg {
+  flex: 0 0 auto;
+}
+
+.simple-scale-summary > .pending {
+  color: #6b6b6b;
+  border-style: dashed;
+}
+
+.simple-scale-summary > .high {
+  color: #222;
+  border-color: #c3c3c3;
+  background: #fff;
+}
+
+/* Approximate and unknown scales stay dashed: an estimate is not a result. */
+.simple-scale-summary > .low {
+  color: #5f4d24;
+  border-color: #dfd8c7;
+  border-style: dashed;
+  background: #fffaf0;
+}
+
+.simple-scale-summary > .none {
+  color: #5f4d24;
+  border-color: #dfd8c7;
+  border-style: dashed;
+  background: #fffaf0;
+}
+
+.simple-scale-slider {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 5px;
+}
+
+.simple-scale-slider > span {
+  color: #6e6e6e;
+  font-size: 0.68rem;
+  font-weight: 750;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.simple-scale-slider input[type="range"] {
+  width: 100%;
+  min-width: 0;
+  height: 26px;
+  margin: 0;
+  padding: 0;
+  accent-color: #111;
+  background: transparent;
+  cursor: pointer;
+}
+
+.simple-placement-warnings {
+  display: grid;
+  gap: 7px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.simple-placement-warnings li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border: 1px solid #dfd8c7;
+  border-radius: 12px;
+  padding: 10px 12px;
+  color: #5f4d24;
+  background: #fffaf0;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.simple-placement-warnings li svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.simple-placement-warnings li span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.simple-placement-warnings li.blocking {
+  color: #8c1d1d;
+  border-color: #e5bdbd;
+  background: #fff7f7;
+  font-weight: 750;
 }
 
 .replacement-choice {
@@ -4643,6 +4953,108 @@ button {
   font-weight: 750;
 }
 
+/* Before / deterministic preview / final render. */
+.simple-result-grid.triptych {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.simple-result-grid.triptych img {
+  height: 300px;
+}
+
+.simple-result-grid.triptych figcaption {
+  bottom: 8px;
+  left: 8px;
+  padding: 6px 9px;
+  font-size: 0.68rem;
+}
+
+.simple-result-card .simple-demo-actions .restart-button {
+  margin-top: 0;
+}
+
+.simple-result-objects {
+  display: grid;
+  gap: 9px;
+  margin-top: 16px;
+}
+
+.simple-result-object {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  border: 1px solid #dedede;
+  border-radius: 14px;
+  padding: 12px;
+  background: #fafafa;
+}
+
+.simple-result-object .simple-placement-number {
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  font-size: 0.68rem;
+}
+
+.simple-result-object > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.simple-result-object strong {
+  font-size: 0.86rem;
+  overflow-wrap: anywhere;
+}
+
+.simple-result-badges {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/*
+ * Neutral pills only: the markup carries no per-badge modifier, so a measured
+ * scale and an estimated one must not be told apart by colour — nothing here
+ * may read as a validated value.
+ */
+.simple-result-badges > span {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #dcdcdc;
+  border-radius: 999px;
+  padding: 4px 9px;
+  color: #4a4a4a;
+  background: #fff;
+  font-size: 0.68rem;
+  font-weight: 800;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+/* A measured size and a guessed one must never read the same. Only a scale
+   that was actually measured or confirmed gets the solid, settled tone. */
+.simple-result-badges > span[data-tone="measured"] {
+  border-color: #c8c8c8;
+  background: #f4f4f4;
+  color: #111;
+}
+
+.simple-result-badges > span[data-tone="estimate"] {
+  border-style: dashed;
+  border-color: #cfcfcf;
+  color: #6b6b6b;
+}
+
+.simple-result-badges > span[data-tone="warning"] {
+  border-color: #dfd8c7;
+  background: #fffaf0;
+  color: #5f4d24;
+}
+
 .restart-button {
   width: 100%;
   margin-top: 16px;
@@ -4700,11 +5112,13 @@ button {
     order: 2;
   }
 
-  .simple-result-grid {
+  .simple-result-grid,
+  .simple-result-grid.triptych {
     grid-template-columns: 1fr;
   }
 
-  .simple-result-grid img {
+  .simple-result-grid img,
+  .simple-result-grid.triptych img {
     height: auto;
     max-height: 520px;
   }
@@ -4797,6 +5211,32 @@ button {
   .simple-red-dot {
     width: 30px;
     height: 30px;
+  }
+
+  .point-picker-block {
+    border-radius: 16px;
+    padding: 10px;
+  }
+
+  .simple-room-upload {
+    min-height: 235px;
+  }
+
+  .simple-kind-segmented button {
+    font-size: 0.73rem;
+  }
+
+  /* The scale read-out below repeats this text, so free the photo. */
+  .simple-point-badge {
+    display: none;
+  }
+
+  .simple-scale-summary > span {
+    font-size: 0.72rem;
+  }
+
+  .simple-result-object {
+    padding: 10px;
   }
 
   .simple-demo-primary,

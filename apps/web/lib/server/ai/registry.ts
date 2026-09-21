@@ -47,15 +47,21 @@ export function selectEditingProvider(
       provider: new MockImageProvider(),
     };
   }
-  if (preferredProvider === "openai" && serverConfig.openaiApiKey) {
+  if (preferredProvider === "openai") {
+    if (!serverConfig.openaiApiKey || !serverConfig.openAIImageEnabled) {
+      throw new Error(
+        "Le parcours photo nécessite un service OpenAI activé et configuré.",
+      );
+    }
     return {
       route: {
         provider: "openai",
         modelRole: "final",
         degradedMode: false,
-        reason: "The simple point workflow explicitly requires GPT Image 2",
+        reason:
+          "The simple point workflow uses the configured OpenAI image model",
       },
-      provider: new OpenAIImageProvider("gpt-image-2"),
+      provider: new OpenAIImageProvider(),
     };
   }
   if (preferredProvider === "google" && serverConfig.googleApiKey) {

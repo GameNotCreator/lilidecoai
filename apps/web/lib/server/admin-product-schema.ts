@@ -100,8 +100,7 @@ export const adminProductSchema = z.object({
   lightingSource: lightingSchema.default("front"),
   reflectance: lightingSchema.default("matte"),
   variants: variantsSchema.default([]),
-  status: z.enum(productStatuses).optional(),
-});
+}).strict();
 
 /**
  * Written out rather than derived with `.partial()`. A `.default()` still fires
@@ -131,8 +130,7 @@ export const adminProductPatchSchema = z.object({
   lightingSource: lightingSchema.optional(),
   reflectance: lightingSchema.optional(),
   variants: variantsSchema.optional(),
-  status: z.enum(productStatuses).optional(),
-});
+}).strict();
 
 export const listQuerySchema = z.object({
   q: z.string().trim().max(120).default(""),

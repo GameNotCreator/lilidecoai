@@ -19,3 +19,8 @@ services/api/storage/*
 !services/api/storage/.gitkeep
 
 .vercel
+.claude/
+apps/web/tests/__scratch/
+apps/web/tests/zz-*.test.ts
+apps/web/lib/server/*-scratch.ts
+apps/web/lib/server/zz-*.ts

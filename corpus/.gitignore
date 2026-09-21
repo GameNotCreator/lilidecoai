@@ -1,0 +1,14 @@
+# Photos of real rooms and real products, and everything a run produces from
+# them. Versioned only by a deliberate `git add -f`, once the authorisation
+# recorded in the case manifest actually permits it.
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.heic
+runs/
+
+# The manifests themselves are the corpus's index and DO belong in git: they
+# carry the provenance, the measurements and the expectation, and none of them
+# is a photograph.
+!cases/*.json

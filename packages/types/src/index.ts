@@ -57,12 +57,20 @@ export const dimensionPairSchema = z.discriminatedUnion("mode", [
     widthCm: dimensionValueCmSchema,
   }),
 ]);
-const simplePlacementSchema = z
+export const simplePlacementKindSchema = z.enum(["standing", "wall", "flat"]);
+export const simplePlacementSchema = z
   .object({
     productId: z.string().uuid(),
     placementPoint: normalizedPointSchema,
     dimensionPair: dimensionPairSchema.optional(),
     dimensionReference: dimensionReferenceSchema.optional(),
+    /** How the object meets the room: on a support, on the wall, or flat. */
+    placementKind: simplePlacementKindSchema.optional(),
+    /**
+     * Client-confirmed scale at the point (pixels per centimetre on the
+     * support). Wins over the vision estimate; validated server-side.
+     */
+    pixelsPerCm: z.number().finite().min(0.2).max(200).optional(),
   })
   .refine((value) => value.dimensionPair || value.dimensionReference, {
     message: "Indiquez deux dimensions pour cet objet.",
@@ -241,6 +249,38 @@ export const productVariantSchema = z.object({
   available: z.boolean().default(true),
 });
 
+/** Measurements taken on the stored cutout during /prepare. */
+export const cutoutMetadataSchema = z.object({
+  widthPx: z.number().int().positive(),
+  heightPx: z.number().int().positive(),
+  /** Row (fraction of height, (0,1]) where the object touches its support. */
+  baseRowFraction: z.number().min(0.05).max(1).default(1),
+  source: z.enum(["heuristic", "model", "matting"]).default("heuristic"),
+  /** True when a generative model re-rendered the product (not a matte). */
+  synthetic: z.boolean().default(false),
+  shadowRemoved: z.boolean().default(false),
+  warnings: z.array(z.string()).default([]),
+  /**
+   * Version of the matte that produced this cutout. Its ABSENCE is what marks
+   * a cutout as untrusted: a provenance gate written as a denylist over
+   * `synthetic` would read a cutout with no metadata at all as trustworthy,
+   * which is the opposite of the truth (PRO-008).
+   */
+  cutoutVersion: z.string().optional(),
+  /**
+   * Why the matte is doubted, when it is. Recorded on every prepare so a
+   * corpus run can measure how often each cause fires before any refusal is
+   * enforced on it.
+   */
+  verdict: z
+    .object({
+      usable: z.boolean(),
+      code: z.string(),
+      detail: z.string(),
+    })
+    .optional(),
+});
+
 export const productSchema = z.object({
   id: z.string().uuid(),
   name: z.string(),
@@ -268,6 +308,7 @@ export const productSchema = z.object({
   imageCredit: z.string().optional(),
   assetUrl: z.string().nullable().optional(),
   cutoutUrl: z.string().nullable().optional(),
+  cutout: cutoutMetadataSchema.optional(),
   views: z
     .array(
       z.object({
@@ -283,6 +324,21 @@ export const productSchema = z.object({
     .default([]),
 });
 
+export const qualityDecisionSchema = z.object({
+  version: z.string(),
+  status: z.enum(["accepted", "rejected", "unavailable", "simulated"]),
+  score: z.number().finite().min(0).max(1).nullable(),
+  feedback: z.string(),
+  checks: z.array(
+    z.object({
+      name: z.string(),
+      score: z.number().finite().min(0).max(1),
+      reason: z.string(),
+    }),
+  ),
+});
+export type QualityDecision = z.infer<typeof qualityDecisionSchema>;
+
 export const renderSchema = z.object({
   id: z.string().uuid(),
   status: renderStatusSchema,
@@ -290,18 +346,52 @@ export const renderSchema = z.object({
   model: z.string().nullable(),
   requestedSize: z.string(),
   resultUrl: z.string().nullable(),
+  /** Deterministic composite (before harmonization), when stored. */
+  compositeUrl: z.string().nullable().optional(),
   error: z.string().nullable().optional(),
   qualityScore: z.coerce.number().nullable(),
+  qualityDecision: qualityDecisionSchema.optional(),
   creditCharged: z.boolean(),
   placement: z.record(z.string(), z.unknown()).optional(),
   mode: renderModeSchema.optional(),
   outputQuality: outputQualitySchema.optional(),
   pipelineState: pipelineStateSchema.optional(),
+  execution: z.object({
+    version: z.string(), deadlineAt: z.string(), attempts: z.number(),
+    retrying: z.boolean(), errorCode: z.string().optional(),
+  }).optional(),
   surfaceType: surfaceTypeSchema.or(z.string()).optional(),
   placementPoint: z.object({ x: z.number(), y: z.number() }).optional(),
   targetPoint: z.object({ x: z.number(), y: z.number() }).optional(),
   targetMaskUrl: z.string().nullable().optional(),
   promptVersion: z.string().optional(),
+  /** Resolved engine baseline; see RenderDocument.engineVersions. */
+  engineVersions: z
+    .object({
+      placementGeometry: z.string(),
+      composite: z.string(),
+      scaleEstimation: z.string(),
+      quality: z.string(),
+      prompt: z.string(),
+      mockMode: z.boolean(),
+      imageQuality: z.string(),
+      editModel: z.string(),
+      visionModel: z.string(),
+    })
+    .optional(),
+  /** Intermediate images kept when stage capture is on, by stage name. */
+  stages: z.record(z.string(), z.string()).optional(),
+  /** Per-stage provenance of a simple_point render. */
+  audit: z
+    .object({
+      scaleSources: z.array(z.string()),
+      scaleFallbackFired: z.boolean(),
+      cutoutSources: z.array(z.string()),
+      cutoutWarnings: z.array(z.string()),
+      obstaclesRemoved: z.number().int().nonnegative(),
+      obstaclesSkipped: z.number().int().nonnegative(),
+    })
+    .optional(),
   attemptCount: z.number().int().nonnegative().optional(),
   estimatedCostUsd: z.number().nonnegative().optional(),
   degradedMode: z.boolean().optional(),
@@ -321,6 +411,8 @@ export type RenderMode = z.infer<typeof renderModeSchema>;
 export type OutputQuality = z.infer<typeof outputQualitySchema>;
 export type SurfaceType = z.infer<typeof surfaceTypeSchema>;
 export type DimensionPair = z.infer<typeof dimensionPairSchema>;
+export type SimplePlacementKind = z.infer<typeof simplePlacementKindSchema>;
+export type CutoutMetadata = z.infer<typeof cutoutMetadataSchema>;
 export type ProductViewType = z.infer<typeof productViewTypeSchema>;
 export type RenderRequest = z.infer<typeof renderRequestSchema>;
 export type PlacementType = z.infer<typeof placementTypeSchema>;

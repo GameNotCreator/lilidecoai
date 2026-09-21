@@ -178,6 +178,160 @@ test("guest access exposes the demo catalog but keeps admin protected", async ({
   expect(created.status()).toBe(201);
 });
 
+/**
+ * A16 and A17 of the audit: a visitor's own object photo was served to anyone
+ * holding the URL, because `product` and `cutout` assets were public by kind.
+ * Publication is now a property of the asset, and everything else belongs to
+ * one visitor session.
+ */
+test("a visitor's uploaded photo stays private to its own session", async ({
+  playwright,
+  baseURL,
+}) => {
+  test.setTimeout(120_000);
+  const sessionA = await playwright.request.newContext({ baseURL });
+  const sessionB = await playwright.request.newContext({ baseURL });
+  const anonymous = await playwright.request.newContext({ baseURL });
+  try {
+    expect((await sessionA.post("/v1/auth/guest")).status()).toBe(201);
+    expect((await sessionB.post("/v1/auth/guest")).status()).toBe(201);
+
+    const created = await sessionA.post("/v1/products", {
+      data: {
+        name: `Objet privé E2E ${Date.now()}`,
+        description: "Photo importée par un visiteur du parcours public.",
+        objectType: "vase",
+        widthCm: 24,
+        heightCm: 42,
+        depthCm: 24,
+        material: "céramique",
+        generationInstructions: "Conserver la silhouette.",
+        placementType: "table",
+        lightingProfile: {},
+        buyUrl: null,
+      },
+    });
+    expect(created.status()).toBe(201);
+    const productId = ((await created.json()) as { id: string }).id;
+
+    const upload = await sessionA.post(`/v1/products/${productId}/assets`, {
+      multipart: {
+        viewType: "front",
+        file: {
+          name: "vase-prive.png",
+          mimeType: "image/png",
+          buffer: await productFixture(),
+        },
+      },
+    });
+    expect(upload.status()).toBeLessThan(300);
+    const uploaded = (await upload.json()) as { assetUrl: string };
+    expect(uploaded.assetUrl).toBeTruthy();
+
+    // The uploading session reads its own photo.
+    expect((await sessionA.get(uploaded.assetUrl)).status()).toBe(200);
+    // Another visitor of the same (shared demo) organization does not, and
+    // neither does a request with no session at all — demo mode included.
+    expect((await sessionB.get(uploaded.assetUrl)).status()).toBe(403);
+    expect((await anonymous.get(uploaded.assetUrl)).status()).toBe(403);
+    // The visitor's product itself is invisible to the other session.
+    expect((await sessionB.get(`/v1/products/${productId}`)).status()).toBe(
+      404,
+    );
+
+    // A published catalogue image stays readable without any session.
+    const catalog = (await (
+      await sessionB.get("/v1/products")
+    ).json()) as Array<{ name: string; assetUrl: string | null }>;
+    const published = catalog.find(
+      (product) => product.name === "Vase Sable" && product.assetUrl,
+    );
+    expect(published?.assetUrl).toBeTruthy();
+    expect((await anonymous.get(published!.assetUrl!)).status()).toBe(200);
+  } finally {
+    await sessionA.dispose();
+    await sessionB.dispose();
+    await anonymous.dispose();
+  }
+});
+
+/**
+ * PRO-008 made the cutout trust gate an allowlist, so a product with no cutout
+ * provenance is refused at render time. Every other e2e renders a product it
+ * just prepared; none rendered a SEEDED one — which is exactly where a seed
+ * that forgets to write provenance would break the public demo unnoticed.
+ */
+test("the seeded catalogue renders through the identity gate", async ({
+  playwright,
+  baseURL,
+}) => {
+  test.setTimeout(120_000);
+  // DEMO_PRODUCT_ID in apps/web/lib/server/types.ts; the e2e cannot import a
+  // server-only module.
+  const seededVase = "11111111-1111-4111-8111-111111111111";
+  const session = await playwright.request.newContext({ baseURL });
+  try {
+    expect((await session.post("/v1/auth/guest")).status()).toBe(201);
+    const scene = await session.post("/v1/scenes", {
+      multipart: {
+        consent: "true",
+        file: {
+          name: "piece.png",
+          mimeType: "image/png",
+          buffer: await roomFixture(),
+        },
+      },
+    });
+    expect(scene.status()).toBe(201);
+    const sceneId = ((await scene.json()) as { id: string }).id;
+
+    const point = { x: 0.5, y: 0.72 };
+    const render = await session.post("/v1/renders/final", {
+      data: {
+        workflow: "simple_point",
+        mode: "insert",
+        simplePlacements: [
+          {
+            productId: seededVase,
+            placementPoint: point,
+            dimensionPair: {
+              mode: "height_length",
+              heightCm: 42,
+              lengthCm: 24,
+            },
+            placementKind: "standing",
+          },
+        ],
+        placement: {
+          sceneId,
+          productId: seededVase,
+          mode: "insert",
+          surfaceType: "floor",
+          xNormalized: point.x,
+          yNormalized: point.y,
+        },
+        placementPoint: point,
+        surfaceType: "floor",
+        outputQuality: "final",
+        preserveBackground: true,
+        idempotencyKey: `e2e-catalogue-${Date.now()}`,
+      },
+    });
+    expect(render.status()).toBe(201);
+    const body = (await render.json()) as {
+      status: string;
+      error: string | null;
+      engineVersions?: { mockMode: boolean };
+    };
+    expect(body.error).toBeNull();
+    expect(body.status).toBe("succeeded");
+    // The baseline is resolved from the running server, and says so.
+    expect(body.engineVersions?.mockMode).toBe(true);
+  } finally {
+    await session.dispose();
+  }
+});
+
 test("object form adapts dimensions to the selected object type", async ({
   page,
 }) => {
@@ -253,6 +407,18 @@ test("required customer journey reaches a successful mock render", async ({
   page,
 }) => {
   test.setTimeout(120_000);
+  // Catalogue creation is a merchant action. The anonymous demo identity only
+  // lists its published sample catalogue, never another creator's uploads.
+  const signup = await page.request.post("/v1/auth/signup", {
+    data: {
+      name: "Marchand parcours",
+      studio: "Atelier parcours",
+      email: `journey-${test.info().project.name}-${Date.now()}@example.com`,
+      password: "LiliDeco-E2E-2026!",
+    },
+  });
+  expect(signup.status()).toBe(201);
+  const merchant = await (await page.request.get("/v1/auth/me")).json();
   await page.goto("/app/products/new");
   await page.getByLabel("Image PNG de l’objet").setInputFiles({
     name: "vase-e2e.png",
@@ -305,7 +471,8 @@ test("required customer journey reaches a successful mock render", async ({
     /ombre douce/,
   );
 
-  await page.goto(`/visualizer/atelier-lili/${productId}`);
+  await page.request.post("/v1/auth/logout");
+  await page.goto(`/visualizer/${merchant.organization.slug}/${productId}`);
   await expect(
     page.getByRole("heading", { name: /Montrez\. Demandez\. Visualisez/i }),
   ).toBeVisible();
@@ -341,7 +508,46 @@ test("required customer journey reaches a successful mock render", async ({
   await page
     .getByLabel("Votre demande")
     .fill("Pose ce vase sur la table à l’endroit le plus naturel.");
+  // Exercise durable admission/polling UI without starting a paid worker.
+  // The actual API still creates the synthetic render; only delivery is delayed.
+  let releaseResult = false;
+  let completedResult: Record<string, unknown> | undefined;
+  await page.route("**/v1/renders/**", async (route) => {
+    const request = route.request();
+    if (
+      request.method() === "POST" &&
+      /\/(final|preview)$/.test(request.url())
+    ) {
+      const response = await route.fetch();
+      completedResult = await response.json();
+      await route.fulfill({
+        response,
+        json: { ...completedResult, status: "queued" },
+      });
+    } else if (
+      request.method() === "GET" &&
+      completedResult &&
+      request.url().endsWith(`/${completedResult.id}`)
+    ) {
+      await route.fulfill({
+        json: {
+          ...completedResult,
+          status: releaseResult ? "succeeded" : "queued",
+        },
+      });
+    } else await route.continue();
+  });
   await page.getByRole("button", { name: /Créer le rendu/i }).click();
+  await expect(
+    page.getByText("Rendu en attente…", { exact: true }).first(),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /Nouvelle tentative/ }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "Voilà le résultat." }),
+  ).toHaveCount(0);
+  releaseResult = true;
   await expect(
     page.getByRole("heading", { name: "Voilà le résultat." }),
   ).toBeVisible({ timeout: 30_000 });
@@ -358,6 +564,10 @@ test("simple demo records the clicked coordinates and adds the object", async ({
     mimeType: "image/png",
     buffer: await productFixture(),
   });
+  await page
+    .getByRole("group", { name: "Type de pose de l’objet 1" })
+    .getByRole("button", { name: "À plat (tapis)" })
+    .click();
   await page
     .getByRole("button", { name: "Longueur + largeur", exact: true })
     .click();
@@ -376,7 +586,11 @@ test("simple demo records the clicked coordinates and adds the object", async ({
     name: "Placer le point 1 dans l’image",
   });
   await expect(picker).toBeVisible();
-  await picker.click({ position: { x: 320, y: 230 } });
+  const pickerBounds = await picker.boundingBox();
+  expect(pickerBounds).not.toBeNull();
+  await picker.click({
+    position: { x: pickerBounds!.width * 0.5, y: pickerBounds!.height * 0.65 },
+  });
   await expect(page.getByText(/Point 1 : x \d+ · y \d+/)).toBeVisible();
 
   const renderResponse = page.waitForResponse(
@@ -415,6 +629,9 @@ test("simple demo records the clicked coordinates and adds the object", async ({
     page.getByRole("heading", { name: "Votre visualisation" }),
   ).toBeVisible({ timeout: 30_000 });
   await expect(page.getByAltText("Visualisation après")).toBeVisible();
+  await expect(
+    page.getByText("Simulation — fidélité visuelle non évaluée."),
+  ).toBeVisible();
 });
 
 test("simple demo supports three numbered points and can reposition them", async ({
@@ -437,8 +654,11 @@ test("simple demo supports three numbered points and can reposition them", async
     buffer: await productFixture(),
   });
   await page
+    .getByRole("group", { name: "Type de pose de l’objet 2" })
+    .getByRole("button", { name: "À plat (tapis)" })
+    .click();
+  await page
     .getByRole("button", { name: "Longueur + largeur", exact: true })
-    .nth(1)
     .click();
   await page.getByLabel("Longueur de l’objet 2 en centimètres").fill("28");
   await page.getByLabel("Largeur de l’objet 2 en centimètres").fill("16");

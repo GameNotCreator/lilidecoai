@@ -38,7 +38,8 @@ jobs:
         env:
           MONGODB_URI: mongodb://127.0.0.1:27017/lilidecoai_ci
           APP_SESSION_SECRET: ci-only-session-secret-with-32-characters
-      - run: npx playwright install --with-deps chromium
+      - run: npm run test:durable:integration
+      - run: npx playwright install --with-deps chromium webkit
       - run: npm run test:e2e
         env:
           DEMO_MODE: "true"

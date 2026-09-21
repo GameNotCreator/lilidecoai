@@ -117,8 +117,14 @@ export function AdminProductForm({ productId }: { productId?: string }) {
 
   useEffect(() => {
     if (!productId) return;
+    const warningKey = `admin-product-warning:${productId}`;
+    const warning = window.sessionStorage.getItem(warningKey);
     void adminApi<AdminProduct>(`/products/${productId}`)
       .then((payload) => {
+        if (warning) {
+          window.sessionStorage.removeItem(warningKey);
+          setError(warning);
+        }
         setProduct(payload);
         setForm(toForm(payload));
       })
@@ -182,18 +188,29 @@ export function AdminProductForm({ productId }: { productId?: string }) {
         body: JSON.stringify(payload),
       });
       if (frontFile) {
-        const prepared = await prepareImageForUpload(frontFile);
-        const upload = new FormData();
-        upload.set("file", prepared);
-        upload.set("viewType", "front");
-        await adminApi(`/products/${created.id}/views`, {
-          method: "POST",
-          body: upload,
-        });
-        await adminApi(`/products/${created.id}/actions`, {
-          method: "POST",
-          body: JSON.stringify({ action: "prepare" }),
-        });
+        try {
+          const prepared = await prepareImageForUpload(frontFile);
+          const upload = new FormData();
+          upload.set("file", prepared);
+          upload.set("viewType", "front");
+          await adminApi(`/products/${created.id}/views`, {
+            method: "POST",
+            body: upload,
+          });
+          await adminApi(`/products/${created.id}/actions`, {
+            method: "POST",
+            body: JSON.stringify({ action: "prepare" }),
+          });
+        } catch (reason) {
+          const detail =
+            reason instanceof Error
+              ? reason.message
+              : "Envoi de l’image impossible";
+          window.sessionStorage.setItem(
+            `admin-product-warning:${created.id}`,
+            `La fiche a bien été créée, mais la photo n’a pas pu être préparée : ${detail}`,
+          );
+        }
       }
       router.push(`/admin/produits/${created.id}`);
       router.refresh();
@@ -784,7 +801,12 @@ export function AdminProductForm({ productId }: { productId?: string }) {
               <button
                 className="bo-button bo-button-secondary bo-button-block"
                 type="button"
-                onClick={() => void action("prepare", "Détourage régénéré.")}
+                onClick={() =>
+                  void action(
+                    "prepare",
+                    "Détourage prêt. La fiche reste en brouillon jusqu’à sa publication.",
+                  )
+                }
                 disabled={busy === "prepare"}
               >
                 {busy === "prepare" ? (

@@ -100,6 +100,8 @@ export function calibrateSegment(
   realLengthCentimeters: number,
 ): SegmentCalibration {
   assertPositive(realLengthCentimeters, "realLengthCentimeters");
+  assertFinitePoint(start);
+  assertFinitePoint(end);
   const referencePixels = distance(start, end);
   if (referencePixels < 2) {
     throw new GeometryError(
@@ -160,7 +162,18 @@ export function calibrateSurface(
 ): SurfaceCalibration {
   assertPositive(widthCentimeters, "widthCentimeters");
   assertPositive(depthCentimeters, "depthCentimeters");
-  if (polygonArea(corners) < 16) {
+  corners.forEach(assertFinitePoint);
+  const turns = corners.map((point, index) => {
+    const next = corners[(index + 1) % 4] as Point;
+    const after = corners[(index + 2) % 4] as Point;
+    return (
+      (next.x - point.x) * (after.y - next.y) -
+      (next.y - point.y) * (after.x - next.x)
+    );
+  });
+  const convex =
+    turns.every((turn) => turn > 1e-9) || turns.every((turn) => turn < -1e-9);
+  if (!convex || polygonArea(corners) < 16) {
     throw new GeometryError(
       "The selected surface is too small or degenerate",
       "DEGENERATE_SURFACE",
@@ -261,6 +274,19 @@ export function validatePlacementFit(
   assertPositive(input.productWidthCm, "productWidthCm");
   assertPositive(input.productHeightCm, "productHeightCm");
   assertPositive(input.scale, "scale");
+  for (const value of [
+    input.xNormalized,
+    input.yNormalized,
+    ...Object.values(input.fitBounds),
+    input.marginRatio ?? 0.01,
+  ]) {
+    if (!Number.isFinite(value)) {
+      throw new GeometryError(
+        "Placement coordinates and bounds must be finite",
+        "INVALID_DIMENSION",
+      );
+    }
+  }
 
   const margin = Math.max(0, Math.min(input.marginRatio ?? 0.01, 0.1));
   const productHeightNormalized =
@@ -347,3 +373,14 @@ function assertPositive(value: number, name: string): void {
     );
   }
 }
+
+function assertFinitePoint(point: Point): void {
+  if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+    throw new GeometryError(
+      "Point coordinates must be finite",
+      "INVALID_DIMENSION",
+    );
+  }
+}
+
+export * from "./simple-placement";

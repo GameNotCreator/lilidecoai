@@ -12,6 +12,11 @@
     "**/*.ts",
     "**/*.tsx"
   ],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules",
+    "tests/__scratch/**",
+    "tests/zz-*.test.ts",
+    "lib/server/*-scratch.ts",
+    "lib/server/zz-*.ts"
+  ]
 }
-

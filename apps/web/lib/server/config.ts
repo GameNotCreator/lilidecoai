@@ -33,9 +33,17 @@ function demoModeEnabled(): boolean {
   return requested !== "false";
 }
 
-function openAIQuality(): "low" | "medium" | "high" {
+function openAIQuality(): "low" | "medium" | "high" | "xhigh" | "max" {
   const requested = clean(process.env.OPENAI_QUALITY);
-  return requested === "low" || requested === "medium" ? requested : "high";
+  if (
+    requested === "low" ||
+    requested === "medium" ||
+    requested === "high" ||
+    requested === "xhigh" ||
+    requested === "max"
+  )
+    return requested;
+  return "max";
 }
 
 export const serverConfig = {
@@ -67,13 +75,13 @@ export const serverConfig = {
     explicitMockMode === "true" ||
     (explicitMockMode !== "false" && !googleApiKey && !openAIEnabled),
   openaiApiKey: clean(process.env.OPENAI_API_KEY),
-  openaiModel: clean(process.env.OPENAI_MODEL) ?? "gpt-image-2",
-  openaiVisionModel: clean(process.env.OPENAI_VISION_MODEL) ?? "gpt-5.6-sol",
-  openaiServiceTier: clean(process.env.OPENAI_SERVICE_TIER) ?? "fast",
+  openaiModel: clean(process.env.OPENAI_MODEL) ?? "gpt-image-2.5-sunburst",
+  openaiVisionModel: clean(process.env.OPENAI_VISION_MODEL) ?? "gpt-6-astra",
+  openaiServiceTier: clean(process.env.OPENAI_SERVICE_TIER) ?? "default",
   openaiQuality: openAIQuality(),
   openaiBaseUrl:
     clean(process.env.OPENAI_BASE_URL) ?? "https://api.openai.com/v1",
-  openaiMaxCostUsd: Number(clean(process.env.OPENAI_MAX_COST_USD) ?? "0.25"),
+  openaiMaxCostUsd: Number(clean(process.env.OPENAI_MAX_COST_USD) ?? "5"),
   cloudinaryUrl: clean(process.env.CLOUDINARY_URL),
   cloudinaryCloudName: clean(process.env.CLOUDINARY_CLOUD_NAME),
   cloudinaryApiKey: clean(process.env.CLOUDINARY_API_KEY),
@@ -84,6 +92,12 @@ export const serverConfig = {
   cronSecret: clean(process.env.CRON_SECRET),
   maxUploadBytes: uploadLimit(),
   roomRetentionHours: Number(clean(process.env.ROOM_RETENTION_HOURS) ?? "24"),
+  /**
+   * Keep the intermediate images of a render (PRO-007). Off unless explicitly
+   * enabled: it multiplies stored copies of the customer's own photos, and is
+   * meant for a corpus run or a support investigation, never for production.
+   */
+  renderStageCapture: clean(process.env.RENDER_STAGE_CAPTURE) === "true",
   adminUsername: clean(process.env.ADMIN_USERNAME),
   adminPassword: clean(process.env.ADMIN_PASSWORD),
   adminPasswordHash: clean(process.env.ADMIN_PASSWORD_HASH),
@@ -103,6 +117,14 @@ function sessionHours(): number {
 
 export function assertProductionConfig(): void {
   if (process.env.NODE_ENV !== "production") return;
+  if (
+    process.env.RENDER_EXECUTION_MODE === "durable" &&
+    (!process.env.RENDER_WORKER_REVISION ||
+      process.env.RENDER_WORKER_REVISION === "local")
+  )
+    throw new Error(
+      "RENDER_WORKER_REVISION is required for durable rendering in production",
+    );
   if (!process.env.MONGODB_URI) {
     throw new Error("MONGODB_URI is required in production");
   }

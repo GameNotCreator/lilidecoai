@@ -39,6 +39,7 @@ export function productResponse(product: ProductDocument) {
     status: product.status,
     assetUrl: assetUrl(product.assetId),
     cutoutUrl: assetUrl(product.cutoutAssetId),
+    ...(product.cutout ? { cutout: product.cutout } : {}),
     views: (product.views ?? []).map((view) => ({
       id: view.id,
       assetId: view.assetId,
@@ -75,20 +76,45 @@ export function renderResponse(render: RenderDocument) {
     model: render.model,
     requestedSize: render.requestedSize,
     resultUrl: assetUrl(render.resultAssetId),
+    compositeUrl: assetUrl(render.compositeAssetId),
     error: render.error ?? null,
     qualityScore: render.qualityScore,
+    qualityDecision: render.qualityDecision,
     creditCharged: render.creditCharged,
     placement: render.placement,
     mode: render.mode ?? "insert",
     outputQuality: render.outputQuality ?? "final",
     pipelineState: render.pipelineState,
+    execution: render.execution ? {
+      version: render.execution.version,
+      deadlineAt: render.execution.deadlineAt.toISOString(),
+      attempts: render.execution.attempts,
+      retrying: render.status === "queued" && render.execution.attempts > 0,
+      errorCode: render.execution.errorCode,
+    } : undefined,
     surfaceType: render.surfaceType,
     placementPoint: render.placementPoint,
     targetPoint: render.targetPoint,
     targetMaskUrl: assetUrl(render.targetMaskAssetId),
     promptVersion: render.promptVersion,
+    // The engine that made this image, and the provenance of each stage. A
+    // corpus case cannot localise a failure — bad source, bad scale, bad
+    // cleanup — without them, and cannot be compared across engine versions.
+    engineVersions: render.engineVersions,
+    audit: render.audit,
+    // Intermediate images, when the run asked for them. Absent otherwise.
+    stages: render.stages,
     attemptCount: render.attemptCount ?? 0,
     estimatedCostUsd: render.estimatedCostUsd ?? 0,
+    /**
+     * Every paid call this render made, not only its final edit. Diagnostic:
+     * the cost is estimated from local constants, not reconciled.
+     */
+    usageTotals: render.usageTotals ?? {
+      calls: 0,
+      estimatedCostUsd: 0,
+      unknownOutcomeCalls: 0,
+    },
     degradedMode: render.degradedMode ?? false,
     qualityChecks: render.qualityChecks ?? [],
     modelChain: render.modelChain ?? [],

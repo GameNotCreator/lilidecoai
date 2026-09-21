@@ -3,7 +3,16 @@ import "server-only";
 import sharp from "sharp";
 import type { Db } from "mongodb";
 
-import { createCutout, normalizeImage, storeAsset } from "./assets";
+import type { CutoutMetadata } from "@lili/types";
+
+import {
+  CUTOUT_VERSION,
+  normalizeImage,
+  prepareCutout,
+  readAsset,
+  storeAsset,
+} from "./assets";
+import { cutoutVerdict } from "./cutout-identity";
 import { collections } from "./mongodb";
 import {
   DEMO_CATALOG_USER_ID,
@@ -232,6 +241,33 @@ async function seed(db: Db): Promise<void> {
         .map((product) => seedRemoteProduct(db, product)),
     );
   }
+  await publishCatalogImages(db);
+  await repairCatalogCutouts(db);
+}
+
+/**
+ * Marks the seeded catalogue images as published.
+ *
+ * `seedVase` and `seedRemoteProduct` return early when their product already
+ * exists, so a database seeded before `visibility` existed never gets it, and
+ * `asset-access.ts` — which reads a missing value as private — would answer 403
+ * for the whole demo catalogue. These ids are fixed and known to be catalogue
+ * content, so nothing has to be reconstructed: the migration script is for
+ * merchant-uploaded images, not for this.
+ */
+async function publishCatalogImages(db: Db): Promise<void> {
+  const catalogAssetIds = [
+    DEMO_PRODUCT_ASSET_ID,
+    DEMO_CUTOUT_ASSET_ID,
+    ...remoteDemoProducts.flatMap((product) => [
+      product.assetId,
+      product.cutoutAssetId,
+    ]),
+  ];
+  await collections(db).assets.updateMany(
+    { id: { $in: catalogAssetIds }, visibility: { $ne: "published" } },
+    { $set: { visibility: "published" }, $unset: { ownerSessionId: "" } },
+  );
 }
 
 export async function ensureDemoCredits(db: Db): Promise<void> {
@@ -248,10 +284,83 @@ export async function ensureDemoCredits(db: Db): Promise<void> {
     },
     { upsert: true },
   );
+  // Refill only when nothing is left AND nothing is held. Since lot 2 a
+  // reservation is what drives `balance` to 0 while a render is in flight;
+  // refilling on the balance alone would hand out a fresh dozen credits every
+  // time a single demo render was merely running.
   await wallets.updateOne(
-    { organizationId: DEMO_ORGANIZATION_ID, balance: { $lt: 1 } },
+    {
+      organizationId: DEMO_ORGANIZATION_ID,
+      balance: { $lt: 1 },
+      $or: [{ reserved: { $exists: false } }, { reserved: { $lte: 0 } }],
+    },
     { $set: { balance: 12, updatedAt: new Date() } },
   );
+}
+
+/**
+ * The seed's cutouts go through the same matte as a customer's, and keep its
+ * metadata. Without that every catalogue product would fail `cutoutTrust` —
+ * an allowlist that deliberately reads "no provenance" as untrusted — and the
+ * public demo could not render anything on a fresh database (PRO-008). The
+ * matte's own buffer is what gets stored, so geometry and pixels come from
+ * one computation.
+ */
+async function seedMatte(
+  image: Buffer,
+): Promise<{ buffer: Buffer; metadata: CutoutMetadata }> {
+  const result = await prepareCutout(image);
+  return {
+    buffer: result.buffer,
+    metadata: {
+      widthPx: result.widthPx,
+      heightPx: result.heightPx,
+      baseRowFraction: result.baseRowFraction,
+      source: "heuristic",
+      synthetic: false,
+      shadowRemoved: result.shadowRemoved,
+      warnings: result.warnings,
+      cutoutVersion: CUTOUT_VERSION,
+      verdict: cutoutVerdict(result.quality),
+    },
+  };
+}
+
+/**
+ * Catalogue products seeded before cutout metadata existed carry a cutout the
+ * trust gate refuses. They are re-matted from their stored cutout under the
+ * SAME asset id, so geometry and pixels still come from one computation — the
+ * invariant the migration script keeps too. One-time per product per database.
+ */
+async function repairCatalogCutouts(db: Db): Promise<void> {
+  const c = collections(db);
+  const stale = await c.products
+    .find({
+      id: { $in: [DEMO_PRODUCT_ID, ...remoteDemoProducts.map((p) => p.id)] },
+      cutoutAssetId: { $exists: true },
+      "cutout.cutoutVersion": { $exists: false },
+    })
+    .toArray();
+  for (const product of stale) {
+    const stored = await readAsset(db, product.cutoutAssetId as string);
+    if (!stored) continue;
+    const matte = await seedMatte(stored.buffer);
+    await storeAsset(
+      db,
+      {
+        organizationId: DEMO_ORGANIZATION_ID,
+        kind: "cutout",
+        visibility: "published",
+        buffer: matte.buffer,
+        contentType: "image/webp",
+      },
+      product.cutoutAssetId as string,
+    );
+    await c.products.updateOne(
+      { id: product.id },
+      { $set: { cutout: matte.metadata, updatedAt: new Date() } },
+    );
+  }
 }
 
 async function seedVase(db: Db): Promise<void> {
@@ -284,15 +393,17 @@ async function seedVase(db: Db): Promise<void> {
       <path d="M235 363c82 41 168 41 250 0" fill="none" stroke="#f2e3d2" stroke-width="13" opacity=".6"/>
     </svg>`;
   const source = await sharp(Buffer.from(vaseSvg)).png().toBuffer();
-  const cutout = await sharp(Buffer.from(vaseSvg.replace("#ffffff", "none")))
+  const authored = await sharp(Buffer.from(vaseSvg.replace("#ffffff", "none")))
     .png()
     .toBuffer();
+  const matte = await seedMatte(authored);
 
   await storeAsset(
     db,
     {
       organizationId: DEMO_ORGANIZATION_ID,
       kind: "product",
+      visibility: "published",
       buffer: source,
       contentType: "image/png",
     },
@@ -303,8 +414,9 @@ async function seedVase(db: Db): Promise<void> {
     {
       organizationId: DEMO_ORGANIZATION_ID,
       kind: "cutout",
-      buffer: cutout,
-      contentType: "image/png",
+      visibility: "published",
+      buffer: matte.buffer,
+      contentType: "image/webp",
     },
     DEMO_CUTOUT_ASSET_ID,
   );
@@ -330,6 +442,7 @@ async function seedVase(db: Db): Promise<void> {
     status: "ready",
     assetId: DEMO_PRODUCT_ASSET_ID,
     cutoutAssetId: DEMO_CUTOUT_ASSET_ID,
+    cutout: matte.metadata,
     anchor: defaultAnchor,
     createdAt: now,
     updatedAt: now,
@@ -347,15 +460,22 @@ async function seedRemoteProduct(
   let imageSourceUrl: string | undefined;
   let imageCredit: string | undefined;
   let source: Buffer;
-  let cutout: Buffer;
+  let matte: Awaited<ReturnType<typeof seedMatte>>;
   try {
     source = await downloadDemoImage(spec.imageUrl);
-    cutout = await createCutout(source);
+    matte = await seedMatte(source);
+    // A photo the matte cannot separate would seed an opaque rectangle as a
+    // catalogue product; the drawn fallback is honest about being a drawing.
+    if (!matte.metadata.verdict?.usable) {
+      throw new Error(matte.metadata.verdict?.detail ?? "détourage inutilisable");
+    }
     imageSourceUrl = spec.imageSourceUrl;
     imageCredit = spec.imageCredit;
   } catch (reason) {
     console.warn(`Demo image unavailable for ${spec.name}; using fallback`, reason);
-    ({ source, cutout } = await fallbackImages(spec));
+    const fallback = await fallbackImages(spec);
+    source = fallback.source;
+    matte = await seedMatte(fallback.cutout);
   }
 
   await storeAsset(
@@ -363,6 +483,7 @@ async function seedRemoteProduct(
     {
       organizationId: DEMO_ORGANIZATION_ID,
       kind: "product",
+      visibility: "published",
       buffer: source,
       contentType: "image/webp",
     },
@@ -373,7 +494,8 @@ async function seedRemoteProduct(
     {
       organizationId: DEMO_ORGANIZATION_ID,
       kind: "cutout",
-      buffer: cutout,
+      visibility: "published",
+      buffer: matte.buffer,
       contentType: "image/webp",
     },
     spec.cutoutAssetId,
@@ -401,6 +523,7 @@ async function seedRemoteProduct(
     status: "ready",
     assetId: spec.assetId,
     cutoutAssetId: spec.cutoutAssetId,
+    cutout: matte.metadata,
     anchor: defaultAnchor,
     createdAt: now,
     updatedAt: now,

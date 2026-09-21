@@ -1,4 +1,4 @@
-export type ImageQuality = "low" | "medium" | "high";
+export type ImageQuality = "low" | "medium" | "high" | "xhigh" | "max";
 export type ImageSize = "1024x1024" | "1536x1024" | "1024x1536";
 export type RenderMode = "insert" | "replace";
 export type OutputQuality = "preview" | "final";
@@ -103,6 +103,8 @@ export interface ImageGenerationRequest {
   placement: Record<string, number | string>;
   idempotencyKey: string;
   references?: ImageReference[];
+  /** Overall render deadline, so an edit always leaves time for validation. */
+  deadlineMs?: number;
   mode?: RenderMode;
   outputQuality?: OutputQuality;
 }
