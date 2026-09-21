@@ -128,6 +128,11 @@ export async function durableStep<T>(
   const previous = current?.execution?.steps[key];
   if (previous?.status === "completed")
     return (await decode(db, previous.output)) as T;
+  if (context.yieldAt !== undefined && Date.now() >= context.yieldAt)
+    throw new DurableExecutionError(
+      "Reprise dans une nouvelle invocation.",
+      "yield",
+    );
   if (
     policy === "image" &&
     (previous?.status === "running" || previous?.status === "unknown")

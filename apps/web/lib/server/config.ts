@@ -119,8 +119,11 @@ export function assertProductionConfig(): void {
   if (process.env.NODE_ENV !== "production") return;
   if (
     process.env.RENDER_EXECUTION_MODE === "durable" &&
-    (!process.env.RENDER_WORKER_REVISION ||
-      process.env.RENDER_WORKER_REVISION === "local")
+    !(
+      process.env.VERCEL_GIT_COMMIT_SHA ||
+      (process.env.RENDER_WORKER_REVISION !== "local" &&
+        process.env.RENDER_WORKER_REVISION)
+    )
   )
     throw new Error(
       "RENDER_WORKER_REVISION is required for durable rendering in production",

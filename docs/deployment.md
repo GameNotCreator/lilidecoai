@@ -23,7 +23,9 @@ Importer le dépôt GitHub `GameNotCreator/lilidecoai`, puis configurer :
   partagés sont dans `packages/*` ;
 - commandes d’installation et de build automatiques.
 
-`apps/web/vercel.json` déclare le cron de purge et la configuration Next.js.
+`apps/web/vercel.json` déclare la purge quotidienne et le worker image chaque
+minute. Le worker utilise Vercel Pro avec Fluid Compute, MongoDB et Cloudinary
+déjà configurés ; aucun autre hébergeur n'est requis.
 
 ## 3. Cloudinary
 
@@ -48,6 +50,7 @@ OPENAI_API_KEY
 OPENAI_MODEL=gpt-image-2
 OPENAI_IMAGE_ENABLED=true
 AI_MOCK_MODE=false
+RENDER_EXECUTION_MODE=durable
 ```
 
 Optionnelles :
@@ -115,11 +118,15 @@ npm.cmd run migrate:asset-visibility
 npm.cmd run migrate:asset-visibility -- --apply
 ```
 
-Le premier appel s’exécute à blanc et affiche son plan. **Ne pas appliquer** si,
-sur une base ayant servi du trafic widget ou démo, le compte `private_session`
-vaut zéro : c’est la signature d’un rattachement de session incorrect, et le
-script l’annonce. Les images qu’aucun document ne référence restent privées et
-sont dénombrées séparément.
+Le premier appel s’exécute à blanc et affiche son plan. Si `private_session`
+vaut zéro, vérifier les types d'assets, l'origine des créateurs et les images
+privées déjà migrées : un lot composé uniquement d'images catalogue peut être
+légitime. Une photo de visiteur sans rattachement correct bloque l'application.
+Les images qu’aucun document ne référence restent privées et sont dénombrées
+séparément. L'application sauvegarde les métadonnées originales dans
+`migration_backups_asset_visibility_v1` et évite d'écraser une modification
+concurrente. Sur Vercel, le drapeau ponctuel de build
+`APPLY_ASSET_VISIBILITY_MIGRATION=true` applique le plan préalablement vérifié.
 
 Après application, vérifier qu’une image du catalogue démo se lit sans session
 et qu’une image importée par un visiteur répond 403 depuis une autre session.
@@ -150,14 +157,17 @@ Le smoke test crée deux sessions invitées et une image synthétique expirant s
 
 L'état livré et les limites restantes sont consignés dans [le compte rendu du 6 septembre](production-2026-09-06.md).
 
-## Worker image durable (activation distincte)
+## Worker image durable sur Vercel
 
-Les parcours `simple_point` et `standard` disposent d'un worker Node séparé,
-versionné `render-durable-v2`, désactivé par défaut.
-Il exige MongoDB Atlas/replica set, les mêmes paramètres fournisseurs et une
-révision immutable partagée avec le web. Le worker doit tourner sur un service
-persistant ; il ne s'exécute pas dans la fonction Vercel. Le mode `web` conserve
-l'exécution précédente. Voir [le guide du worker](../infra/render-worker.md)
-pour les commandes, le Dockerfile, la bascule et le drainage des anciennes
-révisions. Aucun worker hébergé ni déploiement de cette bascule n'a été effectué
-dans le lot du 21 septembre.
+Les parcours `simple_point` et `standard` utilisent `render-durable-v2`.
+`RENDER_EXECUTION_MODE=durable` active l'admission en file et le cron authentifié
+par `CRON_SECRET`. La fonction dispose de 800 secondes et cède la main entre
+étapes après cinq minutes, en conservant les points de reprise dans MongoDB.
+Le contrôle de production vérifie les transactions et la révision immutable.
+`VERCEL_GIT_COMMIT_SHA` prime ; pour une livraison CLI sans métadonnées Git,
+fournir `RENDER_WORKER_REVISION` au build et à l'exécution avec le SHA livré.
+
+Avant une nouvelle révision, drainer ou annuler les rendus actifs de l'ancienne.
+Surveiller `render_worker_tick` dans les logs Vercel. `/v1/health` expose le mode
+d'exécution. Voir [le guide du worker](../infra/render-worker.md) pour les limites
+de reprise, la bascule et l'alternative facultative Node/Docker.

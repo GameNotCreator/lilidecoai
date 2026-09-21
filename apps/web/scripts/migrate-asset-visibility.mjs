@@ -80,11 +80,19 @@ try {
         { kind: { $in: ["product", "product_view", "cutout"] } },
       ],
     })
-    .project({ id: 1, kind: 1, organizationId: 1 })
+    .project({
+      id: 1,
+      kind: 1,
+      organizationId: 1,
+      visibility: 1,
+      ownerSessionId: 1,
+    })
     .toArray();
 
   const plan = [];
   const orphans = [];
+  const ownershipEvidence = {};
+  const ambiguousPublicAssets = [];
 
   for (const asset of pending) {
     let owner = null;
@@ -99,12 +107,32 @@ try {
             { "views.assetId": asset.id },
           ],
         },
-        { projection: { createdByUserId: 1, status: 1 } },
+        { projection: { id: 1, createdByUserId: 1, status: 1 } },
       );
+      const knownLegacyDemo =
+        owner?.id === "11111111-1111-4111-8111-111111111111" &&
+        [
+          "11111111-1111-4111-8111-111111111112",
+          "11111111-1111-4111-8111-111111111113",
+        ].includes(asset.id);
+      const evidence = !owner
+        ? "unreferenced"
+        : scopeFromCreator(owner)
+          ? "visitor_session"
+          : owner.createdByUserId === "demo-catalog"
+            ? "demo_catalog"
+            : knownLegacyDemo
+              ? "known_legacy_demo"
+              : owner.createdByUserId
+                ? "organization_creator"
+                : "missing_creator";
+      ownershipEvidence[evidence] = (ownershipEvidence[evidence] ?? 0) + 1;
       published =
         Boolean(owner) &&
         scopeFromCreator(owner) === undefined &&
         owner.status === "ready";
+      if (published && !owner.createdByUserId && !knownLegacyDemo)
+        ambiguousPublicAssets.push(asset.id);
     } else if (asset.kind === "scene") {
       owner = await scenes.findOne(
         { assetId: asset.id },
@@ -156,11 +184,12 @@ try {
   }
 
   const counts = plan.reduce((totals, item) => {
-    const key = item.visibility === "published"
-      ? "published"
-      : item.ownerSessionId
-        ? "private_session"
-        : "private_organization";
+    const key =
+      item.visibility === "published"
+        ? "published"
+        : item.ownerSessionId
+          ? "private_session"
+          : "private_organization";
     totals[key] = (totals[key] ?? 0) + 1;
     return totals;
   }, {});
@@ -171,6 +200,16 @@ try {
         database: databaseName,
         pending: pending.length,
         counts,
+        ownershipEvidence,
+        ambiguousPublicAssets: ambiguousPublicAssets.length,
+        assetKinds: pending.reduce((totals, asset) => {
+          totals[asset.kind] = (totals[asset.kind] ?? 0) + 1;
+          return totals;
+        }, {}),
+        existingPrivateSessionAssets: await assets.countDocuments({
+          visibility: "private",
+          ownerSessionId: { $type: "string" },
+        }),
         orphans: orphans.length,
         orphanSample: orphans.slice(0, 10),
         apply,
@@ -191,9 +230,32 @@ try {
       );
     }
   } else {
+    if (ambiguousPublicAssets.length)
+      throw new Error(
+        "Migration refusée : créateur absent sur une image à publier hors catalogue démo connu.",
+      );
+    const backups = database.collection(
+      "migration_backups_asset_visibility_v1",
+    );
+    let modified = 0;
     for (const item of plan) {
-      await assets.updateOne(
-        { id: item.id },
+      const original = pending.find((asset) => asset.id === item.id);
+      if (
+        original.visibility === item.visibility &&
+        original.ownerSessionId === item.ownerSessionId
+      )
+        continue;
+      await backups.updateOne(
+        { _id: original._id },
+        { $setOnInsert: { original, backedUpAt: new Date() } },
+        { upsert: true },
+      );
+      const result = await assets.updateOne(
+        {
+          _id: original._id,
+          visibility: original.visibility ?? { $exists: false },
+          ownerSessionId: original.ownerSessionId ?? { $exists: false },
+        },
         {
           $set: {
             visibility: item.visibility,
@@ -204,8 +266,9 @@ try {
           ...(!item.ownerSessionId ? { $unset: { ownerSessionId: "" } } : {}),
         },
       );
+      modified += result.modifiedCount;
     }
-    console.log(`${plan.length} images mises à jour.`);
+    console.log(`${modified} images mises à jour avec sauvegarde préalable.`);
   }
 } finally {
   await client.close();

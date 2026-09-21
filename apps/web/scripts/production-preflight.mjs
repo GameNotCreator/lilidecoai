@@ -66,6 +66,20 @@ try {
   await client.connect();
   const db = client.db(env.MONGODB_DB);
   check("MongoDB joignable", (await db.command({ ping: 1 })).ok === 1);
+  if (env.RENDER_EXECUTION_MODE === "durable") {
+    const topology = await db.command({ hello: 1 });
+    check(
+      "transactions MongoDB disponibles",
+      Boolean(topology.setName || topology.msg === "isdbgrid"),
+    );
+    check(
+      "révision du worker figée",
+      Boolean(
+        env.VERCEL_GIT_COMMIT_SHA ||
+        (env.RENDER_WORKER_REVISION && env.RENDER_WORKER_REVISION !== "local"),
+      ),
+    );
+  }
   const legacyProducts = await db.collection("products").countDocuments({
     assetId: { $type: "string" },
     views: { $exists: false },
@@ -90,11 +104,9 @@ try {
     JSON.stringify({
       catalogue: {
         missingVisibility,
-        syntheticCutouts: await db
-          .collection("products")
-          .countDocuments({
-            $or: [{ "cutout.synthetic": true }, { "cutout.source": "model" }],
-          }),
+        syntheticCutouts: await db.collection("products").countDocuments({
+          $or: [{ "cutout.synthetic": true }, { "cutout.source": "model" }],
+        }),
         unknownCutoutProvenance: await db
           .collection("products")
           .countDocuments({

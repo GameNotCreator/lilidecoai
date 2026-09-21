@@ -37,6 +37,12 @@ verify(
     health.imagePipeline.activeDemoModel ===
       (process.env.SMOKE_EXPECTED_IMAGE_MODEL || "gpt-image-2"),
 );
+if (process.env.SMOKE_EXPECTED_EXECUTION_MODE)
+  verify(
+    "mode du worker",
+    health.imagePipeline.executionMode ===
+      process.env.SMOKE_EXPECTED_EXECUTION_MODE,
+  );
 for (const path of ["/", "/demo", "/objet", "/login"])
   verify(`page ${path}`, (await request(path)).status === 200);
 for (const path of [
@@ -45,6 +51,7 @@ for (const path of [
   "/v1/credits",
   "/api/admin/overview",
   "/api/cron/purge",
+  "/api/cron/render-worker",
 ])
   verify(
     `accès anonyme refusé ${path}`,

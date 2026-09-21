@@ -845,4 +845,26 @@ describe.skipIf(!uri)("real MongoDB replica-set invariants", () => {
     expect(calls.images).toBe(2);
     expect(calls.reviews).toBe(3);
   });
+  it("yields to the next Vercel invocation without consuming a retry or reserving twice", async () => {
+    await seedPipeline();
+    vi.stubEnv("RENDER_EXECUTION_MODE", "durable");
+    const result = await createRender(db, "org", standardInput());
+    await runWorkerOnce(db, "vercel-slice", { yieldAfterMs: 0 });
+    const queued = await collections(db).renders.findOne({ id: result.id });
+    expect(queued?.status).toBe("queued");
+    expect(queued?.execution?.attempts).toBe(0);
+    expect(queued?.execution?.token).toBeUndefined();
+    expect(
+      (await collections(db).wallets.findOne({ organizationId: "org" }))!
+        .reserved,
+    ).toBe(1);
+    await runWorkerOnce(db, "vercel-resumed");
+    const final = await collections(db).renders.findOne({ id: result.id });
+    expect(final?.status, final?.error).toBe("succeeded");
+    const wallet = await collections(db).wallets.findOne({
+      organizationId: "org",
+    });
+    expect(wallet!.balance).toBe(9);
+    expect(wallet!.reserved).toBe(0);
+  });
 });

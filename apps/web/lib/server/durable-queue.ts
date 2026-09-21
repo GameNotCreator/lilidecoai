@@ -34,7 +34,10 @@ export function workerFingerprint(): string {
     .update(
       JSON.stringify({
         engine: DURABLE_ENGINE_VERSION,
-        revision: process.env.RENDER_WORKER_REVISION ?? "local",
+        revision:
+          process.env.VERCEL_GIT_COMMIT_SHA ||
+          process.env.RENDER_WORKER_REVISION ||
+          "local",
         model: serverConfig.openaiModel,
         vision: serverConfig.openaiVisionModel,
         quality: serverConfig.openaiQuality,
@@ -491,6 +494,7 @@ export async function retryDurableRender(
   db: Db,
   render: RenderDocument,
   error: string,
+  yielded = false,
 ): Promise<void> {
   const delayMs = Math.min(
     120_000,
@@ -501,11 +505,12 @@ export async function retryDurableRender(
     {
       $set: {
         status: "queued",
-        "execution.availableAt": new Date(Date.now() + delayMs),
+        "execution.availableAt": new Date(Date.now() + (yielded ? 0 : delayMs)),
         "execution.lastError": error.slice(0, 500),
         updatedAt: new Date(),
       },
       $unset: { "execution.token": "", "execution.leaseUntil": "" },
+      ...(yielded ? { $inc: { "execution.attempts": -1 } } : {}),
     },
   );
 }

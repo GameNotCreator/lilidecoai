@@ -55,6 +55,24 @@ const run = <T>(call: () => Promise<T>, token = "first") =>
   durableContext.run({ render, token }, call);
 
 describe("durable checkpoint recovery", () => {
+  it("yields before a new paid step while reusing completed checkpoints", async () => {
+    const image = vi.fn().mockResolvedValue({ ok: true });
+    await run(() => durableStep(db, "image-slice", "image", image));
+    const judge = vi.fn();
+    await durableContext.run(
+      { render, token: "first", yieldAt: Date.now() - 1 },
+      async () => {
+        expect(await durableStep(db, "image-slice", "image", image)).toEqual({
+          ok: true,
+        });
+        await expect(
+          durableStep(db, "judge-slice", "analysis", judge),
+        ).rejects.toMatchObject({ code: "yield" });
+      },
+    );
+    expect(image).toHaveBeenCalledTimes(1);
+    expect(judge).not.toHaveBeenCalled();
+  });
   it("reuses a successful image when QA fails, then retries only QA", async () => {
     const edit = vi
       .fn()

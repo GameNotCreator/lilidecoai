@@ -155,8 +155,9 @@ export async function dispatchApi(
           activeDemoModel: serverConfig.aiMockMode
             ? "mock"
             : serverConfig.openaiApiKey
-              ? "gpt-image-2"
+              ? serverConfig.openaiModel
               : null,
+          executionMode: process.env.RENDER_EXECUTION_MODE === "durable" ? "durable" : "web",
           openAIConfigured: Boolean(serverConfig.openaiApiKey),
           googleConfigured: Boolean(serverConfig.googleApiKey),
           previewModel: serverConfig.googlePreviewImageModel,

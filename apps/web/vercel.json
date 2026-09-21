@@ -1,11 +1,15 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "nextjs",
-  "buildCommand": "if [ \"$VERCEL_ENV\" = \"production\" ]; then if [ \"$APPLY_IMAGE_PIPELINE_MIGRATION\" = \"true\" ]; then node scripts/migrate-image-pipeline.mjs --apply || exit 1; fi; node scripts/production-preflight.mjs --runtime && npm run build; else npm run build; fi",
+  "buildCommand": "node scripts/vercel-build.mjs",
   "crons": [
     {
       "path": "/api/cron/purge",
       "schedule": "0 3 * * *"
+    },
+    {
+      "path": "/api/cron/render-worker",
+      "schedule": "* * * * *"
     }
   ]
 }

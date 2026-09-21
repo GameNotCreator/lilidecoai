@@ -1,4 +1,4 @@
-# Worker de rendu séparé
+# Worker de rendu durable sur Vercel
 
 Le worker `render-durable-v2` exécute les parcours `simple_point` et `standard`,
 y compris le remplacement avec masque confirmé. L'activation est explicite :
@@ -8,15 +8,33 @@ le défaut demeure `RENDER_EXECUTION_MODE=web`.
 
 - MongoDB Atlas ou replica set : la finalisation, le journal et le crédit
   nécessitent les transactions. Un MongoDB standalone est refusé au démarrage.
-- Même base, stockage privé, modèles, qualité, mode simulé et
-  `RENDER_WORKER_REVISION` sur le web et le worker. En production, utiliser une
-  révision de livraison immutable (par exemple le SHA du commit).
-- Un processus Node 24 persistant, avec accès réseau aux fournisseurs et au
-  stockage. Ne pas lancer ce processus dans une fonction Vercel.
-- Superviser le processus et son redémarrage. Le dimensionnement mémoire,
-  les quotas fournisseurs et la charge restent à mesurer avant production.
+- Même base, stockage privé, modèles, qualité et révision sur le web et le
+  worker. Sur Vercel, `VERCEL_GIT_COMMIT_SHA` identifie la révision ;
+  `RENDER_WORKER_REVISION` fournit un repli explicite pour les livraisons CLI.
+- Vercel Pro avec Fluid Compute pour le cron chaque minute et la fonction
+  de 800 secondes. Aucun hébergement supplémentaire du worker n'est nécessaire.
+- Le dimensionnement mémoire, les quotas fournisseurs et la charge restent à
+  mesurer avec des générations réelles.
 
-## Exécution
+## Exécution Vercel
+
+Configurer `RENDER_EXECUTION_MODE=durable` en production. Le cron
+`/api/cron/render-worker` s'authentifie avec `CRON_SECRET` et réserve au plus deux
+rendus par invocation (`RENDER_WORKER_CONCURRENCY`, borné à quatre). Les baux
+MongoDB empêchent deux invocations de traiter le même rendu. Le journal
+`render_worker_tick` indique les traitements et erreurs de chaque invocation.
+
+Après cinq minutes, le worker termine l'étape en cours puis remet le rendu en
+file avant la suivante. Cette interruption volontaire conserve les checkpoints
+et le crédit réservé, sans consommer une tentative d'échec. Le prochain cron
+reprend le même rendu. Un arrêt brutal reste couvert par les baux et les règles
+`provider_unknown` décrites ci-dessous. Le délai métier maximal est de trente
+minutes par défaut ; la première prise en charge peut attendre le prochain cron.
+
+Sources : [fréquence des crons](https://vercel.com/docs/cron-jobs/usage-and-pricing),
+[durée des fonctions](https://vercel.com/docs/functions/configuring-functions/duration).
+
+## Alternative : processus Node indépendant
 
 ```powershell
 npm ci --include=dev
@@ -87,15 +105,19 @@ avant un crash mais non référencé sera purgé à son expiration.
 ## Déploiement progressif et retour arrière
 
 1. Exécuter les contrôles logiciels et le pilote réel en préproduction.
-2. Démarrer le worker avec la révision du web, puis activer `durable` sur le web.
+2. Sur Vercel, livrer le web et sa route cron ensemble avec `durable` activé.
+   Pour le processus indépendant, démarrer le worker avec la révision du web.
 3. Surveiller erreurs, `provider_unknown`, rendus en attente, âge de file,
    échéances expirées, consommation et quotas. Aucune alerte externe n'est
    configurée par ce lot.
-4. Pour arrêter les nouvelles admissions durables, remettre le web en `web`.
-   Garder les anciens workers jusqu'à terminaison ou annulation de leurs jobs.
-5. Lors d'un changement de révision, maintenir les deux workers : chacun ne
-   réserve que les documents portant son empreinte. Ne pas réécrire la version
-   d'un job en cours. Un job sans worker compatible expire explicitement.
+4. Avant de changer de révision sur Vercel, attendre la fin des rendus actifs ou
+   les annuler explicitement : le cron vise la production courante. Un ancien
+   déploiement sans cron actif ne draine pas sa file automatiquement.
+5. Revenir à `web` désactive aussi le cron durable. Les rendus restants ne doivent
+   donc pas être abandonnés lors de la bascule. Avec des processus indépendants,
+   maintenir les anciens workers jusqu'à terminaison de leurs jobs. Ne pas
+   réécrire la version d'un job en cours ; un job sans worker compatible expire
+   explicitement.
 
 La version v2 ne réserve pas les anciens jobs `simple-durable-v1`. Si des jobs
 v1 existent, conserver leur binaire/configuration pour les drainer. Aucun document

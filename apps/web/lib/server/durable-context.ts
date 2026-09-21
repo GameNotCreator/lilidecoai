@@ -7,6 +7,7 @@ export const DURABLE_ENGINE_VERSION = "render-durable-v2";
 export interface DurableContext {
   render: RenderDocument;
   token: string;
+  yieldAt?: number;
 }
 export const durableContext = new AsyncLocalStorage<DurableContext>();
 
@@ -20,7 +21,8 @@ export class DurableExecutionError extends Error {
   }
   constructor(
     message: string,
-    readonly code: "lease_lost" | "retry" | "provider_unknown" | "permanent",
+    readonly code:
+      "lease_lost" | "retry" | "provider_unknown" | "permanent" | "yield",
   ) {
     super(message);
   }
