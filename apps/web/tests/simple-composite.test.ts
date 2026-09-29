@@ -401,7 +401,7 @@ describe("contact-light insertion", () => {
     ).toEqual({ r: 255, g: 255, b: 255 });
   });
 
-  it("reduces only the bright thick contour by a bounded subpixel alpha step", async () => {
+  it("removes one bright boundary layer while preserving its RGB and opaque interior", async () => {
     const rgba = Buffer.alloc(24 * 24 * 4, 0);
     for (let y = 3; y < 21; y += 1)
       for (let x = 3; x < 21; x += 1) {
@@ -421,7 +421,8 @@ describe("contact-light insertion", () => {
       .ensureAlpha()
       .raw()
       .toBuffer();
-    expect(clean[(12 * 24 + 3) * 4 + 3]).toBe(166);
+    expect(clean[(12 * 24 + 3) * 4 + 3]).toBe(0);
+    expect(clean[(12 * 24 + 4) * 4 + 3]).toBe(255);
     expect(clean[(12 * 24 + 20) * 4 + 3]).toBe(255);
     let changed = 0;
     for (let i = 0; i < 24 * 24; i += 1) {
@@ -436,11 +437,46 @@ describe("contact-light insertion", () => {
         Math.floor(i / 24) < 20
       )
         expect(clean[i * 4 + 3]).toBe(rgba[i * 4 + 3]);
-      expect(clean[i * 4 + 3]!).toBeGreaterThanOrEqual(
-        Math.floor(rgba[i * 4 + 3]! * 0.65),
-      );
+      expect(clean[i * 4 + 3]!).toBeLessThanOrEqual(rgba[i * 4 + 3]!);
     }
     expect(changed).toBeGreaterThan(30);
+  });
+
+  it.each([1, 2, 3, 6])("preserves the complete pixels of an isolated %ipx white stem", async (width) => {
+    const source = Buffer.alloc(24 * 48 * 4);
+    for (let y = 3; y < 45; y++) for (let x = 8; x < 8 + width; x++)
+      source.set([245, 245, 245, 255], (y * 24 + x) * 4);
+    const png = await sharp(source, { raw: { width: 24, height: 48, channels: 4 } }).png().toBuffer();
+    const result = await sharp(await softenBrightContour(png)).ensureAlpha().raw().toBuffer();
+    expect(result).toEqual(source);
+  });
+
+  it("keeps a round volume centred with at most one layer removed on each side", async () => {
+    const png = await circleCutout(64, "#eeeeee");
+    const original = await sharp(png).ensureAlpha().raw().toBuffer();
+    const result = await sharp(await softenBrightContour(png)).ensureAlpha().raw().toBuffer();
+    const bounds = (pixels: Buffer) => {
+      let left = 64, right = -1, top = 64, bottom = -1;
+      for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) {
+        if (!pixels[(y * 64 + x) * 4 + 3]) continue;
+        left = Math.min(left, x); right = Math.max(right, x);
+        top = Math.min(top, y); bottom = Math.max(bottom, y);
+      }
+      return { left, right, top, bottom };
+    };
+    const before = bounds(original), after = bounds(result);
+    expect(after.left - before.left).toBeLessThanOrEqual(1);
+    expect(before.right - after.right).toBeLessThanOrEqual(1);
+    expect(after.top - before.top).toBeLessThanOrEqual(1);
+    expect(before.bottom - after.bottom).toBeLessThanOrEqual(1);
+    expect(after.left + after.right).toBe(before.left + before.right);
+    expect(after.top + after.bottom).toBe(before.top + before.bottom);
+    for (let i = 0; i < 64 * 64; i++) {
+      expect(result.subarray(i * 4, i * 4 + 3)).toEqual(original.subarray(i * 4, i * 4 + 3));
+      const x = i % 64, y = Math.floor(i / 64);
+      if (Math.hypot(x - 31.5, y - 31.5) < 26)
+        expect(result[i * 4 + 3]).toBe(255);
+    }
   });
 
   it("does not invent a hidden room for an old checkpoint or a standing shadow for wall art", async () => {

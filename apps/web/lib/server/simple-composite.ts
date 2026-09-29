@@ -133,7 +133,7 @@ export interface PaddedComposition {
  */
 export const SIMPLE_COMPOSITE_VERSION = "composite-v2";
 /** Opt-in source-faithful insertion; legacy/spatial paste-back is unchanged. */
-export const CONTACT_LIGHT_COMPOSITE_VERSION = "composite-v3/contact-light-v4";
+export const CONTACT_LIGHT_COMPOSITE_VERSION = "composite-v3/contact-light-v5";
 
 export const SILHOUETTE_DILATION_PX = 3;
 /** Identity stamp inset, in pixels: the model keeps this much of the edge. */
@@ -144,8 +144,8 @@ export const MAX_RELIGHT_GAIN = 0.12;
 export const MAX_CONTACT_DARKENING = 0.25;
 /** Contact occlusion plus cast shadow; applied only to the real support. */
 export const MAX_SOURCE_SHADOW_DARKENING = 0.45;
-/** Subpixel alpha contraction; source RGB and opaque interiors are untouched. */
-export const BRIGHT_CONTOUR_TRIM = 0.35;
+/** One-pixel minimum at bright thick boundaries; source RGB/core stay intact. */
+export const BRIGHT_CONTOUR_TRIM = 1;
 /** Nothing above the base (outside the silhouette ring) is ever editable. */
 const SHADOW_WINDOW_ABOVE_BASE_PX = 2;
 const MIN_VISIBLE_PX = 1;
@@ -1049,7 +1049,7 @@ async function sourceShadowField(
 
 /**
  * A bright fringe can survive matting and resize on a thick product contour.
- * Mix only its alpha with a one-pixel minimum by 0.35, never its RGB. Opening
+ * Replace only its alpha by a one-pixel minimum, never its RGB. Opening
  * the binary silhouette identifies thick material: wires, handle rims and
  * isolated crown tips without a three-pixel interior keep their original alpha.
  * Dark/coloured edges and all fully surrounded pixels are also unchanged.
@@ -1292,7 +1292,7 @@ async function transferContactLight(
       }),
     );
     // Stamp once onto the actual room. Bright thick outlines receive only a
-    // subpixel alpha cleanup; thin details and interior highlights stay intact.
+    // one-pixel alpha cleanup; thin details and interior highlights stay intact.
     return sharp(room.data, { raw: { width, height, channels: 3 } })
       .composite(stamps)
       .webp({ lossless: true })
