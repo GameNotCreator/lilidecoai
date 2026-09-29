@@ -1,7 +1,7 @@
 @import "tailwindcss";
 @plugin "daisyui" {
   themes: false;
-  include: button, input, join, link;
+  include: button, input, join, link, fieldset, label, file-input;
   logs: false;
 }
 @plugin "daisyui/theme" {
@@ -6348,6 +6348,19 @@ body:has(.bo-login) .site-header {
   align-items: start;
   gap: 18px;
   grid-template-columns: minmax(0, 1fr) 348px;
+}
+
+.bo-product-head-actions {
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+
+input.bo-cutout-mask-input {
+  min-width: 0;
+  max-width: 100%;
+  min-height: 44px;
+  font-size: 1rem;
 }
 
 .bo-variant {

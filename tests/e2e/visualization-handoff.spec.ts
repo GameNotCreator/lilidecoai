@@ -4,7 +4,8 @@ const productId = "11111111-1111-4111-8111-111111111111";
 const cartKey = "lilideco-storefront-cart-v1";
 
 test.beforeAll(async ({ request }) => {
-  expect((await request.get("/v1/products", { timeout: 120_000 })).ok()).toBe(true);
+  const seeded = await request.get("/v1/products", { timeout: 120_000 });
+  expect(seeded.ok(), await seeded.text()).toBe(true);
 });
 
 test("desktop handoff has a local QR, accessible close and exact product URL; mobile goes directly", async ({ page }) => {

@@ -673,7 +673,7 @@ describe("bounded Responses API transport", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("caps timeout at 45s and within the remaining deadline", async () => {
+  it("caps preflight timeout at 45s and within the remaining deadline", async () => {
     const timeout = vi.spyOn(AbortSignal, "timeout");
     const fetchMock = vi
       .fn()
@@ -691,6 +691,22 @@ describe("bounded Responses API transport", () => {
       deadlineMs: Date.now() + 10_000,
     });
     expect(timeout.mock.calls[1]?.[0]).toBeLessThanOrEqual(9_000);
+    timeout.mockRestore();
+  });
+
+  it("allows final inspection 90s but never extends the render deadline or retries", async () => {
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(envelope(renderPayload()))),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await reviewVisualRender({ ...input(), generated: image, deadlineMs: Date.now() + 120_000 });
+    expect(timeout.mock.calls[0]?.[0]).toBe(90_000);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    fetchMock.mockResolvedValue(new Response(JSON.stringify(envelope(renderPayload()))));
+    await reviewVisualRender({ ...input(), generated: image, deadlineMs: Date.now() + 10_000 });
+    expect(timeout.mock.calls[1]?.[0]).toBeLessThanOrEqual(9_000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     timeout.mockRestore();
   });
 

@@ -681,6 +681,13 @@ function fallbackEstimate(count: number): SceneScaleEstimate {
   };
 }
 
+export const SCALE_ESTIMATION_TIMEOUT_MS = 90_000;
+
+export interface ScaleEstimationOptions {
+  /** Absolute remaining render deadline, including any downstream reserve. */
+  deadlineMs?: number;
+}
+
 /**
  * One `/v1/responses` call for every point. Best effort: any transport,
  * schema or truncation problem yields the assumed-room-width fallback.
@@ -691,12 +698,18 @@ export async function estimateSceneScale(
   kinds: readonly SimplePlacementKind[],
   sceneWidth: number,
   sceneHeight: number,
+  options: ScaleEstimationOptions = {},
 ): Promise<SceneScaleEstimate> {
   if (points.length === 0) return { spans: [], lighting: null };
   if (serverConfig.aiMockMode || !serverConfig.openaiApiKey) {
     return fallbackEstimate(points.length);
   }
   const startedAt = Date.now();
+  const deadline = Math.min(
+    startedAt + SCALE_ESTIMATION_TIMEOUT_MS,
+    options.deadlineMs ?? Infinity,
+  );
+  if (deadline <= startedAt) return fallbackEstimate(points.length);
   const call = (outcome: "succeeded" | "failed" | "unknown") => ({
     outcome,
     estimatedCostUsd: outcome === "failed" ? 0 : SCALE_VISION_COST_USD,
@@ -705,6 +718,10 @@ export async function estimateSceneScale(
   });
   try {
     const marked = await markPoints(sceneWebp, points, sceneWidth, sceneHeight);
+    const remaining = Math.floor(deadline - Date.now());
+    // Preparing the image consumes the same step budget. Do not start a
+    // billable request after the parent render's remaining time has elapsed.
+    if (remaining <= 0) return fallbackEstimate(points.length);
     const response = await fetchOpenAIResponse(
       {
         model: serverConfig.openaiVisionModel,
@@ -737,7 +754,7 @@ export async function estimateSceneScale(
           },
         },
       },
-      60_000,
+      remaining,
     );
     if (!response.ok) {
       console.error(
@@ -835,6 +852,7 @@ export async function getOrEstimateSceneScale(
   scene: SceneDocument,
   points: ReadonlyArray<{ x: number; y: number }>,
   kinds: readonly SimplePlacementKind[],
+  options: ScaleEstimationOptions = {},
 ): Promise<SceneScaleResult> {
   const normalizedKinds = points.map((_, index) => kinds[index] ?? "standing");
   if (serverConfig.aiMockMode || !serverConfig.openaiApiKey) {
@@ -876,6 +894,7 @@ export async function getOrEstimateSceneScale(
     normalizedKinds,
     sceneWidth,
     sceneHeight,
+    options,
   );
   // A timeout or unusable answer must be retryable on the next request.
   if (!estimate.spans.some((span) => span.pixelsPerCm !== null)) {
@@ -959,8 +978,11 @@ export async function fetchOpenAIResponse(
   timeoutMs: number,
 ): Promise<Response> {
   const deadline = Date.now() + timeoutMs;
-  const send = (body: Record<string, unknown>) =>
-    fetch(`${serverConfig.openaiBaseUrl}/responses`, {
+  const send = (body: Record<string, unknown>) => {
+    const remaining = Math.floor(deadline - Date.now());
+    if (remaining <= 0)
+      throw new DOMException("OpenAI response deadline expired", "TimeoutError");
+    return fetch(`${serverConfig.openaiBaseUrl}/responses`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${serverConfig.openaiApiKey}`,
@@ -968,8 +990,9 @@ export async function fetchOpenAIResponse(
       },
       body: JSON.stringify(body),
       // The optional service-tier fallback shares the same total budget.
-      signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
+      signal: AbortSignal.timeout(remaining),
     });
+  };
 
   const response = await send(requestBody);
   if (

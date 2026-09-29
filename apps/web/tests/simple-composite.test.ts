@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 import sharp from "sharp";
+import { readFile } from "node:fs/promises";
 
 import {
   compositeObjectsOnScene,
   createSilhouetteMask,
   dilateBinary,
+  MAX_CONTACT_DARKENING,
+  MAX_RELIGHT_GAIN,
+  MAX_SOURCE_SHADOW_DARKENING,
+  softenBrightContour,
   padCompositionForAspect,
   pasteBackOutsideMask,
   planSimplePlacements,
@@ -104,6 +109,608 @@ const standingOverlay = async (
   depthKey: baseY,
   objectIndex: 0,
   ...overrides,
+});
+
+describe("contact-light insertion", () => {
+  const rightLighting = {
+    lightDirection: "right" as const,
+    lightElevation: "high" as const,
+    shadowSoftness: "soft" as const,
+    colourTemperature: "neutral" as const,
+    shadowDirection: "left" as const,
+  };
+
+  it("uses scene direction after rejecting a displaced model without repainting details", async () => {
+    const pixels = Buffer.alloc(80 * 80 * 4);
+    for (let y = 0; y < 80; y++) for (let x = 0; x < 80; x++) {
+      const i = (y * 80 + x) * 4;
+      const detail = y % 2 === 0 ? 1 : 0.75;
+      pixels.set([40 * detail, 80 * detail, 160 * detail, 255], i);
+    }
+    const cutout = await sharp(pixels, { raw: { width: 80, height: 80, channels: 4 } }).png().toBuffer();
+    const scene = await solidImage(180, 160, { r: 200, g: 180, b: 160 });
+    const composition = await compositeObjectsOnScene(scene, 180, 160, [{
+      cutout, point: { x: 0.5, y: 0.75 },
+      dimensions: { mode: "height_length", heightCm: 80, lengthCm: 80 }, pixelsPerCm: 1,
+    }], { lighting: rightLighting });
+    const padded = await padCompositionForAspect(composition, "180x160");
+    const wrongModel = await solidImage(180, 160, { r: 200, g: 20, b: 20 });
+    const render = async (light: typeof composition.lighting) => rgbRaw(await pasteBackOutsideMask(
+      { ...composition, lighting: light }, padded, wrongModel, { transferMode: "contact-light" },
+    ));
+    const right = await render(rightLighting);
+    const left = await render({ ...rightLighting, lightDirection: "left", shadowDirection: "right" });
+    const neutral = await render({ ...rightLighting, lightDirection: "diffuse", shadowDirection: "none_visible" });
+    const strict = await rgbRaw(await pasteBackOutsideMask(composition, padded, wrongModel, { transferMode: "contact-light", relightStrength: 0 }));
+    const p = composition.overlays[0]!;
+    for (let y = 0; y < 80; y++) for (let x = 0; x < 80; x++) {
+      const i = ((p.top + y) * 180 + p.left + x) * 3;
+      for (let c = 0; c < 3; c++) {
+        const source = pixels[(y * 80 + x) * 4 + c]!;
+        expect(Math.abs(right.data[i + c]! - source)).toBeLessThanOrEqual(source * MAX_RELIGHT_GAIN + 0.5);
+        expect(neutral.data[i + c]).toBe(source);
+        // Reversing the observed light reverses the correction, not the
+        // printed stripe; rounding is the only asymmetry on unclipped RGB.
+        expect(Math.abs(right.data[i + c]! + left.data[i + c]! - 2 * source)).toBeLessThanOrEqual(1);
+      }
+      expect(Math.abs(right.data[i]! * 4 - right.data[i + 2]!)).toBeLessThanOrEqual(2);
+      if (x === 8) expect(right.data[i + 2]).toBeLessThan(strict.data[i + 2]! - 12);
+      if (x === 71) expect(right.data[i + 2]).toBeGreaterThan(strict.data[i + 2]! + 12);
+      if (y % 2 === 0 && y < 79) {
+        const stripe = right.data[i + 180 * 3 + 2]!;
+        expect(Math.abs(stripe / right.data[i + 2]! - 0.75)).toBeLessThan(0.012);
+      }
+    }
+    for (let i = 0; i < 180 * 160; i++) {
+      if (composition.maskRaw[i * 4 + 3] !== 0)
+        expect(right.data.subarray(i * 3, i * 3 + 3)).toEqual(strict.data.subarray(i * 3, i * 3 + 3));
+    }
+  });
+
+  it("caps the combined scene and accepted model light relative to source RGB", async () => {
+    const scene = await solidImage(180, 160, { r: 200, g: 180, b: 160 });
+    const composition = await compositeObjectsOnScene(scene, 180, 160, [{
+      cutout: await solidImage(80, 80, { r: 40, g: 80, b: 160 }),
+      point: { x: 0.5, y: 0.75 },
+      dimensions: { mode: "height_length", heightCm: 80, lengthCm: 80 }, pixelsPerCm: 1,
+    }], { lighting: rightLighting });
+    const padded = await padCompositionForAspect(composition, "180x160");
+    const p = composition.overlays[0]!;
+    const output = await pasteBackOutsideMask(composition, padded,
+      await solidImage(180, 160, { r: 50, g: 100, b: 200 }), { transferMode: "contact-light" });
+    const pixel = await pixelAt(output, p.left + 70, p.top + 40);
+    expect(pixel.b).toBe(179); // +12%, never two stacked +12% gains.
+    expect(pixel.r / pixel.b).toBeCloseTo(0.25, 2);
+  });
+
+  it("cleans the real grenade flank without changing its black crown, core or RGB", async () => {
+    // Public catalogue product, scaled73x80 from the frozen qualification
+    // cutout. Its black crown occupies rows0..10; the ivory neck starts at11.
+    const png = await readFile(
+      new URL("./fixtures/catalogue/grenade-placed-alpha.png", import.meta.url),
+    );
+    const original = await sharp(png)
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const refined = await sharp(await softenBrightContour(png))
+      .ensureAlpha()
+      .raw()
+      .toBuffer();
+    const { width, height } = original.info;
+    expect([width, height]).toEqual([73, 80]);
+    expect(refined.subarray(0, width * 11 * 4)).toEqual(
+      original.data.subarray(0, width * 11 * 4),
+    );
+    let leftFlankChanges = 0,
+      changed = 0;
+    for (let y = 0; y < height; y += 1)
+      for (let x = 0; x < width; x += 1) {
+        const i = (y * width + x) * 4;
+        expect(refined.subarray(i, i + 3)).toEqual(
+          original.data.subarray(i, i + 3),
+        );
+        if (refined[i + 3] === original.data[i + 3]) continue;
+        changed += 1;
+        if (x < 15 && y >= 25 && y < 65) leftFlankChanges += 1;
+        // Every changed pixel touches the alpha boundary: the printed pattern
+        // and the ceramic's fully surrounded opaque core cannot be altered.
+        let boundary = false;
+        for (let dy = -1; dy <= 1; dy += 1)
+          for (let dx = -1; dx <= 1; dx += 1) {
+            const sx = x + dx,
+              sy = y + dy;
+            if (
+              sx < 0 ||
+              sy < 0 ||
+              sx >= width ||
+              sy >= height ||
+              original.data[(sy * width + sx) * 4 + 3] !== 255
+            )
+              boundary = true;
+          }
+        expect(boundary).toBe(true);
+      }
+    expect(changed).toBeGreaterThan(100);
+    expect(leftFlankChanges).toBeGreaterThan(20);
+  });
+
+  it("anchors the true foot and casts a source-shaped shadow away from lateral light", async () => {
+    const scene = await solidImage(180, 160, { r: 200, g: 180, b: 160 });
+    // A prepared cutout is tightly cropped to its actual bottom support.
+    const cutout = await sharp(
+      Buffer.from(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><circle cx="20" cy="20" r="20" fill="#3040c0"/></svg>',
+      ),
+    )
+      .png()
+      .toBuffer();
+    const composition = await compositeObjectsOnScene(
+      scene,
+      180,
+      160,
+      [
+        {
+          cutout,
+          point: { x: 0.5, y: 0.65 },
+          dimensions: { mode: "height_length", heightCm: 40, lengthCm: 40 },
+          pixelsPerCm: 1,
+        },
+      ],
+      { lighting: rightLighting },
+    );
+    const padded = await padCompositionForAspect(composition, "180x160");
+    const base = await rgbRaw(composition.baseWebp);
+    const result = await rgbRaw(
+      await pasteBackOutsideMask(composition, padded, composition.baseWebp, {
+        transferMode: "contact-light",
+        relightStrength: 0,
+      }),
+    );
+    const row = composition.overlays[0]!.baseY;
+    expect(result.data[((row + 1) * 180 + 90) * 3]!).toBeLessThan(
+      base.data[((row + 1) * 180 + 90) * 3]! - 25,
+    );
+    let leftShade = 0,
+      rightShade = 0;
+    for (let i = 0; i < 180 * 160; i += 1) {
+      const x = i % 180,
+        y = Math.floor(i / 180);
+      if (composition.maskRaw[i * 4 + 3] !== 0 || y < row - 2)
+        expect(result.data.subarray(i * 3, i * 3 + 3)).toEqual(
+          base.data.subarray(i * 3, i * 3 + 3),
+        );
+      if (y >= row && y <= row + 8) {
+        if (x < 82) leftShade += base.data[i * 3]! - result.data[i * 3]!;
+        if (x > 98) rightShade += base.data[i * 3]! - result.data[i * 3]!;
+        expect(result.data[i * 3]!).toBeGreaterThanOrEqual(
+          Math.floor(base.data[i * 3]! * (1 - MAX_SOURCE_SHADOW_DARKENING)),
+        );
+      }
+    }
+    expect(leftShade).toBeGreaterThan(rightShade * 1.5);
+    // The same geometry follows the opposite observed light, not a hardcoded
+    // shadow on one side of the photograph.
+    const opposite = {
+      ...composition,
+      lighting: {
+        ...rightLighting,
+        lightDirection: "left" as const,
+        shadowDirection: "right" as const,
+      },
+    };
+    opposite.maskRaw = await createSilhouetteMask(
+      180,
+      160,
+      opposite.overlays,
+      opposite.lighting,
+    );
+    const oppositeRgb = await rgbRaw(
+      await pasteBackOutsideMask(opposite, padded, composition.baseWebp, {
+        transferMode: "contact-light",
+        relightStrength: 0,
+      }),
+    );
+    let oppositeLeft = 0,
+      oppositeRight = 0;
+    for (let y = row; y <= row + 8; y += 1)
+      for (let x = 40; x <= 140; x += 1) {
+        const i = (y * 180 + x) * 3;
+        if (x < 82) oppositeLeft += base.data[i]! - oppositeRgb.data[i]!;
+        if (x > 98) oppositeRight += base.data[i]! - oppositeRgb.data[i]!;
+      }
+    expect(oppositeRight).toBeGreaterThan(oppositeLeft * 1.5);
+  });
+
+  it("keeps source RGB, core opacity and complete alpha for wires and handles", async () => {
+    const cutout = await sharp(
+      Buffer.from(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="70"><rect x="10" y="25" width="20" height="45" fill="#2040b0"/><rect x="19" y="0" width="2" height="27" fill="#ffffff"/><circle cx="31" cy="37" r="7" stroke="#ffffff" stroke-width="2" fill="none"/><rect x="10" y="25" width="1" height="45" fill="#ffffff"/></svg>',
+      ),
+    )
+      .png()
+      .toBuffer();
+    const scene = await solidImage(180, 160, { r: 190, g: 180, b: 170 });
+    const composition = await compositeObjectsOnScene(
+      scene,
+      180,
+      160,
+      [
+        {
+          cutout,
+          point: { x: 0.5, y: 0.65 },
+          dimensions: { mode: "height_length", heightCm: 70, lengthCm: 40 },
+          pixelsPerCm: 1,
+        },
+      ],
+      { lighting: rightLighting },
+    );
+    const beforeTile = Buffer.from(composition.overlays[0]!.png);
+    const padded = await padCompositionForAspect(composition, "180x160");
+    const result = await rgbRaw(
+      await pasteBackOutsideMask(composition, padded, composition.baseWebp, {
+        transferMode: "contact-light",
+        relightStrength: 0,
+      }),
+    );
+    const base = await rgbRaw(composition.baseWebp);
+    const placed = composition.overlays[0]!;
+    const alpha = await sharp(placed.png)
+      .extractChannel("alpha")
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const sourceRgba = await sharp(placed.png).ensureAlpha().raw().toBuffer();
+    const refinedRgba = await sharp(await softenBrightContour(placed.png))
+      .ensureAlpha()
+      .raw()
+      .toBuffer();
+    let opaqueChecked = 0;
+    for (let y = 0; y < alpha.info.height; y += 1)
+      for (let x = 0; x < alpha.info.width; x += 1) {
+        const ti = (y * alpha.info.width + x) * 4;
+        expect(refinedRgba.subarray(ti, ti + 3)).toEqual(
+          sourceRgba.subarray(ti, ti + 3),
+        );
+        // Disconnected handle rim and tall wire have no thick interior.
+        if (y < 20 || x > 31)
+          expect(refinedRgba[ti + 3]).toBe(sourceRgba[ti + 3]);
+        if (
+          alpha.data[y * alpha.info.width + x] !== 255 ||
+          refinedRgba[ti + 3] !== 255
+        )
+          continue;
+        const i = ((placed.top + y) * 180 + placed.left + x) * 3;
+        expect(result.data.subarray(i, i + 3)).toEqual(
+          base.data.subarray(i, i + 3),
+        );
+        opaqueChecked += 1;
+      }
+    expect(opaqueChecked).toBeGreaterThan(700);
+    expect(placed.png).toEqual(beforeTile);
+    // Wire and handle silhouette are never eroded to conceal a white halo.
+    expect(
+      await pixelAt(
+        await sharp(result.data, {
+          raw: { width: 180, height: 160, channels: 3 },
+        })
+          .png()
+          .toBuffer(),
+        placed.left + 19,
+        placed.top + 3,
+      ),
+    ).toEqual({ r: 255, g: 255, b: 255 });
+  });
+
+  it("reduces only the bright thick contour by a bounded subpixel alpha step", async () => {
+    const rgba = Buffer.alloc(24 * 24 * 4, 0);
+    for (let y = 3; y < 21; y += 1)
+      for (let x = 3; x < 21; x += 1) {
+        const i = (y * 24 + x) * 4;
+        rgba[i] = rgba[i + 1] = rgba[i + 2] = 235;
+        rgba[i + 3] = 255;
+      }
+    // A dark right boundary must keep its full source alpha and colour.
+    for (let y = 3; y < 21; y += 1)
+      for (let c = 0; c < 3; c += 1) rgba[(y * 24 + 20) * 4 + c] = 30;
+    const png = await sharp(rgba, {
+      raw: { width: 24, height: 24, channels: 4 },
+    })
+      .png()
+      .toBuffer();
+    const clean = await sharp(await softenBrightContour(png))
+      .ensureAlpha()
+      .raw()
+      .toBuffer();
+    expect(clean[(12 * 24 + 3) * 4 + 3]).toBe(166);
+    expect(clean[(12 * 24 + 20) * 4 + 3]).toBe(255);
+    let changed = 0;
+    for (let i = 0; i < 24 * 24; i += 1) {
+      expect(clean.subarray(i * 4, i * 4 + 3)).toEqual(
+        rgba.subarray(i * 4, i * 4 + 3),
+      );
+      if (clean[i * 4 + 3] !== rgba[i * 4 + 3]) changed += 1;
+      if (
+        i % 24 > 3 &&
+        i % 24 < 20 &&
+        Math.floor(i / 24) > 3 &&
+        Math.floor(i / 24) < 20
+      )
+        expect(clean[i * 4 + 3]).toBe(rgba[i * 4 + 3]);
+      expect(clean[i * 4 + 3]!).toBeGreaterThanOrEqual(
+        Math.floor(rgba[i * 4 + 3]! * 0.65),
+      );
+    }
+    expect(changed).toBeGreaterThan(30);
+  });
+
+  it("does not invent a hidden room for an old checkpoint or a standing shadow for wall art", async () => {
+    const scene = await solidImage(180, 160, { r: 200, g: 180, b: 160 });
+    for (const kind of ["standing", "wall", "flat"] as const) {
+      const composition = await compositeObjectsOnScene(
+        scene,
+        180,
+        160,
+        [
+          {
+            cutout: await circleCutout(40, "#3040c0"),
+            point: { x: 0.5, y: 0.65 },
+            kind,
+            dimensions: { mode: "height_length", heightCm: 40, lengthCm: 40 },
+            pixelsPerCm: 1,
+          },
+        ],
+        { lighting: rightLighting },
+      );
+      const padded = await padCompositionForAspect(composition, "180x160");
+      const compatible =
+        kind === "standing"
+          ? { ...composition, sceneWebp: undefined }
+          : composition;
+      const final = await pasteBackOutsideMask(
+        compatible,
+        padded,
+        composition.baseWebp,
+        { transferMode: "contact-light", relightStrength: 0 },
+      );
+      expect((await rgbRaw(final)).data).toEqual(
+        (await rgbRaw(composition.baseWebp)).data,
+      );
+    }
+  });
+
+  it("discards a displaced model silhouette including its ring and preserves source alpha", async () => {
+    const scene = await solidImage(180, 160, { r: 210, g: 190, b: 170 });
+    // The antialiased boundary deliberately contains fractional alpha.
+    const cutout = await circleCutout(40, "#202020");
+    const composition = await compositeObjectsOnScene(scene, 180, 160, [
+      {
+        cutout,
+        point: { x: 0.5, y: 0.65 },
+        dimensions: { mode: "height_length", heightCm: 40, lengthCm: 40 },
+        pixelsPerCm: 1,
+      },
+    ]);
+    const placed = composition.overlays[0]!;
+    const model = await sharp(scene)
+      .composite([
+        {
+          input: placed.png,
+          left: placed.left - 5,
+          top: placed.top - 4,
+        },
+      ])
+      .png()
+      .toBuffer();
+    const padded = await padCompositionForAspect(composition, "180x160");
+    const legacy = await rgbRaw(
+      await pasteBackOutsideMask(composition, padded, model, {
+        relightStrength: 0,
+      }),
+    );
+    const result = await rgbRaw(
+      await pasteBackOutsideMask(composition, padded, model, {
+        transferMode: "contact-light",
+        relightStrength: 0,
+      }),
+    );
+    const base = await rgbRaw(composition.baseWebp);
+    const alpha = await sharp(placed.png)
+      .extractChannel("alpha")
+      .raw()
+      .toBuffer();
+    expect(alpha.some((value) => value > 0 && value < 255)).toBe(true);
+    let legacyChanged = 0;
+    for (let y = 0; y < placed.baseY - 2; y += 1) {
+      for (let x = 0; x < 180; x += 1) {
+        const offset = (y * 180 + x) * 3;
+        if (
+          !legacy.data
+            .subarray(offset, offset + 3)
+            .equals(base.data.subarray(offset, offset + 3))
+        )
+          legacyChanged += 1;
+        // Includes the transparent bbox corners, alpha edge, full silhouette
+        // ring and source product: none may inherit the displaced rendition.
+        expect(result.data.subarray(offset, offset + 3)).toEqual(
+          base.data.subarray(offset, offset + 3),
+        );
+      }
+    }
+    expect(legacyChanged).toBeGreaterThan(100);
+  });
+
+  it("transfers a bounded shadow without importing colour or replacing support texture", async () => {
+    const scene = await sharp(
+      Buffer.from(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="180" height="160"><defs><pattern id="grain" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="4" height="4" fill="#c8b496"/><path d="M0 0h4M0 2h4" stroke="#a08c78"/></pattern></defs><rect width="180" height="160" fill="url(#grain)"/></svg>',
+      ),
+    )
+      .png()
+      .toBuffer();
+    const composition = await compositeObjectsOnScene(scene, 180, 160, [
+      {
+        cutout: await circleCutout(40, "#3040c0"),
+        point: { x: 0.5, y: 0.65 },
+        dimensions: { mode: "height_length", heightCm: 40, lengthCm: 40 },
+        pixelsPerCm: 1,
+      },
+    ]);
+    const base = await rgbRaw(composition.baseWebp);
+    const darkened = Buffer.from(
+      base.data.map((value) => Math.round(value * 0.7)),
+    );
+    const model = await sharp(darkened, {
+      raw: { width: 180, height: 160, channels: 3 },
+    })
+      .png()
+      .toBuffer();
+    const padded = await padCompositionForAspect(composition, "180x160");
+    const result = await rgbRaw(
+      await pasteBackOutsideMask(composition, padded, model, {
+        transferMode: "contact-light",
+        relightStrength: 0,
+      }),
+    );
+    const placed = composition.overlays[0]!;
+    const silhouette = await dilatedSilhouettes(
+      180,
+      160,
+      composition.overlays,
+      0,
+    );
+    let shaded = 0;
+    for (let i = 0; i < 180 * 160; i += 1) {
+      const before = base.data.subarray(i * 3, i * 3 + 3);
+      const after = result.data.subarray(i * 3, i * 3 + 3);
+      if (
+        composition.maskRaw[i * 4 + 3] !== 0 ||
+        silhouette[i] ||
+        Math.floor(i / 180) < placed.baseY - 2
+      ) {
+        expect(after).toEqual(before);
+      } else {
+        if (after[0]! < before[0]! - 2) shaded += 1;
+        for (let c = 0; c < 3; c += 1) {
+          expect(after[c]!).toBeLessThanOrEqual(before[c]!);
+          expect(after[c]!).toBeGreaterThanOrEqual(
+            Math.floor(before[c]! * (1 - MAX_CONTACT_DARKENING)),
+          );
+        }
+        expect(after[0]! / after[2]!).toBeCloseTo(before[0]! / before[2]!, 1);
+      }
+    }
+    expect(shaded).toBeGreaterThan(60);
+
+    // A green generated object inside the contact area must not become a
+    // green patch, nor be interpreted as an achromatic support shadow.
+    const coloured = await solidImage(180, 160, { r: 20, g: 190, b: 20 });
+    const rejected = await rgbRaw(
+      await pasteBackOutsideMask(composition, padded, coloured, {
+        transferMode: "contact-light",
+        relightStrength: 0,
+      }),
+    );
+    expect(rejected.data).toEqual(base.data);
+  });
+
+  it.each(["wall", "flat"] as const)(
+    "keeps a silhouette-shaped contact area for %s products",
+    async (kind) => {
+      const scene = await solidImage(180, 160, { r: 200, g: 180, b: 160 });
+      const composition = await compositeObjectsOnScene(scene, 180, 160, [
+        {
+          cutout: await circleCutout(40, "#3040c0"),
+          point: { x: 0.5, y: 0.65 },
+          kind,
+          dimensions: { mode: "height_length", heightCm: 40, lengthCm: 40 },
+          pixelsPerCm: 1,
+        },
+      ]);
+      const padded = await padCompositionForAspect(composition, "180x160");
+      const model = await solidImage(180, 160, { r: 150, g: 135, b: 120 });
+      const result = await rgbRaw(
+        await pasteBackOutsideMask(composition, padded, model, {
+          transferMode: "contact-light",
+          relightStrength: 0,
+        }),
+      );
+      const base = await rgbRaw(composition.baseWebp);
+      const silhouette = await dilatedSilhouettes(
+        180,
+        160,
+        composition.overlays,
+        0,
+      );
+      let shadedAboveBase = 0;
+      for (let i = 0; i < 180 * 160; i += 1) {
+        if (silhouette[i] || composition.maskRaw[i * 4 + 3] !== 0)
+          expect(result.data.subarray(i * 3, i * 3 + 3)).toEqual(
+            base.data.subarray(i * 3, i * 3 + 3),
+          );
+        else if (
+          Math.floor(i / 180) < composition.overlays[0]!.baseY - 2 &&
+          result.data[i * 3]! < base.data[i * 3]! - 2
+        )
+          shadedAboveBase += 1;
+      }
+      expect(shadedAboveBase).toBeGreaterThan(30);
+    },
+  );
+
+  it("keeps the nearer source intact when only a rear product accepts relighting", async () => {
+    const scene = await solidImage(180, 160, { r: 200, g: 180, b: 160 });
+    const composition = await compositeObjectsOnScene(scene, 180, 160, [
+      {
+        cutout: await circleCutout(60, "#2020c8"),
+        point: { x: 0.5, y: 0.5 },
+        dimensions: { mode: "height_length", heightCm: 60, lengthCm: 60 },
+        pixelsPerCm: 1,
+      },
+      {
+        cutout: await circleCutout(60, "#c82020"),
+        point: { x: 0.5, y: 0.8 },
+        dimensions: { mode: "height_length", heightCm: 60, lengthCm: 60 },
+        pixelsPerCm: 1,
+      },
+    ]);
+    const padded = await padCompositionForAspect(composition, "180x160");
+    const model = await solidImage(180, 160, { r: 26, g: 26, b: 160 });
+    const final = await pasteBackOutsideMask(composition, padded, model, {
+      transferMode: "contact-light",
+    });
+    expect(await pixelAt(final, 90, 74)).toEqual(
+      await pixelAt(composition.baseWebp, 90, 74),
+    );
+    expect((await pixelAt(final, 90, 50)).b).toBeLessThan(
+      (await pixelAt(composition.baseWebp, 90, 50)).b - 10,
+    );
+  });
+
+  it("leaves the existing masked RGB path available for obstacle removal", async () => {
+    const source = await solidImage(90, 80, { r: 200, g: 180, b: 160 });
+    const composition = {
+      imageWebp: source,
+      baseWebp: source,
+      sceneWidth: 90,
+      sceneHeight: 80,
+      maskRaw: Buffer.alloc(90 * 80 * 4),
+      overlays: [],
+    };
+    const padded = await padCompositionForAspect(composition, "90x80");
+    const model = await solidImage(90, 80, { r: 20, g: 180, b: 30 });
+    const legacy = await pasteBackOutsideMask(composition, padded, model);
+    expect(
+      await pasteBackOutsideMask(composition, padded, model, {
+        transferMode: "masked-rgb",
+      }),
+    ).toEqual(legacy);
+    expect(
+      await pasteBackOutsideMask(composition, padded, model, {
+        transferMode: "contact-light",
+      }),
+    ).toEqual(legacy);
+    expect((await pixelAt(legacy, 45, 40)).g).toBeGreaterThan(150);
+  });
 });
 
 describe("planSimplePlacements", () => {

@@ -6,9 +6,8 @@ const productId = "11111111-1111-4111-8111-111111111111";
 
 test.beforeAll(async ({ request }) => {
   // Explicit local fixture setup. The storefront itself must not seed or refill.
-  expect((await request.get("/v1/products", { timeout: 120_000 })).ok()).toBe(
-    true,
-  );
+  const seeded = await request.get("/v1/products", { timeout: 120_000 });
+  expect(seeded.ok(), await seeded.text()).toBe(true);
 });
 
 test("storefront catalogue, details, cart persistence and three-unit limit", async ({

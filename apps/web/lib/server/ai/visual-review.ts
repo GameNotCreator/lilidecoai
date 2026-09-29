@@ -18,6 +18,9 @@ import {
 
 export const VISUAL_REVIEW_VERSION = "visual-review-v2";
 export const VISUAL_REVIEW_TIMEOUT_MS = 45_000;
+// Comparing the final image adds an image and ten checks per product. Give
+// that inspection time to finish without extending the render's deadline.
+export const FINAL_VISUAL_REVIEW_TIMEOUT_MS = 90_000;
 export const MIN_VISUAL_CONFIDENCE = 0.8;
 export const MIN_VISUAL_CHECK_SCORE = 0.8;
 
@@ -755,7 +758,8 @@ async function callInspector(
   // This function never retries. The durable caller owns the bounded retries.
   function remainingTimeout() {
     const timeout = Math.min(
-      executionPolicy?.timeoutMs ?? VISUAL_REVIEW_TIMEOUT_MS,
+      executionPolicy?.timeoutMs ??
+        (generated ? FINAL_VISUAL_REVIEW_TIMEOUT_MS : VISUAL_REVIEW_TIMEOUT_MS),
       input.deadlineMs -
         Date.now() -
         (executionPolicy?.deadlineReserveMs ?? 1_000),

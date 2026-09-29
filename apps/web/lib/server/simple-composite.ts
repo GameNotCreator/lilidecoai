@@ -85,6 +85,8 @@ export interface PlacedOverlay {
 }
 
 export interface SimpleComposition {
+  /** Unmodified scene, retained for source-alpha recomposition over shadows. */
+  sceneWebp?: Buffer;
   /** Model input: scene + shadow placeholders + overlays. */
   imageWebp: Buffer;
   /** Scene + overlays, no placeholders: the paste-back base. */
@@ -101,12 +103,14 @@ export interface SimpleComposition {
 }
 
 export type CompositionLike = {
+  sceneWebp?: Buffer;
   imageWebp: Buffer;
   baseWebp?: Buffer;
   maskRaw: Buffer;
   sceneWidth: number;
   sceneHeight: number;
   overlays: PlacedOverlay[];
+  lighting?: SceneLightingEstimate | null;
 };
 
 export interface PaddedComposition {
@@ -128,12 +132,20 @@ export interface PaddedComposition {
  * (PRO-007, phase 0 "baseline des versions").
  */
 export const SIMPLE_COMPOSITE_VERSION = "composite-v2";
+/** Opt-in source-faithful insertion; legacy/spatial paste-back is unchanged. */
+export const CONTACT_LIGHT_COMPOSITE_VERSION = "composite-v3/contact-light-v4";
 
 export const SILHOUETTE_DILATION_PX = 3;
 /** Identity stamp inset, in pixels: the model keeps this much of the edge. */
 export const STAMP_EROSION_PX = 2;
 /** Only a broad, achromatic exposure field can be transferred to real pixels. */
 export const MAX_RELIGHT_GAIN = 0.12;
+/** Maximum achromatic attenuation transferred to the original support texture. */
+export const MAX_CONTACT_DARKENING = 0.25;
+/** Contact occlusion plus cast shadow; applied only to the real support. */
+export const MAX_SOURCE_SHADOW_DARKENING = 0.45;
+/** Subpixel alpha contraction; source RGB and opaque interiors are untouched. */
+export const BRIGHT_CONTOUR_TRIM = 0.35;
 /** Nothing above the base (outside the silhouette ring) is ever editable. */
 const SHADOW_WINDOW_ABOVE_BASE_PX = 2;
 const MIN_VISIBLE_PX = 1;
@@ -701,6 +713,7 @@ export async function compositeObjectsOnScene(
     .toBuffer();
 
   return {
+    sceneWebp: await sharp(sceneImage).webp({ lossless: true }).toBuffer(),
     imageWebp,
     baseWebp,
     maskRaw,
@@ -809,6 +822,7 @@ async function relightProductPixels(
   placed: PlacedOverlay,
   alignedModel: Buffer,
   strength: number,
+  lighting?: SceneLightingEstimate | null,
 ): Promise<Buffer> {
   const { data: source, info } = await sharp(placed.png)
     .ensureAlpha()
@@ -860,20 +874,42 @@ async function relightProductPixels(
         127.5,
     );
   }
-  if (solid < 16 || compatible / solid < 0.65) return placed.png;
+  const compatibleField = solid >= 16 && compatible / solid >= 0.65;
+  // A displaced model cannot supply a registered light field. In the opt-in
+  // insertion path, the observed room light still supplies a broad lateral
+  // correction to a standing volume. A half sine has no edge discontinuity
+  // or product-frequency detail: the catalogue texture is multiplied, never
+  // replaced. Wall/flat items and non-lateral light have no inferred normal.
+  const direction =
+    placed.kind !== "standing"
+      ? 0
+      : lighting?.lightDirection === "right"
+        ? 1
+        : lighting?.lightDirection === "left"
+          ? -1
+          : 0;
+  if (!compatibleField && direction === 0) return placed.png;
   const sigma = clampNumber(Math.min(width, height) / 10, 2, 32);
-  const [smoothWeights, smoothGains] = await Promise.all([
-    blurGreyscale(weights, width, height, sigma),
-    blurGreyscale(gains, width, height, sigma),
-  ]);
+  const [smoothWeights, smoothGains] = compatibleField
+    ? await Promise.all([
+        blurGreyscale(weights, width, height, sigma),
+        blurGreyscale(gains, width, height, sigma),
+      ])
+    : [Buffer.alloc(width * height), Buffer.alloc(width * height)];
   for (let i = 0; i < width * height; i += 1) {
     const weight = smoothWeights[i] ?? 0;
-    if (weight < 32) continue;
-    const normalized = (smoothGains[i] ?? 0) / weight;
+    if (weight < 32 && direction === 0) continue;
+    const modelDelta =
+      weight >= 32
+        ? ((smoothGains[i] ?? 0) / weight * 2 - 1) * MAX_RELIGHT_GAIN
+        : 0;
+    const lateral = width > 1 ? (2 * (i % width)) / (width - 1) - 1 : 0;
+    const sceneDelta = direction * Math.sin(lateral * Math.PI / 2) * MAX_RELIGHT_GAIN;
     const proposedGain =
       1 +
       clampNumber(
-        (normalized * 2 - 1) * MAX_RELIGHT_GAIN,
+        // Bound the TOTAL relative to the source, not two stacked gains.
+        modelDelta + sceneDelta,
         -MAX_RELIGHT_GAIN,
         MAX_RELIGHT_GAIN,
       ) *
@@ -898,6 +934,427 @@ async function relightProductPixels(
 }
 
 /**
+ * Source-alpha shadow, anchored to the actual foot rather than its bounding
+ * box. The silhouette is projected away from the observed lateral light and
+ * softened on the support. This is an explicit geometric approximation, not
+ * generated scene content. The final edit mask still bounds every pixel.
+ */
+async function sourceShadowField(
+  composition: CompositionLike,
+): Promise<Buffer> {
+  const { sceneWidth: width, sceneHeight: height, lighting } = composition;
+  const field = Buffer.alloc(width * height);
+  if (!lighting) return field;
+  for (const placed of composition.overlays) {
+    if (placed.kind !== "standing") continue;
+    const { alpha, width: ow, height: oh } = await overlayAlpha(placed.png);
+    const baseRow = clampNumber(
+      Math.round(placed.baseY - placed.top) - 1,
+      0,
+      oh - 1,
+    );
+    const footBand = clampNumber(Math.round(placed.heightPx * 0.04), 2, 8);
+    let footLeft = ow,
+      footRight = -1;
+    for (let y = Math.max(0, baseRow - footBand + 1); y <= baseRow; y += 1) {
+      for (let x = 0; x < ow; x += 1) {
+        if ((alpha[y * ow + x] ?? 0) >= 128) {
+          footLeft = Math.min(footLeft, x);
+          footRight = Math.max(footRight, x);
+        }
+      }
+    }
+    // A cropped or transparent foot is not evidence of a support contact.
+    if (footRight < footLeft) continue;
+    const cast = Buffer.alloc(width * height);
+    const direction =
+      lighting.shadowDirection === "left"
+        ? -1
+        : lighting.shadowDirection === "right"
+          ? 1
+          : 0;
+    if (direction !== 0) {
+      const lengthFactor =
+        lighting.lightElevation === "high"
+          ? 0.42
+          : lighting.lightElevation === "mid"
+            ? 0.65
+            : 0.9;
+      const length = Math.min(
+        placed.heightPx * lengthFactor,
+        placed.widthPx * 0.65,
+      );
+      for (let y = 0; y <= baseRow; y += 1) {
+        for (let x = 0; x < ow; x += 1) {
+          const a = alpha[y * ow + x] ?? 0;
+          if (!a) continue;
+          const fraction = (baseRow - y) / Math.max(1, placed.heightPx - 1);
+          const px = placed.left + x + direction * fraction * length;
+          const py = placed.baseY + fraction * placed.heightPx * 0.075;
+          const x0 = Math.floor(px),
+            y0 = Math.floor(py);
+          for (let yy = y0; yy <= y0 + 1; yy += 1) {
+            for (let xx = x0; xx <= x0 + 1; xx += 1) {
+              if (xx < 0 || yy < 0 || xx >= width || yy >= height) continue;
+              const weight = (1 - Math.abs(xx - px)) * (1 - Math.abs(yy - py));
+              const i = yy * width + xx;
+              cast[i] = Math.max(cast[i] ?? 0, Math.round(a * weight));
+            }
+          }
+        }
+      }
+    }
+    const softness = lighting.shadowSoftness === "soft" ? 0.025 : 0.008;
+    const softened = await blurGreyscale(
+      cast,
+      width,
+      height,
+      clampNumber(placed.widthPx * softness, 0.5, 8),
+    );
+    const cx = placed.left + (footLeft + footRight) / 2;
+    const rx = Math.max(1, (footRight - footLeft) / 2);
+    const ry = clampNumber(placed.heightPx * 0.014, 0.7, 3);
+    for (
+      let y = Math.max(0, placed.baseY - SHADOW_WINDOW_ABOVE_BASE_PX);
+      y <=
+      Math.min(
+        height - 1,
+        Math.ceil(placed.baseY + Math.max(10, placed.heightPx * 0.07)),
+      );
+      y += 1
+    ) {
+      for (
+        let x = Math.max(0, Math.floor(placed.baseX - placed.widthPx * 1.2));
+        x <=
+        Math.min(width - 1, Math.ceil(placed.baseX + placed.widthPx * 1.2));
+        x += 1
+      ) {
+        const i = y * width + x;
+        if (composition.maskRaw[i * 4 + 3] !== 0) continue;
+        const dx = (x - cx) / rx;
+        const dy = (y - placed.baseY - 0.15) / ry;
+        const contact = Math.exp(-2 * (dx * dx + dy * dy)) * 0.34;
+        const attenuation = Math.min(
+          MAX_SOURCE_SHADOW_DARKENING,
+          contact + ((softened[i] ?? 0) / 255) * 0.18,
+        );
+        // Use the strongest local shadow, not additive layers that can turn
+        // overlapping supports into an unbounded black patch.
+        field[i] = Math.max(field[i] ?? 0, Math.round(attenuation * 255));
+      }
+    }
+  }
+  return field;
+}
+
+/**
+ * A bright fringe can survive matting and resize on a thick product contour.
+ * Mix only its alpha with a one-pixel minimum by 0.35, never its RGB. Opening
+ * the binary silhouette identifies thick material: wires, handle rims and
+ * isolated crown tips without a three-pixel interior keep their original alpha.
+ * Dark/coloured edges and all fully surrounded pixels are also unchanged.
+ * This must be recomposed on a real room, never on the already-stamped base.
+ */
+export async function softenBrightContour(png: Buffer): Promise<Buffer> {
+  const { data, info } = await sharp(png)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const { width, height } = info;
+  const original = Buffer.alloc(width * height);
+  const brightMaterial = new Uint8Array(width * height);
+  for (let i = 0; i < original.length; i += 1) {
+    original[i] = data[i * 4 + 3] ?? 0;
+    const r = data[i * 4] ?? 0,
+      g = data[i * 4 + 1] ?? 0,
+      b = data[i * 4 + 2] ?? 0;
+    if (
+      original[i] &&
+      0.2126 * r + 0.7152 * g + 0.0722 * b >= 185 &&
+      Math.min(r, g, b) >= 145 &&
+      Math.max(r, g, b) - Math.min(r, g, b) <= 80
+    )
+      brightMaterial[i] = 1;
+  }
+  const thick = dilateBinary(
+    erodeBinary(binarize(original), width, height, 3),
+    width,
+    height,
+    3,
+  );
+  let changed = false;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const i = y * width + x;
+      const alpha = original[i] ?? 0;
+      if (!alpha || !thick[i]) continue;
+      if (!brightMaterial[i]) continue;
+      let minimum = alpha;
+      let brightNeighbours = 0,
+        darkNeighbours = 0;
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          const sx = x + dx,
+            sy = y + dy;
+          minimum = Math.min(
+            minimum,
+            sx < 0 || sy < 0 || sx >= width || sy >= height
+              ? 0
+              : (original[sy * width + sx] ?? 0),
+          );
+          if (
+            sx >= 0 &&
+            sy >= 0 &&
+            sx < width &&
+            sy < height &&
+            (original[sy * width + sx] ?? 0) >= 245
+          ) {
+            if (brightMaterial[sy * width + sx]) brightNeighbours += 1;
+            else darkNeighbours += 1;
+          }
+        }
+      }
+      // At a dark detail's junction with bright material, a pale fractional
+      // pixel belongs to the detail's antialiasing, not a broad white rim.
+      if (alpha < 128 && darkNeighbours > brightNeighbours) continue;
+      const contracted = Math.round(
+        alpha * (1 - BRIGHT_CONTOUR_TRIM) + minimum * BRIGHT_CONTOUR_TRIM,
+      );
+      if (contracted === alpha) continue;
+      data[i * 4 + 3] = contracted;
+      changed = true;
+    }
+  }
+  return changed
+    ? sharp(data, { raw: { width, height, channels: 4 } })
+        .png()
+        .toBuffer()
+    : png;
+}
+
+/**
+ * Product insertion must never copy generated RGB, even in the silhouette
+ * ring: a displaced model rendition survives there as a second object. Keep
+ * the original composite and transfer only a smooth, achromatic light field.
+ * Product alpha, source detail and support texture remain authoritative.
+ */
+async function transferContactLight(
+  composition: CompositionLike,
+  alignedModel: Buffer,
+  options: { featherSigma?: number; relightStrength?: number },
+): Promise<Buffer> {
+  const { sceneWidth: width, sceneHeight: height } = composition;
+  const [source, model] = await Promise.all([
+    sharp(composition.baseWebp ?? composition.imageWebp)
+      .removeAlpha()
+      .raw()
+      .toBuffer(),
+    sharp(alignedModel).removeAlpha().raw().toBuffer(),
+  ]);
+  const ordered = stampOrder(composition.overlays);
+  const tiles = await Promise.all(
+    ordered.map(async (placed) => ({
+      placed,
+      ...(await sharp(placed.png)
+        .ensureAlpha()
+        .raw()
+        .toBuffer({ resolveWithObject: true })),
+    })),
+  );
+  const productPixels = new Uint8Array(width * height);
+  const support = new Uint8Array(width * height);
+  for (const { placed, data, info } of tiles) {
+    for (let y = 0; y < info.height; y += 1) {
+      for (let x = 0; x < info.width; x += 1) {
+        const sx = placed.left + x;
+        const sy = placed.top + y;
+        if (sx < 0 || sy < 0 || sx >= width || sy >= height) continue;
+        if ((data[(y * info.width + x) * 4 + 3] ?? 0) > 0)
+          productPixels[sy * width + sx] = 1;
+      }
+    }
+    // Standing products can shade the support only, never their surrounding
+    // wall. Wall/flat products retain their existing silhouette-shaped cast
+    // shadow/contact ring, bounded by the original edit mask below.
+    const margin =
+      placed.kind === "standing" ? Math.ceil(placed.widthPx * 1.2) : 38; // maximum ring (12) + cast offset (14) + ring (12)
+    const left =
+      placed.kind === "standing" ? placed.baseX - margin : placed.left - margin;
+    const right =
+      placed.kind === "standing"
+        ? placed.baseX + margin
+        : placed.left + info.width + margin;
+    const top =
+      placed.kind === "standing"
+        ? placed.baseY - SHADOW_WINDOW_ABOVE_BASE_PX
+        : placed.top - margin;
+    const bottom =
+      placed.kind === "standing"
+        ? placed.baseY + Math.max(10, 0.07 * placed.heightPx)
+        : placed.top + info.height + margin;
+    for (
+      let y = Math.max(0, Math.ceil(top));
+      y <= Math.min(height - 1, Math.floor(bottom));
+      y += 1
+    ) {
+      for (
+        let x = Math.max(0, Math.ceil(left));
+        x <= Math.min(width - 1, Math.floor(right));
+        x += 1
+      ) {
+        const i = y * width + x;
+        if (composition.maskRaw[i * 4 + 3] === 0) support[i] = 1;
+      }
+    }
+  }
+
+  const darkening = Buffer.alloc(width * height);
+  for (let i = 0; i < darkening.length; i += 1) {
+    if (!support[i] || productPixels[i]) continue;
+    const sr = source[i * 3] ?? 0;
+    const sg = source[i * 3 + 1] ?? 0;
+    const sb = source[i * 3 + 2] ?? 0;
+    const mr = model[i * 3] ?? 0;
+    const mg = model[i * 3 + 1] ?? 0;
+    const mb = model[i * 3 + 2] ?? 0;
+    const sum = sr + sg + sb;
+    const modelSum = mr + mg + mb;
+    const luminance = 0.2126 * sr + 0.7152 * sg + 0.0722 * sb;
+    if (luminance < 12 || modelSum === 0) continue;
+    const ratio = (0.2126 * mr + 0.7152 * mg + 0.0722 * mb) / luminance;
+    const chromaDifference = Math.max(
+      Math.abs(sr / sum - mr / modelSum),
+      Math.abs(sg / sum - mg / modelSum),
+      Math.abs(sb / sum - mb / modelSum),
+    );
+    // A coloured replacement, a highlight or a very dark displaced object is
+    // not evidence of a contact shadow. Rejected samples contribute zero.
+    if (chromaDifference > 0.025 || ratio < 0.65 || ratio >= 1) continue;
+    darkening[i] = Math.round(Math.min(MAX_CONTACT_DARKENING, 1 - ratio) * 255);
+  }
+  const smooth = await blurGreyscale(
+    darkening,
+    width,
+    height,
+    clampNumber(options.featherSigma ?? 3, 2, 12),
+  );
+  if (composition.sceneWebp && composition.lighting) {
+    const shadow = await sourceShadowField(composition);
+    const room = await sharp(composition.sceneWebp)
+      .removeAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    if (room.info.width !== width || room.info.height !== height)
+      throw new SimpleCompositeError(
+        "La scène de référence ne correspond pas au composite.",
+      );
+    for (let i = 0; i < width * height; i += 1) {
+      if (!support[i]) continue;
+      const attenuation = Math.min(
+        MAX_SOURCE_SHADOW_DARKENING,
+        Math.max((shadow[i] ?? 0) / 255, (smooth[i] ?? 0) / 255),
+      );
+      for (let channel = 0; channel < 3; channel += 1)
+        room.data[i * 3 + channel] = Math.round(
+          (room.data[i * 3 + channel] ?? 0) * (1 - attenuation),
+        );
+    }
+    const strength = clampNumber(options.relightStrength ?? 1, 0, 1);
+    const stamps = await Promise.all(
+      ordered.map(async (placed) => {
+        const lit =
+          strength > 0
+            ? await relightProductPixels(placed, alignedModel, strength, composition.lighting)
+            : placed.png;
+        // Decide the fringe from the unmodified catalogue pixels, not from
+        // a generated light field. Only alpha comes from this cleanup.
+        const contour =
+          placed.kind === "standing"
+            ? await softenBrightContour(placed.png)
+            : placed.png;
+        let input = lit;
+        if (contour !== placed.png) {
+          const { alpha, width: ow, height: oh } = await overlayAlpha(contour);
+          const rgb = await sharp(lit).removeAlpha().png().toBuffer();
+          input = await sharp(rgb)
+            .joinChannel(alpha, {
+              raw: { width: ow, height: oh, channels: 1 },
+            })
+            .png()
+            .toBuffer();
+        }
+        return {
+          input,
+          left: placed.left,
+          top: placed.top,
+          blend: "over" as const,
+        };
+      }),
+    );
+    // Stamp once onto the actual room. Bright thick outlines receive only a
+    // subpixel alpha cleanup; thin details and interior highlights stay intact.
+    return sharp(room.data, { raw: { width, height, channels: 3 } })
+      .composite(stamps)
+      .webp({ lossless: true })
+      .toBuffer();
+  }
+  const output = Buffer.from(source);
+  for (let i = 0; i < smooth.length; i += 1) {
+    // Clip AFTER blur as well: no feather tail may darken a wall or a product
+    // edge. Geometry and the original editable mask remain hard boundaries.
+    if (!support[i] || productPixels[i]) continue;
+    const gain = 1 - Math.min(MAX_CONTACT_DARKENING, (smooth[i] ?? 0) / 255);
+    for (let channel = 0; channel < 3; channel += 1)
+      output[i * 3 + channel] = Math.round(
+        (source[i * 3 + channel] ?? 0) * gain,
+      );
+  }
+
+  // Identity is already stamped in baseWebp. Apply only the difference from
+  // relighting the SOURCE, weighted by its complete alpha and visibility.
+  // Re-stamping semi-transparent pixels over themselves would double their
+  // opacity and invent an outline. Near-to-far visibility also prevents a
+  // rear product's relighting from changing the nearer product's pixels.
+  const remaining = new Float32Array(width * height).fill(1);
+  const strength = clampNumber(options.relightStrength ?? 1, 0, 1);
+  for (const { placed, data: original, info } of [...tiles].reverse()) {
+    const lit =
+      strength > 0
+        ? await sharp(
+            await relightProductPixels(placed, alignedModel, strength, composition.lighting),
+          )
+            .ensureAlpha()
+            .raw()
+            .toBuffer()
+        : original;
+    for (let y = 0; y < info.height; y += 1) {
+      for (let x = 0; x < info.width; x += 1) {
+        const sx = placed.left + x;
+        const sy = placed.top + y;
+        if (sx < 0 || sy < 0 || sx >= width || sy >= height) continue;
+        const i = sy * width + sx;
+        const ti = (y * info.width + x) * 4;
+        const alpha = (original[ti + 3] ?? 0) / 255;
+        const visible = alpha * (remaining[i] ?? 0);
+        for (let channel = 0; channel < 3; channel += 1) {
+          const delta =
+            (lit[ti + channel] ?? 0) - (original[ti + channel] ?? 0);
+          output[i * 3 + channel] = clampNumber(
+            Math.round((output[i * 3 + channel] ?? 0) + delta * visible),
+            0,
+            255,
+          );
+        }
+        remaining[i] = (remaining[i] ?? 0) * (1 - alpha);
+      }
+    }
+  }
+  return sharp(output, { raw: { width, height, channels: 3 } })
+    .webp({ lossless: true })
+    .toBuffer();
+}
+
+/**
  * The hard guarantee: outside the feathered edit mask, every pixel of the
  * final image comes from the placeholder-free composite, never from the
  * model. Inside it, the object core is re-stamped from the catalog cutout.
@@ -906,7 +1363,12 @@ export async function pasteBackOutsideMask(
   composition: CompositionLike,
   padded: PaddedComposition,
   modelOutput: Buffer,
-  options: { featherSigma?: number; relightStrength?: number } = {},
+  options: {
+    featherSigma?: number;
+    relightStrength?: number;
+    /** Opt-in insertion policy. Obstacle removal still needs generated RGB. */
+    transferMode?: "masked-rgb" | "contact-light";
+  } = {},
 ): Promise<Buffer> {
   const { sceneWidth, sceneHeight } = composition;
   const base = composition.baseWebp ?? composition.imageWebp;
@@ -922,6 +1384,12 @@ export async function pasteBackOutsideMask(
     .removeAlpha()
     .png()
     .toBuffer();
+
+  if (
+    options.transferMode === "contact-light" &&
+    composition.overlays.length > 0
+  )
+    return transferContactLight(composition, aligned, options);
 
   const alpha = Buffer.alloc(sceneWidth * sceneHeight);
   for (let i = 0; i < sceneWidth * sceneHeight; i += 1) {

@@ -21,6 +21,7 @@ vi.mock("../lib/server/assets", () => ({ readAsset: mocks.readAsset }));
 vi.mock("../lib/server/config", () => ({ serverConfig: mocks.config }));
 
 import {
+  fetchOpenAIResponse,
   getOrEstimateSceneScale,
   sceneScaleCacheKey,
   type SceneScaleSpan,
@@ -106,6 +107,55 @@ function cachedScene(overrides: Partial<SceneDocument> = {}) {
 }
 
 describe("scene scale cache after durable admission", () => {
+  it.each([undefined, 25_000])("bounds a fresh provider call by 90 seconds and the parent deadline (%s)", async (remaining) => {
+    vi.spyOn(sharp.prototype, "composite").mockReturnThis();
+    const buffer = await sharp({ create: { width: 100, height: 100, channels: 3, background: "white" } }).webp().toBuffer();
+    mocks.readAsset.mockResolvedValue({ buffer });
+    let now = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(new AbortController().signal);
+    mocks.fetch.mockImplementation(async () => {
+      // The provider can legitimately finish after the former 60s cutoff.
+      now += remaining ?? 65_000;
+      return Response.json({ status: "completed", output: [{ content: [{ type: "output_text", text: '{"spans":[]}' }] }] });
+    });
+    const result = await getOrEstimateSceneScale(db, snapshot, points, kinds,
+      remaining === undefined ? {} : { deadlineMs: now + remaining });
+    expect(timeout).toHaveBeenCalledExactlyOnceWith(remaining ?? 90_000);
+    expect(result.call?.outcome).toBe("succeeded");
+    expect(result.call?.latencyMs).toBe(remaining ?? 65_000);
+    expect(mocks.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not start a paid request after the render deadline has expired", async () => {
+    const buffer = await sharp({ create: { width: 100, height: 100, channels: 3, background: "white" } }).webp().toBuffer();
+    mocks.readAsset.mockResolvedValue({ buffer });
+    const result = await getOrEstimateSceneScale(db, snapshot, points, kinds, { deadlineMs: Date.now() - 1 });
+    expect(mocks.fetch).not.toHaveBeenCalled();
+    expect(result.call).toBeUndefined();
+    expect(result.spans[0]?.pixelsPerCm).toBeNull();
+  });
+
+  it("shares the deadline across service-tier retry and refuses a late retry", async () => {
+    let now = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(new AbortController().signal);
+    mocks.fetch.mockImplementationOnce(async () => {
+      now += 70_000;
+      return new Response('priority service_tier unavailable', { status: 403 });
+    }).mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    await fetchOpenAIResponse({ service_tier: "priority" }, 90_000);
+    expect(timeout.mock.calls.map(([ms]) => ms)).toEqual([90_000, 20_000]);
+    expect(JSON.parse(mocks.fetch.mock.calls[1]![1].body)).not.toHaveProperty("service_tier");
+    mocks.fetch.mockClear();
+    mocks.fetch.mockImplementationOnce(async () => {
+      now += 90_001;
+      return new Response('priority service_tier unavailable', { status: 403 });
+    });
+    await expect(fetchOpenAIResponse({ service_tier: "priority" }, 90_000)).rejects.toThrow("deadline expired");
+    expect(mocks.fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("reuses the exact cache entry published after the render snapshot", async () => {
     const current = cachedScene();
     const before = structuredClone(current);

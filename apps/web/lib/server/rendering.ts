@@ -45,6 +45,7 @@ import {
   padCompositionForAspect,
   pasteBackOutsideMask,
   planSimplePlacements,
+  CONTACT_LIGHT_COMPOSITE_VERSION,
   SIMPLE_COMPOSITE_VERSION,
   SimpleCompositeError,
   type SimplePlacementSpec,
@@ -502,7 +503,7 @@ export async function createRender(
       : PROMPT_VERSION,
     engineVersions: {
       placementGeometry: SIMPLE_PLACEMENT_VERSION,
-      composite: SIMPLE_COMPOSITE_VERSION,
+      composite: simplePointWorkflow ? CONTACT_LIGHT_COMPOSITE_VERSION : SIMPLE_COMPOSITE_VERSION,
       scaleEstimation: SCALE_ESTIMATION_VERSION,
       quality: simplePointWorkflow ? VISUAL_REVIEW_VERSION : QUALITY_VERSION,
       // The prompt the model actually receives. simple_point sends the
@@ -1115,6 +1116,7 @@ async function runSimplePointRender(
         scene,
         points,
         kinds,
+        { deadlineMs: renderDeadlineMs - 100_000 },
       );
       // The scale pass is a paid vision call and was the last one in this pipeline
       // reaching no journal (A13). It reports what it actually did: nothing on a
@@ -1578,7 +1580,9 @@ async function runSimplePointRender(
       "image/webp",
       scene.expiresAt,
     );
-    const buffer = await pasteBackOutsideMask(composition, padded, generated);
+    const buffer = await pasteBackOutsideMask(composition, padded, generated, {
+      transferMode: "contact-light",
+    });
     await setStage("quality_check", "quality_check");
     let review: QualityReview = unavailableQualityReview();
     if (!serverConfig.aiMockMode) {

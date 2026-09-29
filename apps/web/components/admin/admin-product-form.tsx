@@ -289,6 +289,26 @@ export function AdminProductForm({ productId }: { productId?: string }) {
     });
   }
 
+  async function uploadCutoutMask(file: File) {
+    if (!product?.assetUrl || !product.sourceAssetId) return;
+    await run("cutout-mask", async () => {
+      if (file.size > 4 * 1024 * 1024 || file.type !== "image/png")
+        throw new Error("Choisissez un masque PNG de moins de 4 Mo.");
+      const source = await fetch(product.assetUrl!, { cache: "no-store" });
+      if (!source.ok) throw new Error("La photo source n’est plus disponible. Rechargez la fiche.");
+      const digest = await crypto.subtle.digest("SHA-256", await source.arrayBuffer());
+      const sourceHash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+      const updated = await adminApi<AdminProduct>(`/products/${product.id}/cutout-mask`, {
+        method: "POST", body: file,
+        headers: { "Content-Type": "image/png", "x-source-asset-id": product.sourceAssetId!, "x-source-sha256": sourceHash },
+      });
+      setProduct(updated);
+      setForm(toForm(updated));
+      setNotice("Détourage importé. Vérifiez l’aperçu, puis publiez la fiche pour activer la visualisation.");
+      router.refresh();
+    });
+  }
+
   async function action(name: string, label: string) {
     if (!product) return;
     await run(name, async () => {
@@ -361,7 +381,7 @@ export function AdminProductForm({ productId }: { productId?: string }) {
               : "Renseignez la fiche, ajoutez la photo, puis publiez-la sur le site."}
           </p>
         </div>
-        <div className="bo-head-actions">
+        <div className="bo-head-actions bo-product-head-actions">
           {product && (
             <span className={`bo-status bo-status-${product.status}`}>
               {statusLabels[product.status] ?? product.status}
@@ -1066,6 +1086,33 @@ export function AdminProductForm({ productId }: { productId?: string }) {
                           ? "Réessayer la préparation"
                           : "Préparer pour la visualisation"}
                 </button>
+                <details className="mt-4 min-w-0">
+                  <summary className="cursor-pointer py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2">
+                    Importer un détourage vérifié
+                  </summary>
+                  <fieldset className="fieldset min-w-0" disabled={Boolean(busy) || preparing || unsavedChanges || !product?.assetUrl || Boolean(product?.visualizationBlockedReason)}>
+                    <legend className="fieldset-legend">Masque de la photo de face</legend>
+                    <p id="cutout-mask-help" className="text-sm text-base-content/70">
+                      PNG en niveaux de gris, aux dimensions de la photo : objet blanc,
+                      fond noir. Seul le contour est importé ; les couleurs du produit
+                      proviennent toujours de sa photo d’origine. Maximum 4 Mo.
+                    </p>
+                    {product?.assetUrl && (
+                      <a className="link py-2" href={product.assetUrl} target="_blank" rel="noreferrer">
+                        Ouvrir la photo source
+                      </a>
+                    )}
+                    <label htmlFor="cutout-mask" className="label">Choisir le masque PNG</label>
+                    <input id="cutout-mask" type="file" accept="image/png" className="file-input bo-cutout-mask-input min-h-11 w-full min-w-0 max-w-full text-base" aria-describedby="cutout-mask-help" onChange={(event) => {
+                      const file = event.currentTarget.files?.[0];
+                      event.currentTarget.value = "";
+                      if (file) void uploadCutoutMask(file);
+                    }} />
+                    {product?.visualizationBlockedReason && (
+                      <p className="text-sm text-base-content/70">Après avoir corrigé le problème indiqué, retirez le motif de désactivation et enregistrez la fiche avant d’importer son masque.</p>
+                    )}
+                  </fieldset>
+                </details>
                 {preparationStatus === "preparing" && !busy && (
                   <button
                     type="button"

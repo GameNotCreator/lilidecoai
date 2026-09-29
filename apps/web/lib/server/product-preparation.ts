@@ -17,6 +17,7 @@ const completedSchema = z.object({
   metadataSha256: sha,
   geometryFingerprint: sha,
   preparedAt: z.date(),
+  maskSha256: sha.optional(),
 }).strict();
 export type CompletedProductPreparation = z.infer<typeof completedSchema>;
 export interface ProductPreparationState {
@@ -28,6 +29,8 @@ export const preparationHash = (value: Buffer | string) =>
   createHash("sha256").update(value).digest("hex");
 /** This admin path is local only. Matting/provider credentials do not affect it. */
 export const adminPreparationConfiguration = () => `admin-local-v3/${CUTOUT_VERSION}/topology-v1/hollowed-refusal-v1`;
+export const ADMIN_MASK_VERSION = `${CUTOUT_VERSION}/admin-mask-v1`;
+export const adminMaskConfiguration = () => `admin-mask-v1/${CUTOUT_VERSION}/topology-v1/hollowed-refusal-v1`;
 export function productPreparationGeometryFingerprint(product: ProductDocument) {
   return preparationHash(JSON.stringify({
     dimensions: [product.widthCm, product.heightCm, product.depthCm],
@@ -41,10 +44,13 @@ export function completedProductPreparation(product: ProductDocument) {
 /** This validates catalog provenance. Reuse additionally checks both asset bytes. */
 export function currentProductCutoutPreparation(product: ProductDocument) {
   const completed = completedProductPreparation(product);
-  if (!completed || completed.configuration !== adminPreparationConfiguration() ||
+  const validMethod = completed && (
+    (completed.configuration === adminPreparationConfiguration() && product.cutout?.source === "heuristic" && product.cutout.cutoutVersion === CUTOUT_VERSION) ||
+    (completed.configuration === adminMaskConfiguration() && product.cutout?.source === "matting" && product.cutout.cutoutVersion === ADMIN_MASK_VERSION && Boolean(completed.maskSha256))
+  );
+  if (!completed || !validMethod ||
     completed.sourceAssetId !== product.assetId || completed.cutoutAssetId !== product.cutoutAssetId ||
-    !product.cutout || product.cutout.source !== "heuristic" || product.cutout.synthetic ||
-    product.cutout.cutoutVersion !== CUTOUT_VERSION || product.cutout.verdict?.usable !== true ||
+    !product.cutout || product.cutout.synthetic || product.cutout.verdict?.usable !== true ||
     !cutoutTrust(product.cutout).trusted ||
     completed.metadataSha256 !== preparationHash(JSON.stringify(product.cutout))) return undefined;
   return completed;

@@ -9,6 +9,7 @@ vi.mock("server-only", () => ({}));
 vi.mock("../lib/server/mongodb", () => ({ collections: mocks.collections }));
 vi.mock("../lib/server/config", () => ({ serverConfig: mocks.config }));
 vi.mock("../lib/server/assets", () => ({
+  CUTOUT_VERSION: "cutout-v2",
   assetUrl: (id?: string) => (id ? `/api/assets/${id}` : null),
   deleteAsset: vi.fn(),
 }));
