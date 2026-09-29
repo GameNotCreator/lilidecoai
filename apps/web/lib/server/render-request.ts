@@ -2,6 +2,7 @@ import type { SimplePlacementKind } from "@lili/geometry";
 import type { OutputQuality, RenderMode } from "@lili/ai-router";
 import type { RenderDocument } from "./types";
 import { simplePlacementSchema } from "@lili/types";
+import { retryKeyMatchesSource } from "../spatial-retry";
 
 export interface PlacementInput {
   [key: string]: unknown;
@@ -24,6 +25,8 @@ export interface PlacementInput {
 }
 
 export interface RenderInput {
+  engine?: "legacy" | "spatial";
+  spatialReference?: import("@lili/types").SpatialReference;
   workflow?: "standard" | "simple_point";
   placement: PlacementInput;
   idempotencyKey: string;
@@ -80,8 +83,26 @@ export class RenderRequestError extends Error {
   readonly status = 409;
 }
 
-export function buildRetryInput(render: RenderDocument): RenderInput {
-  const idempotencyKey = `retry:${render.id}:${crypto.randomUUID()}`;
+export function buildRetryInput(
+  render: RenderDocument,
+  providedKey?: string,
+): RenderInput {
+  if (
+    providedKey !== undefined &&
+    !retryKeyMatchesSource(providedKey, render.id)
+  )
+    throw new RenderRequestError(
+      "La clé de reprise ne correspond pas à ce rendu.",
+    );
+  const idempotencyKey =
+    providedKey ?? `retry:${render.id}:${crypto.randomUUID()}`;
+  if (
+    render.engine === "spatial" &&
+    render.requestSnapshot?.input.engine !== "spatial"
+  )
+    throw new RenderRequestError(
+      "Les paramètres spatiaux enregistrés sont incomplets. Recréez le placement.",
+    );
   if (render.requestSnapshot) {
     if (render.requestSnapshot.version !== 1) {
       throw new RenderRequestError(

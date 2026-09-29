@@ -28,6 +28,7 @@ import type { Db } from "mongodb";
 import sharp from "sharp";
 
 import { estimateOpenAICost } from "./ai/openai";
+import { spatialVisionAdmissionPolicy } from "./ai/openai-vision-cost";
 import { imageQualityForModel } from "./ai/openai-image-settings";
 import {
   inspectVisualPreflight,
@@ -97,6 +98,15 @@ import {
 } from "./ai";
 import type { ProductDocument, RenderDocument, SceneDocument } from "./types";
 import { durableStep } from "./durable-steps";
+import { runSpatialRender } from "./spatial-rendering";
+import {
+  validateSpatialAdmission,
+  spatialVersionForProduct,
+  SPATIAL_VOLUME_ENGINE_VERSION,
+  isSupportedSolidBaseProduct,
+} from "./spatial-policy";
+import { validateSpatialVolumeMatteOptions } from "./spatial-volume-matte";
+import { dispatchRenderWorker } from "./render-worker-dispatch";
 import {
   durableContext,
   DurableExecutionError,
@@ -216,7 +226,8 @@ export async function createRender(
     }),
     c.products.findOne({ organizationId, id: input.placement.productId }),
   ]);
-  if (!scene || !product?.cutoutAssetId) {
+  const spatial = input.engine === "spatial";
+  if (!scene || !product || (!spatial && !product.cutoutAssetId)) {
     throw new RenderError("Scène ou produit introuvable", 404);
   }
   // PRO-008. Gated at admission so that BOTH workflows are covered: the
@@ -225,7 +236,62 @@ export async function createRender(
   // cutout is re-stamped over the model's output as the last operation before
   // encoding — an untrusted one is what the customer would be shown as theirs.
   const primaryTrust = cutoutTrust(product.cutout);
-  if (!primaryTrust.trusted) throw new RenderError(primaryTrust.message, 422);
+  if (!spatial && !primaryTrust.trusted)
+    throw new RenderError(primaryTrust.message, 422);
+  if (spatial) {
+    if (
+      serverConfig.spatialAdmissionMode === "solid-base-only" &&
+      !isSupportedSolidBaseProduct(product)
+    )
+      throw new RenderError(
+        "Cette boutique accepte uniquement les paniers et vases à base pleine déclarés dans le catalogue.",
+        422,
+      );
+    validateSpatialAdmission(
+      input,
+      product,
+      (serverConfig.spatialOrganizationIds ?? []).includes(organizationId),
+      publicSessionId,
+    );
+    if (
+      spatialVersionForProduct(product) === SPATIAL_VOLUME_ENGINE_VERSION &&
+      (!serverConfig.mattingUrl || !serverConfig.mattingToken)
+    )
+      throw new RenderError(
+        "Le service d’intégration des volumes n’est pas configuré.",
+        503,
+      );
+    if (spatialVersionForProduct(product) === SPATIAL_VOLUME_ENGINE_VERSION) {
+      try {
+        validateSpatialVolumeMatteOptions({
+          url: serverConfig.mattingUrl!,
+          token: serverConfig.mattingToken!,
+          timeoutMs: serverConfig.mattingTimeoutMs,
+        });
+      } catch {
+        throw new RenderError(
+          "La configuration du service d’intégration des volumes est invalide.",
+          503,
+        );
+      }
+    }
+    if (
+      !durableEnabled() ||
+      serverConfig.aiMockMode ||
+      !serverConfig.openaiApiKey ||
+      !serverConfig.openAIImageEnabled
+    )
+      throw new RenderError(
+        "Le placement spatial nécessite le worker durable et le fournisseur d’image actif.",
+        503,
+      );
+    input = {
+      ...input,
+      workflow: "standard",
+      placementPoint:
+        input.simplePlacements?.[0]?.placementPoint ?? input.placementPoint,
+    };
+  }
   // Every image this render stores inherits the scene's expiry. A scene about
   // to expire would therefore mint a result asset already unreadable — and the
   // credit would still be captured for it. Refuse at admission instead: one
@@ -362,7 +428,7 @@ export async function createRender(
   const selectedProvider = selectEditingProvider(
     mode,
     outputQuality,
-    simplePointWorkflow ? "openai" : undefined,
+    simplePointWorkflow || spatial ? "openai" : undefined,
   );
   input = {
     ...input,
@@ -381,6 +447,7 @@ export async function createRender(
     preserveBackground: input.preserveBackground ?? true,
   };
   const render: RenderDocument = {
+    engine: spatial ? "spatial" : "legacy",
     id: renderId,
     organizationId,
     sceneId: scene.id,
@@ -476,6 +543,30 @@ export async function createRender(
     updatedAt: now,
   };
   if (durableEnabled()) {
+    if (spatial && render.engineVersions) {
+      const version = spatialVersionForProduct(product);
+      const volume = version === SPATIAL_VOLUME_ENGINE_VERSION;
+      render.promptVersion = version;
+      render.engineVersions = {
+        ...render.engineVersions,
+        placementGeometry: volume
+          ? "spatial-volume-local-proxy-v1"
+          : "spatial-proxy-v1",
+        composite: volume
+          ? "spatial-volume-local-matte-v1"
+          : "spatial-background-v1",
+        scaleEstimation: version,
+        quality: VISUAL_REVIEW_VERSION,
+        prompt: version,
+        ...spatialVisionAdmissionPolicy(render.engineVersions.visionModel),
+        ...(volume
+          ? {
+              volumeIntegrationPolicy: "spatial-volume-local-matte-v1" as const,
+              volumeRepairPolicy: "spatial-volume-numeric-repair-v1" as const,
+            }
+          : {}),
+      };
+    }
     render.status = "queued";
     render.execution = prepareExecution(
       scene,
@@ -511,7 +602,15 @@ export async function createRender(
   }
   // Admission and durable queue are the same document: no enqueue crash gap.
   // Credits are reserved transactionally by the worker before any provider call.
-  if (render.execution) return renderResponse(render);
+  if (render.execution) {
+    // A wake-up only signals the dedicated worker; it never runs an image
+    // call inside this shorter web request. Mongo remains the durable queue
+    // and the cron recovers jobs if the best-effort dispatch is unavailable.
+    deferTask?.(async () => {
+      await dispatchRenderWorker();
+    });
+    return renderResponse(render);
+  }
 
   // A11 of the audit: nothing checked the balance before spending provider
   // money, so concurrent renders could all run against a single credit. The
@@ -684,6 +783,18 @@ export async function executeDurableRender(
   const products = new Map(
     render.execution.products.map((product) => [product.id, product]),
   );
+  if (render.engine === "spatial") {
+    const product = products.get(render.productId);
+    if (!product)
+      throw new DurableExecutionError("Source produit manquante.", "permanent");
+    await runSpatialRender(db, render, render.execution.scene, product, input);
+    return;
+  }
+  if (input.engine === "spatial")
+    throw new DurableExecutionError(
+      "Version spatiale manquante : aucun repli automatique.",
+      "permanent",
+    );
   if (input.workflow === "standard") {
     const product = products.get(render.productId);
     if (!product)
@@ -898,23 +1009,52 @@ async function runSimplePointRender(
   startedAt: number,
 ) {
   const renderDeadlineMs = renderDeadline(startedAt);
-  const sourceAsset = await readAsset(db, scene.assetId);
-  if (!sourceAsset) {
-    throw new RenderError("Photo du lieu introuvable", 404);
-  }
-  const productReferences = await Promise.all(
-    simpleObjects.map(async (item) => {
-      const references = await loadProductReferences(db, item.product);
-      const reference = references[0];
-      if (!reference) {
-        throw new RenderError(
-          `Photo de l’objet « ${item.product.name} » introuvable`,
-          404,
-        );
+  // These inputs are independent. Keep their original bytes and order, but
+  // overlap storage reads and reuse assets repeated within this render only.
+  const assets = new Map<string, ReturnType<typeof readAsset>>();
+  const readOnce: typeof readAsset = (_db, assetId) => {
+    let pending = assets.get(assetId);
+    if (!pending) {
+      pending = readAsset(db, assetId);
+      assets.set(assetId, pending);
+    }
+    return pending;
+  };
+  const [orientedScene, productReferences, cutouts] = await Promise.all([
+    (async () => {
+      const sourceAsset = await readOnce(db, scene.assetId);
+      if (!sourceAsset) {
+        throw new RenderError("Photo du lieu introuvable", 404);
       }
-      return reference;
-    }),
-  );
+      return sharp(sourceAsset.buffer)
+        .rotate()
+        .webp({ lossless: true })
+        .toBuffer({ resolveWithObject: true });
+    })(),
+    Promise.all(
+      simpleObjects.map(async (item) => {
+        const references = await loadProductReferences(db, item.product, {
+          limit: 1,
+          read: readOnce,
+        });
+        return references[0]!;
+      }),
+    ),
+    Promise.all(
+      simpleObjects.map(async (item) => {
+        const cutout = item.product.cutoutAssetId
+          ? await readOnce(db, item.product.cutoutAssetId)
+          : null;
+        if (!cutout) {
+          throw new RenderError(
+            `Détourage de « ${item.product.name} » introuvable`,
+            404,
+          );
+        }
+        return cutout.buffer;
+      }),
+    ),
+  ]);
   const productReference = productReferences[0];
   if (!productReference) {
     throw new RenderError("Photo de l’objet introuvable", 404);
@@ -943,30 +1083,12 @@ async function runSimplePointRender(
     });
   };
 
-  const orientedScene = await sharp(sourceAsset.buffer)
-    .rotate()
-    .webp({ lossless: true })
-    .toBuffer({ resolveWithObject: true });
   const sceneWidth = orientedScene.info.width;
   const sceneHeight = orientedScene.info.height;
   const sceneImage = orientedScene.data;
 
   // Every cutout is measured before anything is decided: its aspect and its
   // measured base row drive the placement, so they must exist first.
-  const cutouts = await Promise.all(
-    simpleObjects.map(async (item) => {
-      const cutout = item.product.cutoutAssetId
-        ? await readAsset(db, item.product.cutoutAssetId)
-        : null;
-      if (!cutout) {
-        throw new RenderError(
-          `Détourage de « ${item.product.name} » introuvable`,
-          404,
-        );
-      }
-      return cutout.buffer;
-    }),
-  );
   const cutoutSizes = await Promise.all(
     cutouts.map(async (buffer) => {
       const metadata = await sharp(buffer).metadata();
@@ -1013,6 +1135,16 @@ async function runSimplePointRender(
   );
   const spans = scaleResult.spans;
   const lighting = scaleResult.lighting;
+  if (
+    scaleResult.call &&
+    scaleResult.call.outcome !== "succeeded" &&
+    simpleObjects.some((item) => item.pixelsPerCm === null)
+  ) {
+    throw new RenderError(
+      "L’analyse de la pièce est momentanément indisponible. Votre photo n’est pas en cause : réessayez dans quelques instants.",
+      503,
+    );
+  }
   const scales = simpleObjects.map((item, index) => {
     if (item.pixelsPerCm !== null) {
       return { pixelsPerCm: item.pixelsPerCm, scaleSource: "user" as const };
@@ -2963,7 +3095,7 @@ async function openAICleanedPlacement(
     model: serverConfig.openaiVisionModel,
     store: false,
     service_tier: serverConfig.openaiServiceTier,
-    reasoning: { effort: "high" },
+    reasoning: { effort: serverConfig.openaiVisionReasoning ?? "high" },
     max_output_tokens: 8_000,
     input: [
       {
@@ -4015,7 +4147,9 @@ async function generateAndReviewGoogle(
 async function loadProductReferences(
   db: Db,
   product: ProductDocument,
+  options: { limit?: number; read?: typeof readAsset } = {},
 ): Promise<ImageReference[]> {
+  const read = options.read ?? readAsset;
   const viewOrder = ["front", "three_quarter", "side", "back", "detail"];
   const views = (product.views ?? [])
     .filter((view) => view.validationStatus === "valid")
@@ -4023,7 +4157,7 @@ async function loadProductReferences(
     .slice(0, 4);
   const references: ImageReference[] = [];
   for (const view of views) {
-    const asset = await readAsset(db, view.assetId);
+    const asset = await read(db, view.assetId);
     if (!asset) continue;
     references.push({
       data: new Uint8Array(asset.buffer),
@@ -4031,6 +4165,7 @@ async function loadProductReferences(
         "image/jpeg" | "image/png" | "image/webp",
       role: productViewRole(view.type),
     });
+    if (references.length >= (options.limit ?? 4)) break;
   }
   // The fallback is the ORIGINAL front photo, never the cutout. A reference
   // tells the harmoniser what the product looks like, and the cutout is a
@@ -4038,7 +4173,7 @@ async function loadProductReferences(
   // matte's own mistakes — an eaten edge, a retained shadow — become the truth
   // the model reproduces. The photo the customer took is the authority.
   if (references.length === 0 && product.assetId) {
-    const original = await readAsset(db, product.assetId);
+    const original = await read(db, product.assetId);
     if (original) {
       references.push({
         data: new Uint8Array(original.buffer),
@@ -4063,6 +4198,7 @@ function productViewRole(
     side: "product_side",
     back: "product_back",
     detail: "product_detail",
+    top: "product_detail",
   } as const;
   return roles[type];
 }

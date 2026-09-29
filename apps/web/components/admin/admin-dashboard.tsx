@@ -65,7 +65,7 @@ export function AdminDashboard() {
           icon={<CheckCircle2 size={18} />}
           label="Publiés"
           value={products?.ready ?? 0}
-          hint="Visibles dans le visualiseur"
+          hint="Visibles dans la boutique"
           tone="ok"
         />
         <Stat

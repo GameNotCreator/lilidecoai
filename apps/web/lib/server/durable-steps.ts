@@ -108,12 +108,18 @@ async function decode(db: Db, value: unknown): Promise<unknown> {
   return value;
 }
 
+export interface DurableAnalysisRetryPolicy {
+  maxAttempts: 1 | 2 | 3;
+  respectRetryable: boolean;
+}
+
 /** Read-only analysis is retryable; an interrupted image edit is never replayed. */
 export async function durableStep<T>(
   db: Db,
   key: string,
   policy: "analysis" | "image",
   call: () => Promise<T>,
+  retryPolicy?: DurableAnalysisRetryPolicy,
 ): Promise<T> {
   const context = durableContext.getStore();
   if (!context) return call();
@@ -128,6 +134,11 @@ export async function durableStep<T>(
   const previous = current?.execution?.steps[key];
   if (previous?.status === "completed")
     return (await decode(db, previous.output)) as T;
+  if (previous?.status === "failed")
+    throw new DurableExecutionError(
+      previous.failure ?? "Cette étape a échoué définitivement.",
+      "permanent",
+    );
   if (context.yieldAt !== undefined && Date.now() >= context.yieldAt)
     throw new DurableExecutionError(
       "Reprise dans une nouvelle invocation.",
@@ -142,9 +153,11 @@ export async function durableStep<T>(
       "provider_unknown",
     );
   const attempts = (previous?.attempts ?? 0) + 1;
-  if (attempts > 3)
+  const analysisRetry = policy === "analysis" ? retryPolicy : undefined;
+  const maxAttempts = analysisRetry?.maxAttempts ?? 3;
+  if (attempts > maxAttempts)
     throw new DurableExecutionError(
-      "Cette étape reste indisponible après trois tentatives.",
+      `Cette étape reste indisponible après ${maxAttempts} tentatives.`,
       "permanent",
     );
   const startedAt = new Date();
@@ -164,6 +177,28 @@ export async function durableStep<T>(
   try {
     output = await call();
   } catch (reason) {
+    // Opt-in only: older jobs keep their original recovery semantics. Persist
+    // the terminal decision so a worker restart cannot call the reviewer again.
+    if (
+      analysisRetry &&
+      (!(reason instanceof DurableExecutionError) || reason.code === "retry") &&
+      (attempts >= maxAttempts ||
+        (analysisRetry.respectRetryable &&
+          typeof reason === "object" &&
+          reason !== null &&
+          "retryable" in reason &&
+          reason.retryable === false))
+    ) {
+      const failure =
+        reason instanceof Error ? reason.message : "Contrôle indisponible.";
+      await save({
+        status: "failed",
+        attempts,
+        startedAt,
+        failure: failure.slice(0, 500),
+      });
+      throw new DurableExecutionError(failure, "permanent");
+    }
     if (reason instanceof DurableExecutionError) {
       if (reason.code === "retry")
         await save({ status: "retry", attempts, startedAt });
@@ -190,6 +225,13 @@ export async function durableStep<T>(
   // If persistence fails after a paid call, leave 'running': recovery must not
   // mistake a lost result for permission to spend again.
   const encoded = await encode(db, output);
-  await save({ status: "completed", attempts, startedAt, output: encoded });
+  await save({
+    status: "completed",
+    attempts,
+    startedAt,
+    completedAt: new Date(),
+    durationMs: Date.now() - startedAt.getTime(),
+    output: encoded,
+  });
   return output;
 }

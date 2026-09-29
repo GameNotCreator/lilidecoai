@@ -1,0 +1,290 @@
+{
+  "schemaVersion": 1,
+  "observedAt": "2026-09-29",
+  "storeUrl": "https://ileycom.com/en/store/lili-deco/",
+  "priceSourceUrl": "https://ileycom.com/en/store/lili-deco/?wmc-currency=TND",
+  "method": "Fiches produit et menu de devise lus dans le navigateur embarqué ; prix TND lus après sélection explicite de cette devise.",
+  "currency": "TND",
+  "stockPolicy": "Le stock observé est un instantané ILEYCOM, non une synchronisation du stock de la boutique. Import local uniquement ; à confirmer avant publication.",
+  "products": [
+    {
+      "sourceId": "375567",
+      "sourceUrl": "https://ileycom.com/en/produit/grenade-decorative-artisanale-noire-et-blanche-14-cm-qualite-premium/",
+      "name": "Grenade décorative noire et blanche",
+      "visualizationBlockedReason": "Le détourage efface des zones de céramique claire sur les deux vues testées. Fournir une photo mieux contrastée ou un détourage validé avant de proposer la visualisation.",
+      "sourceTitle": "Grenade décorative artisanale noire et blanche 14 cm qualité premium",
+      "description": "Grenade décorative en céramique, aux motifs noirs et blancs. Format de 14 cm de côté pour une étagère ou une table.",
+      "objectType": "other",
+      "placementType": "table",
+      "material": "Céramique",
+      "price": 115,
+      "observedStock": 3,
+      "dimensions": {
+        "widthCm": 14,
+        "heightCm": 14,
+        "depthCm": 14
+      },
+      "dimensionEvidence": "Dimensions : 14 x 14 x 14 cm",
+      "imageUrl": "https://ileycom.com/wp-content/uploads/2026/09/yxd61fw5k7i-1789799062817-2.jpg",
+      "localImage": "artifacts/catalogue-lilideco-2026-09-29/assets/grenade-noire-blanche.jpg",
+      "unknowns": [],
+      "notes": [
+        "La galerie contient aussi une image nommée ai-generated, exclue de ce lot."
+      ],
+      "tags": [
+        "Céramique",
+        "Noir et blanc",
+        "Objets décoratifs"
+      ],
+      "downloadedImageUrl": "https://ileycom.com/wp-content/uploads/2026/09/yxd61fw5k7i-1789799062817-2-800x800.jpg"
+    },
+    {
+      "sourceId": "375861",
+      "sourceUrl": "https://ileycom.com/en/produit/vase-raku-artisanal-20x10-cm-une-touche-delegance-unique/",
+      "name": "Vase raku à glaçure craquelée",
+      "sourceTitle": "Vase raku artisanal 20×10 cm une touche d’élégance unique",
+      "description": "Vase en céramique raku, avec une texture irrégulière et une glaçure craquelée. La fiche annonce 20 × 10 cm sans préciser les axes.",
+      "objectType": "vase",
+      "placementType": "table",
+      "material": "Céramique raku",
+      "price": 135,
+      "observedStock": 1,
+      "dimensions": {
+        "widthCm": null,
+        "heightCm": null,
+        "depthCm": null
+      },
+      "dimensionEvidence": "Dimensions : 20 x 10 cm",
+      "imageUrl": "https://ileycom.com/wp-content/uploads/2026/09/fv3vgotbvu9-1789933794190-1.jpg",
+      "localImage": "artifacts/catalogue-lilideco-2026-09-29/assets/vase-raku.jpg",
+      "unknowns": [
+        "Axes des deux dimensions et troisième dimension"
+      ],
+      "notes": [],
+      "tags": [
+        "Céramique",
+        "Vases",
+        "Raku"
+      ],
+      "downloadedImageUrl": "https://ileycom.com/wp-content/uploads/2026/09/fv3vgotbvu9-1789933794190-1-800x800.jpg"
+    },
+    {
+      "sourceId": "375856",
+      "sourceUrl": "https://ileycom.com/en/produit/cachepot-bureau-elegant-20-cm-de-diametre-pour-un-espace-chic/",
+      "name": "Cache-pot en céramique craquelée",
+      "visualizationBlockedReason": "La photo contient un bonsaï entier alors que les dimensions de 20 × 16 × 20 cm décrivent le cache-pot seul. Fournir une photo du contenant seul avant de proposer la visualisation.",
+      "sourceTitle": "cachepot bureau élégant 20 cm de diamètre pour un espace chic",
+      "description": "Cache-pot en céramique à surface craquelée. Diamètre 20 cm et hauteur 16 cm. Photo de mise en scène avec une plante ; les dimensions concernent le contenant.",
+      "objectType": "vase",
+      "placementType": "table",
+      "material": "Céramique",
+      "price": 129,
+      "observedStock": 1,
+      "dimensions": {
+        "widthCm": 20,
+        "heightCm": 16,
+        "depthCm": 20
+      },
+      "dimensionEvidence": "Le cachepot bureau mesure 16 cm de hauteur et a un diamètre de 20 cm",
+      "imageUrl": "https://ileycom.com/wp-content/uploads/2026/09/o8qk486dj5-1789933103215-1.jpg",
+      "localImage": "artifacts/catalogue-lilideco-2026-09-29/assets/cache-pot.jpg",
+      "unknowns": [],
+      "notes": [
+        "Largeur et profondeur correspondent au diamètre explicitement annoncé.",
+        "Les deux photos incluent une plante ; dimensions du pot seul. Photo non admissible au placement tant que le pot seul reste absent."
+      ],
+      "tags": [
+        "Céramique",
+        "Cache-pots"
+      ],
+      "downloadedImageUrl": "https://ileycom.com/wp-content/uploads/2026/09/o8qk486dj5-1789933103215-1-800x800.jpg"
+    },
+    {
+      "sourceId": "369641",
+      "sourceUrl": "https://ileycom.com/en/produit/chapelet-mural-oeil-design-90-x-50-cm-pour-une-deco-unique/",
+      "name": "Chapelet mural motif œil",
+      "sourceTitle": "Chapelet mural œil design 90 x 50 cm pour une déco unique",
+      "description": "Décoration murale composée de perles de céramique et d'un motif œil. La fiche annonce un format de 90 × 50 cm.",
+      "objectType": "other",
+      "placementType": "wall",
+      "material": "Perles de céramique",
+      "price": 395,
+      "observedStock": 1,
+      "dimensions": {
+        "widthCm": null,
+        "heightCm": null,
+        "depthCm": null
+      },
+      "dimensionEvidence": "Dimensions : 90 x 50 cm",
+      "imageUrl": "https://ileycom.com/wp-content/uploads/2026/08/uknpi9lkgsh-1787878692533.jpg",
+      "localImage": "artifacts/catalogue-lilideco-2026-09-29/assets/chapelet-oeil.jpg",
+      "unknowns": [
+        "Orientation largeur/hauteur et épaisseur"
+      ],
+      "notes": [],
+      "tags": [
+        "Décoration murale",
+        "Céramique"
+      ],
+      "downloadedImageUrl": "https://ileycom.com/wp-content/uploads/2026/08/uknpi9lkgsh-1787878692533-800x800.jpg"
+    },
+    {
+      "sourceId": "367209",
+      "sourceUrl": "https://ileycom.com/en/produit/coussin-decoratif-texture-avec-pompons-45-x-45-cm-exclusif/",
+      "name": "Coussin texturé à pompons",
+      "sourceTitle": "Coussin décoratif texturé avec pompons 45 x 45 cm exclusif",
+      "description": "Coussin carré en coton, avec un motif de vagues dans des tons neutres et des pompons. Dimensions de la face : 45 × 45 cm.",
+      "objectType": "other",
+      "placementType": "table",
+      "material": "Coton",
+      "price": 85,
+      "observedStock": 4,
+      "dimensions": {
+        "widthCm": 45,
+        "heightCm": 45,
+        "depthCm": null
+      },
+      "dimensionEvidence": "Dimensions : 45 x 45 cm",
+      "imageUrl": "https://ileycom.com/wp-content/uploads/2026/08/qni8wz6nxlg-1786790325411-1.jpeg",
+      "localImage": "artifacts/catalogue-lilideco-2026-09-29/assets/coussin-pompons.jpeg",
+      "unknowns": [
+        "Épaisseur du coussin"
+      ],
+      "notes": [
+        "Placement table est une proposition technique à revoir, les supports canapé/fauteuil ne figurent pas dans le schéma actuel."
+      ],
+      "tags": [
+        "Textiles",
+        "Coussins"
+      ],
+      "downloadedImageUrl": "https://ileycom.com/wp-content/uploads/2026/08/qni8wz6nxlg-1786790325411-1-800x800.jpeg"
+    },
+    {
+      "sourceId": "310257",
+      "sourceUrl": "https://ileycom.com/produit/sculpture-visage-abstrait-piece-decorative-artistique-sur-socle/",
+      "name": "Sculpture visage abstrait sur socle",
+      "visualizationBlockedReason": "La source indique à la fois bois et céramique ; la profondeur de 2 cm doit aussi être confirmée pour le socle complet. Confirmer matière et encombrement avant de proposer la visualisation.",
+      "sourceTitle": "Sculpture Visage Abstrait – Pièce Décorative artistique sur Socle",
+      "description": "Visage abstrait aux couleurs vives, posé sur un socle en métal noir. La matière du visage reste à confirmer : les détails et la description de la source se contredisent.",
+      "objectType": "other",
+      "placementType": "table",
+      "material": "À confirmer : céramique ou bois, socle métal",
+      "price": 139,
+      "observedStock": 1,
+      "dimensions": {
+        "widthCm": 20,
+        "heightCm": 25,
+        "depthCm": 2
+      },
+      "dimensionEvidence": "Dimensions : H 25 cm / L 20 cm / P 2 cm",
+      "imageUrl": "https://ileycom.com/wp-content/uploads/2026/09/Masque-colore.jpg",
+      "localImage": "artifacts/catalogue-lilideco-2026-09-29/assets/visage-abstrait.jpg",
+      "unknowns": [
+        "Matière contradictoire : détails céramique, description bois"
+      ],
+      "notes": [
+        "Ne pas publier ni employer comme preuve de fidélité matière avant confirmation."
+      ],
+      "tags": [
+        "Sculptures",
+        "Couleur"
+      ],
+      "downloadedImageUrl": "https://ileycom.com/wp-content/uploads/2026/09/Masque-colore-800x800.jpg"
+    },
+    {
+      "sourceId": "284083",
+      "sourceUrl": "https://ileycom.com/en/produit/wool-runner-rug-white-stripes-and-loop-75-x-175-cm/",
+      "name": "Tapis de couloir en laine à rayures écrues",
+      "sourceTitle": "Wool Runner Rug – White Stripes and Loop – 75 X 175 cm",
+      "description": "Tapis de couloir en laine, réalisé à la main, avec des motifs écrus sur fond beige et des bords renforcés. Format au sol de 75 × 175 cm.",
+      "objectType": "rug",
+      "placementType": "floor",
+      "material": "Laine",
+      "price": 145,
+      "observedStock": 1,
+      "dimensions": {
+        "widthCm": 75,
+        "heightCm": null,
+        "depthCm": 175
+      },
+      "dimensionEvidence": "Dimensions : 75 x 175 cm",
+      "imageUrl": "https://ileycom.com/wp-content/uploads/2026/02/tapis-e-couloir.jpeg",
+      "localImage": "artifacts/catalogue-lilideco-2026-09-29/assets/tapis-laine.jpeg",
+      "unknowns": [
+        "Épaisseur du tapis"
+      ],
+      "notes": [
+        "75 et 175 cm décrivent le plan au sol ; aucune hauteur artificielle n'est importée."
+      ],
+      "tags": [
+        "Textiles",
+        "Tapis",
+        "Laine"
+      ],
+      "downloadedImageUrl": "https://ileycom.com/wp-content/uploads/2026/02/tapis-e-couloir-800x800.jpeg"
+    },
+    {
+      "sourceId": "248771",
+      "sourceUrl": "https://ileycom.com/en/produit/blue-ceramic-lamp-and-straw-lampshade/",
+      "name": "Lampe bleue et abat-jour en paille",
+      "sourceTitle": "Blue ceramic lamp and straw lampshade",
+      "description": "Lampe à poser au pied en céramique bleue peinte à la main, avec des motifs blancs et un abat-jour en paille naturelle. Hauteur annoncée approximative : 35 cm.",
+      "objectType": "lamp",
+      "placementType": "table",
+      "material": "Céramique peinte et paille naturelle",
+      "price": 240,
+      "observedStock": 1,
+      "dimensions": {
+        "widthCm": null,
+        "heightCm": null,
+        "depthCm": null
+      },
+      "dimensionEvidence": "Height: Approximately 35 cm",
+      "imageUrl": "https://ileycom.com/wp-content/uploads/2025/12/lampe-Djerba-et-chapeau-en-paille-1.webp",
+      "localImage": "artifacts/catalogue-lilideco-2026-09-29/assets/lampe-bleue.webp",
+      "unknowns": [
+        "Largeur, profondeur et hauteur mesurée"
+      ],
+      "notes": [
+        "Hauteur source approximative non présentée comme mesure réelle."
+      ],
+      "tags": [
+        "Luminaires",
+        "Céramique",
+        "Paille"
+      ],
+      "downloadedImageUrl": "https://ileycom.com/wp-content/uploads/2025/12/lampe-Djerba-et-chapeau-en-paille-1-800x800.webp"
+    },
+    {
+      "sourceId": "250760",
+      "sourceUrl": "https://ileycom.com/en/produit/laundry-basket-with-lid-diameter-40-cm-height-40-cm/",
+      "name": "Panier à linge en jute avec couvercle",
+      "visualizationBlockedReason": "Le détourage garde une partie du décor et efface le couvercle ainsi que des parties du panier. Fournir une photo isolée ou un détourage validé avant de proposer la visualisation.",
+      "sourceTitle": "Laundry basket with lid – Diameter 40 cm, Height 40 cm",
+      "description": "Panier à linge en corde de jute, confectionné à la main et muni d'un couvercle. Diamètre 40 cm et hauteur 40 cm.",
+      "objectType": "other",
+      "placementType": "floor",
+      "material": "Corde de jute",
+      "price": 225,
+      "observedStock": 1,
+      "dimensions": {
+        "widthCm": 40,
+        "heightCm": 40,
+        "depthCm": 40
+      },
+      "dimensionEvidence": "Diameter: 40 cm, H 40 cm",
+      "imageUrl": "https://ileycom.com/wp-content/uploads/2026/02/panier-a-linge.jpeg",
+      "localImage": "artifacts/catalogue-lilideco-2026-09-29/assets/panier-jute.jpeg",
+      "unknowns": [],
+      "notes": [
+        "Largeur et profondeur correspondent au diamètre explicitement annoncé."
+      ],
+      "tags": [
+        "Rangement",
+        "Jute",
+        "Paniers"
+      ],
+      "downloadedImageUrl": "https://ileycom.com/wp-content/uploads/2026/02/panier-a-linge.jpeg"
+    }
+  ]
+}

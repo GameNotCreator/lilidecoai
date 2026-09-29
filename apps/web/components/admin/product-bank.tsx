@@ -178,8 +178,8 @@ export function ProductBank() {
           <span className="bo-eyebrow">Catalogue</span>
           <h1>Banque de produits.</h1>
           <p>
-            Créez, complétez et publiez les fiches utilisées par le visualiseur
-            et le widget marchand.
+            Créez, complétez et publiez les fiches de la boutique. Préparez leurs
+            photos pour proposer la visualisation des articles compatibles.
           </p>
         </div>
         <div className="bo-head-actions">

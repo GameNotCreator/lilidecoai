@@ -22,6 +22,9 @@ import {
 } from "../lib/server/ai/visual-review";
 import { qualityDecision } from "../lib/server/render-quality";
 import { isProviderRefusal } from "../lib/server/provider-usage";
+import { SPATIAL_REVIEW_EXECUTION_POLICY as reviewPolicy } from "../lib/server/spatial-review-policy";
+import { visionObservation } from "../lib/server/ai/openai-vision-cost";
+import { SPATIAL_VOLUME_NUMERIC_REPAIR_POLICY as numericPolicy } from "../lib/server/spatial-volume-repair";
 
 const image = {
   data: new Uint8Array([1, 2, 3]),
@@ -91,6 +94,41 @@ function preflightPayload() {
   };
 }
 
+it.each(["accepted", "malformed", "incomplete"])(
+  "preserves paid review usage for %s responses",
+  async (mode) => {
+    const raw = {
+      ...envelope(mode === "malformed" ? {} : renderPayload()),
+      ...(mode === "incomplete" ? { status: "incomplete" } : {}),
+      usage: { input_tokens: 1000, output_tokens: 500 },
+      model: "gpt-6-astra",
+      service_tier: "default",
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          Response.json(raw, { headers: { "x-request-id": "req-test" } }),
+        ),
+    );
+    let result: unknown;
+    try {
+      result = await reviewVisualRender({ ...input(), generated: image });
+    } catch (reason) {
+      result = reason;
+    }
+    expect(visionObservation(result)).toMatchObject({
+      usage: raw.usage,
+      requestId: "req-test",
+      serviceTier: "default",
+    });
+    if (mode === "accepted")
+      expect(JSON.stringify(result)).not.toContain("input_tokens");
+    else expect(result).toBeInstanceOf(Error);
+  },
+);
+
 function envelope(payload: unknown) {
   return {
     status: "completed",
@@ -115,11 +153,201 @@ function input(): VisualReviewInput {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
 
 describe("independent visual delivery gates", () => {
+  const spatialProduct = (): VisualProductReference => ({
+    id: "placement-1",
+    name: "Cylindre",
+    image,
+    expectedBox: {
+      xMin: 0.28604774184791426,
+      xMax: 0.7139522581520857,
+      yMin: 0.43562429978857115,
+      yMax: 0.894710061620633,
+    },
+    expectedGeometry: { kind: "volume-envelope", contact: { x: 0.5, y: 0.75 } },
+    scaleVerified: false,
+  });
+  const cylinderPayload = () => {
+    const payload = renderPayload();
+    return {
+      ...payload,
+      products: [
+        {
+          ...payload.products[0]!,
+          observedBox: {
+            xMin: 0.34678944457649263,
+            xMax: 0.6532105554235074,
+            yMin: 0.4504959096240219,
+            yMax: 0.8453297905925947,
+          },
+          observedContact: { x: 0.5, y: 0.75 } as {
+            x: number;
+            y: number;
+          } | null,
+        },
+      ],
+    };
+  };
+  it.each(["accepted", "oversized", "contact-missing", "unlocalized"])(
+    "retains validated observations only with v13 opt-in, without changing %s QA",
+    (mode) => {
+      const product = spatialProduct(),
+        payload = cylinderPayload();
+      if (mode === "oversized") payload.products[0]!.observedBox.xMin = 0.1;
+      if (mode === "contact-missing")
+        payload.products[0]!.observedContact = null;
+      if (mode === "unlocalized")
+        (payload.products[0] as { observedBox: unknown }).observedBox = null;
+      const historical = parseVisualRender(payload, [product], false);
+      const { geometryObservations, ...current } = parseVisualRender(
+        payload,
+        [product],
+        false,
+        numericPolicy,
+      );
+      expect(current).toEqual(historical);
+      expect(historical).not.toHaveProperty("geometryObservations");
+      expect(qualityDecision(current, false)).toEqual(
+        qualityDecision(historical, false),
+      );
+      expect(current.accepted).toBe(mode === "accepted");
+      expect(geometryObservations).toEqual({
+        policy: numericPolicy,
+        source: "validated-visual-review",
+        coordinateSpace: "normalized-original-room",
+        reviewConfidence: payload.confidence,
+        products: [
+          {
+            productId: product.id,
+            confidence: payload.products[0]!.confidence,
+            foregroundOccluded: false,
+            expectedBox: product.expectedBox,
+            expectedContact: product.expectedGeometry!.contact,
+            observedBox: payload.products[0]!.observedBox,
+            observedContact: payload.products[0]!.observedContact,
+          },
+        ],
+      });
+      expect(JSON.parse(JSON.stringify(geometryObservations))).toEqual(
+        geometryObservations,
+      );
+    },
+  );
+  it("keeps the inspector request and thresholds identical when opting into numeric observation persistence", async () => {
+    const fetch = vi
+      .fn()
+      .mockImplementation(async () =>
+        Response.json(envelope(cylinderPayload())),
+      );
+    vi.stubGlobal("fetch", fetch);
+    const request = {
+      ...input(),
+      products: [spatialProduct()],
+      generated: image,
+    };
+    await reviewVisualRender(request);
+    const current = await reviewVisualRender({
+      ...request,
+      geometryObservationPolicy: numericPolicy,
+    });
+    expect(JSON.parse(fetch.mock.calls[1]![1].body)).toEqual(
+      JSON.parse(fetch.mock.calls[0]![1].body),
+    );
+    expect(current.geometryObservations?.policy).toBe(numericPolicy);
+  });
+  it.each(["unknown-policy", "silhouette", "invalid-contact", "invalid-box"])(
+    "rejects invalid numeric review contract %s before contacting the provider",
+    async (kind) => {
+      const fetch = vi.fn();
+      vi.stubGlobal("fetch", fetch);
+      const request: VisualReviewInput & { generated: typeof image } = {
+        ...input(),
+        products: [spatialProduct()],
+        generated: image,
+        geometryObservationPolicy: numericPolicy,
+      };
+      if (kind === "unknown-policy")
+        (
+          request as { geometryObservationPolicy: string }
+        ).geometryObservationPolicy = "future-policy";
+      if (kind === "silhouette") delete request.products[0]!.expectedGeometry;
+      if (kind === "invalid-contact")
+        request.products[0]!.expectedGeometry!.contact.x = 1.1;
+      if (kind === "invalid-box") request.products[0]!.expectedBox!.xMin = 1;
+      await expect(reviewVisualRender(request)).rejects.toMatchObject({
+        code: "invalid_input",
+        providerCalled: false,
+      });
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+  it("rejects malformed provider boxes even when numeric persistence is requested", () => {
+    const payload = cylinderPayload();
+    payload.products[0]!.observedBox.xMin =
+      payload.products[0]!.observedBox.xMax;
+    expect(() =>
+      parseVisualRender(payload, [spatialProduct()], false, numericPolicy),
+    ).toThrow();
+  });
+  it("does not require the exact cylinder to fill a rotated cuboid, while keeping silhouette contracts strict", () => {
+    const product = spatialProduct(),
+      payload = cylinderPayload();
+    expect(parseVisualRender(payload, [product], false).accepted).toBe(true);
+    const old = renderPayload();
+    old.products[0]!.observedBox = payload.products[0]!.observedBox;
+    expect(
+      parseVisualRender(
+        old,
+        [{ ...product, expectedGeometry: undefined }],
+        false,
+      ).checks,
+    ).toContainEqual(
+      expect.objectContaining({ name: "placement-1.geometry_scale", score: 0 }),
+    );
+  });
+  it.each([
+    "outside",
+    "moved-contact",
+    "missing-contact",
+    "weak-scale",
+    "weak-position",
+    "weak-contact",
+    "low-confidence",
+  ])("refuses an envelope with %s despite top-level acceptance", (reason) => {
+    const payload = cylinderPayload(),
+      item = payload.products[0]!;
+    if (reason === "outside") item.observedBox.xMin = 0.1;
+    if (reason === "moved-contact") item.observedContact = { x: 0.7, y: 0.75 };
+    if (reason === "missing-contact") item.observedContact = null;
+    if (reason === "weak-scale") item.checks.scale.score = 0.85;
+    if (reason === "weak-position") item.checks.position.score = 0.85;
+    if (reason === "weak-contact") item.checks.contact.score = 0.85;
+    if (reason === "low-confidence") item.confidence = 0.85;
+    expect(parseVisualRender(payload, [spatialProduct()], false).accepted).toBe(
+      false,
+    );
+  });
+  it("requests the observed contact in a strict schema only for the new spatial contract", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValue(Response.json(envelope(cylinderPayload())));
+    vi.stubGlobal("fetch", fetch);
+    await reviewVisualRender({
+      ...input(),
+      products: [spatialProduct()],
+      generated: image,
+    });
+    const body = JSON.parse(fetch.mock.calls[0]![1].body);
+    expect(
+      body.text.format.schema.properties.products.items.required,
+    ).toContain("observedContact");
+    expect(JSON.stringify(body.input)).toContain("volume-envelope");
+  });
   it("accepts a complete source-grounded review and records individual evidence", () => {
     const review = parseVisualRender(renderPayload(), products, false);
     expect(qualityDecision(review, false).status).toBe("accepted");
@@ -339,39 +567,86 @@ describe("source preflight", () => {
 });
 
 describe("bounded Responses API transport", () => {
-  it("sends labeled original room, composition, output and catalog images to a private strict review", async () => {
+  it("labels additional views as evidence for the same placement", async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValue(
-        new Response(JSON.stringify(envelope(renderPayload()))),
-      );
+      .mockResolvedValue(Response.json(envelope(renderPayload())));
     vi.stubGlobal("fetch", fetchMock);
-    expect(
-      (await reviewVisualRender({ ...input(), generated: image })).accepted,
-    ).toBe(true);
-    const body = JSON.parse(fetchMock.mock.calls[0]![1].body);
-    expect(body).toMatchObject({
-      model: "gpt-6-astra",
-      store: false,
-      service_tier: "default",
-      reasoning: { effort: "high" },
-      text: { format: { strict: true, type: "json_schema" } },
+    await reviewVisualRender({
+      ...input(),
+      generated: image,
+      products: [{ ...products[0]!, views: [{ view: "top", image }] }],
     });
-    expect(body.temperature).toBeUndefined();
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body);
     const content = body.input[1].content as Array<{
       type: string;
       text?: string;
     }>;
     expect(content.filter((item) => item.type === "input_image")).toHaveLength(
-      4,
+      5,
     );
     expect(
-      content.some((item) => item.text?.startsWith("EXPECTED COMPOSITION")),
+      content.some((item) =>
+        item.text?.includes(
+          'ADDITIONAL CATALOG VIEW "top" for the SAME placement "placement-1"',
+        ),
+      ),
     ).toBe(true);
-    expect(content.some((item) => item.text?.startsWith("FINAL RENDER"))).toBe(
-      true,
-    );
   });
+  it.each([undefined, reviewPolicy.version])(
+    "sends unchanged original images and strict settings (%s)",
+    async (executionPolicy) => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify(envelope(renderPayload()))),
+        );
+      vi.stubGlobal("fetch", fetchMock);
+      expect(
+        (
+          await reviewVisualRender({
+            ...input(),
+            generated: image,
+            executionPolicy,
+          })
+        ).accepted,
+      ).toBe(true);
+      const body = JSON.parse(fetchMock.mock.calls[0]![1].body);
+      expect(body).toMatchObject({
+        model: "gpt-6-astra",
+        store: false,
+        service_tier: "default",
+        reasoning: { effort: "high" },
+        text: { format: { strict: true, type: "json_schema" } },
+      });
+      expect(body.temperature).toBeUndefined();
+      expect(body.max_output_tokens).toBe(13_000);
+      expect(
+        body.input[1].content.filter(
+          (item: { type: string }) => item.type === "input_image",
+        ),
+      ).toEqual(
+        Array.from({ length: 4 }, () => ({
+          type: "input_image",
+          detail: "original",
+          image_url: "data:image/png;base64,AQID",
+        })),
+      );
+      const content = body.input[1].content as Array<{
+        type: string;
+        text?: string;
+      }>;
+      expect(
+        content.filter((item) => item.type === "input_image"),
+      ).toHaveLength(4);
+      expect(
+        content.some((item) => item.text?.startsWith("EXPECTED COMPOSITION")),
+      ).toBe(true);
+      expect(
+        content.some((item) => item.text?.startsWith("FINAL RENDER")),
+      ).toBe(true);
+    },
+  );
 
   it("does not require a generated image for preflight", async () => {
     const fetchMock = vi
@@ -485,5 +760,153 @@ describe("bounded Responses API transport", () => {
         incomplete_details: { reason: "max_output_tokens" },
       }),
     ).toThrow();
+  });
+});
+
+describe("spatial review execution limits", () => {
+  function spatialInput() {
+    return {
+      ...input(),
+      generated: image,
+      deadlineMs: Date.now() + 180_000,
+      executionPolicy: reviewPolicy.version,
+    };
+  }
+  it("allows a 60-second response with the same acceptance gates", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+      const controller = new AbortController();
+      setTimeout(
+        () => controller.abort(new DOMException("Timed out", "TimeoutError")),
+        ms,
+      );
+      return controller.signal;
+    });
+    const fetchMock = vi.fn(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((resolve, reject) => {
+          init.signal!.addEventListener("abort", () =>
+            reject(init.signal!.reason),
+          );
+          setTimeout(
+            () =>
+              resolve(new Response(JSON.stringify(envelope(renderPayload())))),
+            60_000,
+          );
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const result = expect(
+      reviewVisualRender(spatialInput()),
+    ).resolves.toMatchObject({ accepted: true });
+    await vi.advanceTimersByTimeAsync(60_000);
+    await result;
+    expect(AbortSignal.timeout).toHaveBeenCalledWith(90_000);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+  it("caps a review by the job deadline and refuses a budget below 30 seconds", async () => {
+    vi.useFakeTimers();
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    const fetchMock = vi
+      .fn()
+      .mockImplementation(
+        async () => new Response(JSON.stringify(envelope(renderPayload()))),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    await reviewVisualRender({
+      ...spatialInput(),
+      deadlineMs: Date.now() + 40_000,
+    });
+    expect(timeout).toHaveBeenCalledWith(39_000);
+    await expect(
+      reviewVisualRender({
+        ...spatialInput(),
+        deadlineMs: Date.now() + 30_999,
+      }),
+    ).rejects.toMatchObject({
+      code: "deadline",
+      retryable: false,
+      providerCalled: false,
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+  it("rechecks the deadline after encoding original images", async () => {
+    vi.useFakeTimers();
+    const stringify = JSON.stringify;
+    vi.spyOn(JSON, "stringify").mockImplementationOnce((value) => {
+      vi.setSystemTime(Date.now() + 31_000);
+      return stringify(value);
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(
+      reviewVisualRender({
+        ...spatialInput(),
+        deadlineMs: Date.now() + 60_000,
+      }),
+    ).rejects.toMatchObject({ code: "deadline", providerCalled: false });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it.each(["headers", "body"])(
+    "refuses a late successful response at the %s phase",
+    async (phase) => {
+      vi.useFakeTimers();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => {
+          if (phase === "headers") vi.setSystemTime(Date.now() + 90_000);
+          return {
+            ok: true,
+            json: async () => {
+              if (phase === "body") vi.setSystemTime(Date.now() + 90_000);
+              return envelope(renderPayload());
+            },
+          };
+        }),
+      );
+      await expect(reviewVisualRender(spatialInput())).rejects.toMatchObject({
+        code: "timeout",
+        retryable: true,
+        providerCalled: true,
+      });
+    },
+  );
+  it("aborts an unresponsive provider at 90 seconds without a local retry", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+      const controller = new AbortController();
+      setTimeout(
+        () => controller.abort(new DOMException("Timed out", "TimeoutError")),
+        ms,
+      );
+      return controller.signal;
+    });
+    const fetchMock = vi.fn(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal!.addEventListener("abort", () =>
+            reject(init.signal!.reason),
+          );
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const result = expect(
+      reviewVisualRender(spatialInput()),
+    ).rejects.toMatchObject({
+      code: "timeout",
+      retryable: true,
+      providerCalled: true,
+    });
+    await vi.advanceTimersByTimeAsync(90_000);
+    await result;
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+  it("treats a malformed JSON response as a terminal review failure", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("not json")));
+    await expect(reviewVisualRender(spatialInput())).rejects.toMatchObject({
+      code: "invalid_review",
+      retryable: false,
+      providerCalled: true,
+    });
   });
 });

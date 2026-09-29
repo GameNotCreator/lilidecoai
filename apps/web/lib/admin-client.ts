@@ -13,7 +13,7 @@ export interface AdminProductVariant {
 export interface AdminProductView {
   id: string;
   assetId: string;
-  type: "front" | "three_quarter" | "side" | "back" | "detail";
+  type: "front" | "three_quarter" | "side" | "back" | "detail" | "top";
   widthPx: number;
   heightPx: number;
   validationStatus: string;
@@ -21,6 +21,22 @@ export interface AdminProductView {
 }
 
 export interface AdminProduct {
+  preparation?: {
+    status:
+      | "missing-photo"
+      | "not-prepared"
+      | "stale"
+      | "preparing"
+      | "ready"
+      | "failed";
+    detail: string;
+    preparedAt: string | null;
+  };
+  planarTexture?: import("@lili/types").PlanarTexture | null;
+  sourceAssetId?: string | null;
+  spatialMetadata?: import("zod").infer<
+    typeof import("@lili/types").spatialProductMetadataSchema
+  >;
   id: string;
   name: string;
   description: string;
@@ -32,6 +48,7 @@ export interface AdminProduct {
   material: string;
   placementType: string;
   generationInstructions: string;
+  visualizationBlockedReason?: string | null;
   buyUrl: string | null;
   brand: string;
   collection: string;
@@ -113,6 +130,9 @@ export async function adminApi<T>(
     },
   });
   if (response.status === 401 && typeof window !== "undefined") {
+    // Session expiry must discard the mounted admin state and client router cache.
+    // This shared fetch helper deliberately performs a full authentication reload.
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
     window.location.href = `/admin/login?next=${encodeURIComponent(
       window.location.pathname,
     )}`;
@@ -156,6 +176,7 @@ export const statusLabels: Record<string, string> = {
 };
 
 export const viewLabels: Record<string, string> = {
+  top: "Dessus",
   front: "Face",
   three_quarter: "Trois-quarts",
   side: "Côté",

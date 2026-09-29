@@ -44,14 +44,14 @@ vi.mock("../lib/server/credits", () => ({
 vi.mock("../lib/server/scale-estimation", () => ({
   SCALE_ESTIMATION_VERSION: "scale-test",
   markPoints: async (buffer: Buffer) => buffer,
-  getOrEstimateSceneScale: async () => ({
+  getOrEstimateSceneScale: vi.fn(async () => ({
     spans: [0, 1, 2].map(() => ({
       pixelsPerCm: 2.5,
       scaleSource: "vision",
       confidence: "high",
     })),
     lighting: null,
-  }),
+  })),
 }));
 vi.mock("../lib/server/ai", () => ({
   selectEditingProvider: () => ({
@@ -62,6 +62,7 @@ vi.mock("../lib/server/ai", () => ({
   inspectImagesWithGoogle: vi.fn(),
 }));
 import { createRender } from "../lib/server/rendering";
+import { getOrEstimateSceneScale } from "../lib/server/scale-estimation";
 import { stopRender } from "../lib/server/render-lifecycle";
 
 const db = {} as Db;
@@ -354,7 +355,103 @@ beforeEach(async () => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
+describe("restricted spatial admission", () => {
+  it("does not admit unprofiled v11 products when only solid-base v12 is enabled", async () => {
+    Object.assign(mocks.config, { spatialAdmissionMode: "solid-base-only", spatialOrganizationIds: ["org"] });
+    try {
+      await expect(createRender(db, "org", { engine: "spatial", workflow: "standard", placement: request.placement,
+        placementPoint: { x: 0.5, y: 0.8 }, idempotencyKey: crypto.randomUUID() })).rejects.toThrow(/uniquement les paniers/);
+      expect(mocks.reserve).not.toHaveBeenCalled();
+      expect(mocks.edit).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      delete (mocks.config as Record<string, unknown>).spatialAdmissionMode;
+      delete (mocks.config as Record<string, unknown>).spatialOrganizationIds;
+    }
+  });
+  it("rejects an invalid matte service before credit reservation or any provider", async () => {
+    Object.assign(mocks.config, { spatialAdmissionMode: "solid-base-only", spatialOrganizationIds: ["org"], mattingUrl: "http://untrusted.example", mattingToken: "test", mattingTimeoutMs: 60000 });
+    await products.updateOne({ id: "p0" }, { $set: { spatialMetadata: { measurementConvention: "outside", dimensionSource: "catalog", supports: ["table"], characteristicParts: [], contactProfile: "solid-base", volumeFamily: "vase" } } });
+    try {
+      await expect(createRender(db, "org", { engine: "spatial", workflow: "standard", placement: request.placement,
+        placementPoint: { x: 0.5, y: 0.8 }, idempotencyKey: crypto.randomUUID() })).rejects.toThrow(/configuration du service/);
+      expect(mocks.reserve).not.toHaveBeenCalled();
+      expect(mocks.edit).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      for (const key of ["spatialAdmissionMode", "spatialOrganizationIds", "mattingUrl", "mattingToken", "mattingTimeoutMs"])
+        delete (mocks.config as Record<string, unknown>)[key];
+    }
+  });
+});
+
 describe("simple render orchestration with offline providers", () => {
+  it("loads the room and product inputs concurrently and reads a repeated asset once", async () => {
+    request.simplePlacements = request.simplePlacements!.map((item) => ({
+      ...item,
+      productId: "p0",
+    }));
+    const read = mocks.read.getMockImplementation()!;
+    mocks.read.mockClear();
+    let releaseRoom!: () => void;
+    const roomReady = new Promise<void>((resolve) => {
+      releaseRoom = resolve;
+    });
+    let cutoutStarted!: () => void;
+    const cutoutReady = new Promise<void>((resolve) => {
+      cutoutStarted = resolve;
+    });
+    mocks.read.mockImplementation(async (...args) => {
+      if (args[1] === "room") await roomReady;
+      if (args[1] === "cutout-0") cutoutStarted();
+      return read(...args);
+    });
+    const pending = createRender(db, "org", request);
+    try {
+      // Starting the cutout read must not depend on the room response.
+      await cutoutReady;
+      expect(mocks.read.mock.calls.map((args) => args[1])).toEqual(
+        expect.arrayContaining(["room", "original-0", "cutout-0"]),
+      );
+    } finally {
+      releaseRoom();
+    }
+    expect((await pending).status).toBe("succeeded");
+    for (const id of ["room", "original-0", "cutout-0"])
+      expect(
+        mocks.read.mock.calls.filter((args) => args[1] === id),
+      ).toHaveLength(1);
+    expect(reviewCalls).toBe(1);
+    expect(preflightRequest).not.toBeNull();
+  });
+
+  it("uses the first available original view without fetching unused views", async () => {
+    products.rows[0]!.views = [
+      { type: "back", assetId: "unused-back", validationStatus: "valid" },
+      { type: "front", assetId: "missing-front", validationStatus: "valid" },
+      { type: "side", assetId: "original-side", validationStatus: "valid" },
+    ];
+    const read = mocks.read.getMockImplementation()!;
+    const expectedOriginal = await read(db, "original-side");
+    mocks.read
+      .mockClear()
+      .mockImplementation(async (...args) =>
+        args[1] === "missing-front" ? null : read(...args),
+      );
+    expect((await createRender(db, "org", request)).status).toBe("succeeded");
+    const reads = mocks.read.mock.calls.map((args) => args[1]);
+    expect(reads).toContain("missing-front");
+    expect(reads).toContain("original-side");
+    expect(reads).not.toContain("unused-back");
+    expect(reads).not.toContain("original-0");
+    const originals = preflightRequest!.input[1]!.content.filter(
+      (item) => item.type === "input_image",
+    ).slice(2);
+    expect(originals[0]!.image_url).toContain(
+      expectedOriginal.buffer.toString("base64"),
+    );
+  });
+
   it("reviews all three originals before delivery and persists the normalized replay contract", async () => {
     const result = await createRender(db, "org", request, "guest:visitor-1");
     expect(result).toMatchObject({
@@ -436,6 +533,25 @@ describe("simple render orchestration with offline providers", () => {
     expect(renders.rows[0]!.status).toBe("cancelled");
     expect(mocks.capture).not.toHaveBeenCalled();
     expect(reviewRequest).toBeNull();
+  });
+  it("does not blame the photograph when automatic scale analysis times out", async () => {
+    vi.mocked(getOrEstimateSceneScale).mockResolvedValueOnce({
+      spans: [],
+      lighting: null,
+      cached: false,
+      call: {
+        outcome: "unknown",
+        latencyMs: 60000,
+        estimatedCostUsd: 0.03,
+        model: "test-vision",
+      },
+    });
+    await expect(createRender(db, "org", request)).rejects.toThrow(
+      /Votre photo n’est pas en cause/,
+    );
+    expect(mocks.edit).not.toHaveBeenCalled();
+    expect(mocks.capture).not.toHaveBeenCalled();
+    expect(mocks.release).toHaveBeenCalled();
   });
   it("rejects preflight defects before any image edit or credit capture", async () => {
     preflightRejected = true;

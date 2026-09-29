@@ -90,13 +90,18 @@ export class OpenAIImageProvider
               role: "product_front" as const,
             },
           ];
-    for (const [index, reference] of identities.entries()) {
+    const orderedReferences = [
+      identities[0]!,
+      ...references.filter((reference) => reference.role === "spatial_guide"),
+      ...identities.slice(1),
+    ];
+    for (const [index, reference] of orderedReferences.entries()) {
       body.append(
         "image[]",
         new Blob([toArrayBuffer(reference.data)], {
           type: reference.mimeType,
         }),
-        `product-${index + 1}.${extension(reference.mimeType)}`,
+        `${reference.role === "spatial_guide" ? "spatial-guide" : `product-${index + 1}`}.${extension(reference.mimeType)}`,
       );
     }
     if (mask) {

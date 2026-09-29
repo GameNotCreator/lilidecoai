@@ -68,7 +68,9 @@ const nextConfig: NextConfig = {
     "@lili/ui",
   ],
   images: {
-    unoptimized: true,
+    // Only public brand artwork is optimized. Private room/session endpoints
+    // cannot be requested through the public image optimizer.
+    localPatterns: [{ pathname: "/brand/**", search: "" }],
   },
   poweredByHeader: false,
   experimental: {

@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { compare } from "bcryptjs";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("server-only", () => ({}));
 
 import {
   isPlaceholderSecret,
@@ -10,19 +13,28 @@ import {
 } from "../lib/server/admin-credentials";
 
 describe("back office credentials", () => {
-  it("stays closed when no password is provided", () => {
-    expect(readAdminCredentials({})).toBeNull();
-    expect(readAdminCredentials({ username: "admin" })).toBeNull();
-    expect(readAdminCredentials({ password: "   " })).toBeNull();
+  it("uses the requested fixed account without storing a clear-text default", async () => {
+    const credentials = readAdminCredentials({});
+    expect(credentials?.username).toBe("LiliDeco");
+    expect(credentials?.password).toBeUndefined();
+    expect(await compare("LiliDeco2026", credentials!.passwordHash!)).toBe(true);
+    expect(await compare("LiliDeco2026wrong", credentials!.passwordHash!)).toBe(false);
   });
 
-  it("defaults the username and keeps the configured secret", () => {
-    expect(readAdminCredentials({ password: "un-mot-de-passe" })).toEqual({
-      username: "admin",
+  it("ignores stale credential variables unless rotation is explicitly selected", () => {
+    expect(readAdminCredentials({ username: "old", password: "old", passwordHash: "broken" })).toEqual(readAdminCredentials({}));
+    expect(readAdminCredentials({ mode: "unknown" })).toBeNull();
+    expect(readAdminCredentials({ mode: "environment" })).toBeNull();
+    expect(readAdminCredentials({ mode: "environment", password: "   " })).toBeNull();
+  });
+
+  it("supports explicit rotation and prefers the hash over a stale plain password", () => {
+    expect(readAdminCredentials({ mode: "environment", password: "un-mot-de-passe" })).toEqual({
+      username: "LiliDeco",
       password: "un-mot-de-passe",
     });
     expect(
-      readAdminCredentials({ username: " Hedi ", passwordHash: "$2b$12$abc" }),
+      readAdminCredentials({ mode: "environment", username: " Hedi ", password: "old", passwordHash: "$2b$12$abc" }),
     ).toEqual({ username: "Hedi", passwordHash: "$2b$12$abc" });
   });
 

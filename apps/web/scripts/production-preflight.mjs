@@ -2,84 +2,86 @@ import { readFileSync } from "node:fs";
 import { parseEnv } from "node:util";
 import { MongoClient } from "mongodb";
 import { v2 as cloudinary } from "cloudinary";
+import {
+  evaluateProductionConfig,
+  evaluateProductionIndexes,
+  evaluateProductionDrainage,
+  PRODUCTION_REQUIRED_INDEXES,
+  PRODUCTION_DURABLE_ENGINE,
+} from "./production-preflight-policy.mjs";
 
 // Read-only checks. Never print connection strings or provider credentials.
-const filename = process.argv[2];
-if (!filename)
-  throw new Error("Passer le fichier d'environnement de production.");
-const env =
-  filename === "--runtime"
-    ? process.env
-    : parseEnv(readFileSync(filename, "utf8"));
+let env;
+try {
+  const filename = process.argv[2];
+  if (!filename || process.argv.length !== 3) throw new Error();
+  env =
+    filename === "--runtime"
+      ? process.env
+      : parseEnv(readFileSync(filename, "utf8"));
+} catch {
+  console.error(
+    "Passer un unique fichier d’environnement lisible ou --runtime. Son contenu n’est jamais journalisé.",
+  );
+  process.exit(1);
+}
 const failures = [];
 const check = (name, passed) => {
   console.log(`${passed ? "OK" : "FAIL"} ${name}`);
   if (!passed) failures.push(name);
 };
-for (const name of [
-  "MONGODB_URI",
-  "MONGODB_DB",
-  "OPENAI_API_KEY",
-  "ADMIN_USERNAME",
-  "ADMIN_PASSWORD_HASH",
-])
-  check(`${name} configuré`, Boolean(env[name]?.trim()));
-check(
-  "secret de session : 32 caractères minimum",
-  env.APP_SESSION_SECRET?.length >= 32,
+const config = evaluateProductionConfig(env);
+for (const item of config.checks) check(item.name, item.passed);
+console.log(
+  JSON.stringify({
+    policy: config.policy,
+    revision: config.revision,
+    spatialQualification: "not-qualified",
+    spatialAdmissionsRequired: "disabled",
+    scope: config.scope,
+  }),
 );
-check(
-  "secret cron : 32 caractères minimum, distinct de la session",
-  Boolean(
-    env.CRON_SECRET?.length >= 32 && env.APP_SESSION_SECRET !== env.CRON_SECRET,
-  ),
-);
-check("authentification production", env.DEMO_MODE === "false");
-check(
-  "IA réelle activée",
-  env.AI_MOCK_MODE === "false" && env.OPENAI_IMAGE_ENABLED === "true",
-);
+// Reject unsafe release configuration before any database or provider access.
+if (!config.passed) process.exit(1);
 const imageModel = env.OPENAI_MODEL || "gpt-image-2.5-sunburst";
-check("modèle image GPT configuré", /^gpt-image-/.test(imageModel));
-check("API servie par le même site", !env.NEXT_PUBLIC_API_URL);
-
-for (const model of [imageModel, env.OPENAI_VISION_MODEL || "gpt-6-astra"]) {
+for (const [label, model] of [
+  ["image", imageModel],
+  ["vision", env.OPENAI_VISION_MODEL || "gpt-6-astra"],
+]) {
   try {
     const response = await fetch(
-      `${env.OPENAI_BASE_URL ?? "https://api.openai.com/v1"}/models/${encodeURIComponent(model)}`,
+      `${(env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "")}/models/${encodeURIComponent(model)}`,
       {
+        method: "GET",
+        redirect: "error",
         headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}` },
         signal: AbortSignal.timeout(15000),
       },
     );
-    check(`accès au modèle ${model} (HTTP ${response.status})`, response.ok);
+    check(
+      `accès au modèle ${label} par GET (HTTP ${response.status})`,
+      response.ok,
+    );
+    await response.body?.cancel().catch(() => {});
   } catch {
-    check(`accès au modèle ${model}`, false);
+    check(`accès au modèle ${label} par GET`, false);
   }
 }
 
-if (failures.length) process.exit(1);
-const client = new MongoClient(env.MONGODB_URI, {
-  serverSelectionTimeoutMS: 10000,
-});
+let client;
 try {
+  // Do not import database(): it creates indexes and drops a legacy TTL index.
+  client = new MongoClient(env.MONGODB_URI, {
+    serverSelectionTimeoutMS: 10000,
+  });
   await client.connect();
   const db = client.db(env.MONGODB_DB);
   check("MongoDB joignable", (await db.command({ ping: 1 })).ok === 1);
-  if (env.RENDER_EXECUTION_MODE === "durable") {
-    const topology = await db.command({ hello: 1 });
-    check(
-      "transactions MongoDB disponibles",
-      Boolean(topology.setName || topology.msg === "isdbgrid"),
-    );
-    check(
-      "révision du worker figée",
-      Boolean(
-        env.VERCEL_GIT_COMMIT_SHA ||
-        (env.RENDER_WORKER_REVISION && env.RENDER_WORKER_REVISION !== "local"),
-      ),
-    );
-  }
+  const topology = await db.command({ hello: 1 });
+  check(
+    "transactions MongoDB disponibles",
+    Boolean(topology.setName || topology.msg === "isdbgrid"),
+  );
   const legacyProducts = await db.collection("products").countDocuments({
     assetId: { $type: "string" },
     views: { $exists: false },
@@ -114,13 +116,95 @@ try {
             "cutout.cutoutVersion": { $exists: false },
           }),
       },
-      executionMode: env.RENDER_EXECUTION_MODE || "web",
+      executionMode: "durable",
     }),
+  );
+  const indexes = {};
+  for (const collection of new Set(
+    PRODUCTION_REQUIRED_INDEXES.map((item) => item.collection),
+  )) {
+    try {
+      indexes[collection] = await db
+        .collection(collection)
+        .listIndexes()
+        .toArray();
+    } catch (error) {
+      if (error?.code === 26) indexes[collection] = [];
+      else throw error;
+    }
+  }
+  const indexPolicy = evaluateProductionIndexes(indexes);
+  for (const item of indexPolicy.checks) check(item.name, item.passed);
+  console.log(
+    JSON.stringify({
+      indexes: {
+        inspectedCollections: Object.keys(indexes).length,
+        required: PRODUCTION_REQUIRED_INDEXES.length,
+        missingOrInvalid: indexPolicy.checks
+          .filter((item) => !item.passed)
+          .map((item) => item.id),
+        writesPerformed: 0,
+      },
+    }),
+  );
+  const active = { status: { $in: ["queued", "processing"] } };
+  const count = (filter) =>
+    db.collection("renders").countDocuments(filter, { maxTimeMS: 15000 });
+  const [
+    queued,
+    processing,
+    durableActive,
+    legacyOrUnknownExecutionActive,
+    activeWithoutExecution,
+    activeSpatial,
+    activeExpired,
+    activeProviderUnknown,
+    fingerprintGroups,
+  ] = await Promise.all([
+    count({ status: "queued" }),
+    count({ status: "processing" }),
+    count({ ...active, "execution.version": PRODUCTION_DURABLE_ENGINE }),
+    count({
+      ...active,
+      execution: { $exists: true },
+      "execution.version": { $ne: PRODUCTION_DURABLE_ENGINE },
+    }),
+    count({ ...active, execution: { $exists: false } }),
+    count({ ...active, engine: "spatial" }),
+    count({ ...active, "execution.deadlineAt": { $lte: new Date() } }),
+    count({ ...active, "execution.errorCode": "provider_unknown" }),
+    db
+      .collection("renders")
+      .aggregate(
+        [
+          { $match: active },
+          { $group: { _id: "$execution.configFingerprint" } },
+          { $count: "variants" },
+        ],
+        { maxTimeMS: 15000 },
+      )
+      .toArray(),
+  ]);
+  const drainage = {
+    queued,
+    processing,
+    durableActive,
+    legacyOrUnknownExecutionActive,
+    activeWithoutExecution,
+    activeSpatial,
+    activeExpired,
+    activeProviderUnknown,
+    activeFingerprintVariants: fingerprintGroups[0]?.variants ?? 0,
+  };
+  const drainPolicy = evaluateProductionDrainage(drainage);
+  for (const item of drainPolicy.checks) check(item.name, item.passed);
+  console.log(
+    JSON.stringify({ drainage, scope: drainPolicy.scope, writesPerformed: 0 }),
   );
 } catch {
   check("MongoDB joignable et inspectable", false);
 } finally {
-  await client.close();
+  await client?.close().catch(() => {});
 }
 try {
   if (env.CLOUDINARY_URL) {

@@ -5,7 +5,8 @@ import type { Db } from "mongodb";
 import { serverConfig } from "./config";
 import { collections } from "./mongodb";
 import type { RenderDocument } from "./types";
-import { durableStep } from "./durable-steps";
+import { durableStep, type DurableAnalysisRetryPolicy } from "./durable-steps";
+import { estimateVisionUsage, visionObservation } from "./ai/openai-vision-cost";
 
 /**
  * One journal row per paid provider call, and a spending ceiling per render —
@@ -105,9 +106,8 @@ export class RenderBudgetError extends Error {
 }
 
 /**
- * Journal one call and add it to the render's running total. Never throws:
- * losing a measurement must not break the render it measures, and a failure
- * here is reported to the logs instead.
+ * Persist the summary and journal independently. One surviving record keeps
+ * the budget conservative; losing both prevents any continuation of the job.
  */
 export async function recordProviderUsage(
   db: Db,
@@ -115,9 +115,39 @@ export async function recordProviderUsage(
   input: ProviderUsageInput,
 ): Promise<void> {
   const c = collections(db);
+  let totalsSaved = false;
+  const usageId = crypto.randomUUID();
+  // The budget counter and diagnostic journal are independent writes. A failed
+  // journal insert must not discard a paid call from the spending ceiling.
+  try {
+    const updated = await c.renders.updateOne(
+      { id: render.id, organizationId: render.organizationId },
+      {
+        $push: { usageCallIds: usageId },
+        $inc: {
+          "usageTotals.calls": 1,
+          "usageTotals.estimatedCostUsd": input.estimatedCostUsd,
+          "usageTotals.unknownOutcomeCalls":
+            input.outcome === "unknown" ? 1 : 0,
+          ...(input.step.startsWith("spatial-")
+            ? {
+                estimatedCostUsd: input.estimatedCostUsd,
+                ...(input.step === "spatial-generation"
+                  ? { attemptCount: 1 }
+                  : {}),
+              }
+            : {}),
+        },
+      },
+    );
+    totalsSaved = updated.matchedCount === 1;
+  } catch (reason) {
+    console.error("Provider usage totals failed", reason);
+  }
   try {
     await c.renderAttempts.insertOne({
-      id: crypto.randomUUID(),
+      id: usageId,
+      usageAccountingVersion: 2,
       organizationId: render.organizationId,
       renderId: render.id,
       provider: input.provider,
@@ -143,19 +173,14 @@ export async function recordProviderUsage(
       estimatedCostUsd: input.estimatedCostUsd,
       createdAt: new Date(),
     });
-    await c.renders.updateOne(
-      { id: render.id },
-      {
-        $inc: {
-          "usageTotals.calls": 1,
-          "usageTotals.estimatedCostUsd": input.estimatedCostUsd,
-          "usageTotals.unknownOutcomeCalls":
-            input.outcome === "unknown" ? 1 : 0,
-        },
-      },
-    );
   } catch (reason) {
     console.error("Provider usage journal failed", reason);
+    if (!totalsSaved) {
+      const failure = new Error(
+        "Suivi des coûts indisponible. Le rendu est arrêté avant tout nouvel appel payant.",
+      );
+      throw Object.assign(failure, { status: 402, retryable: false });
+    }
   }
 }
 
@@ -163,14 +188,53 @@ export async function renderUsageTotals(
   db: Db,
   renderId: string,
 ): Promise<RenderUsageTotals> {
-  const render = await collections(db).renders.findOne(
+  const c = collections(db);
+  const render = await c.renders.findOne(
     { id: renderId },
-    { projection: { usageTotals: 1 } },
+    { projection: { usageTotals: 1, usageCallIds: 1 } },
   );
+  if (!render) throw new Error("Rendu absent du suivi des coûts.");
+  const entries = await c.renderAttempts
+    .find({
+      renderId,
+      usageOutcome: { $in: ["succeeded", "failed", "unknown"] },
+    })
+    .toArray();
+  let journalCost = 0,
+    uncountedCost = 0,
+    uncountedCalls = 0,
+    uncountedUnknown = 0;
+  const counted = new Set(render.usageCallIds ?? []);
+  let journalUnknown = 0;
+  for (const entry of entries) {
+    if (!Number.isFinite(entry.estimatedCostUsd) || entry.estimatedCostUsd < 0)
+      throw new Error("Journal des coûts invalide.");
+    if (entry.usageAccountingVersion === 2 && !counted.has(entry.id)) {
+      uncountedCost += entry.estimatedCostUsd;
+      uncountedCalls++;
+      if (entry.usageOutcome === "unknown") uncountedUnknown++;
+    } else {
+      journalCost += entry.estimatedCostUsd;
+      if (entry.usageOutcome === "unknown") journalUnknown++;
+    }
+  }
+  const saved = render.usageTotals;
+  if (
+    saved &&
+    Object.values(saved).some((value) => !Number.isFinite(value) || value < 0)
+  )
+    throw new Error("Compteur des coûts invalide.");
+  // Never add the two views of the same calls. A partial write cannot lower
+  // the ceiling's input; a missing database read fails before the next call.
   return {
-    calls: render?.usageTotals?.calls ?? 0,
-    estimatedCostUsd: render?.usageTotals?.estimatedCostUsd ?? 0,
-    unknownOutcomeCalls: render?.usageTotals?.unknownOutcomeCalls ?? 0,
+    calls:
+      Math.max(saved?.calls ?? 0, entries.length - uncountedCalls) +
+      uncountedCalls,
+    estimatedCostUsd:
+      Math.max(saved?.estimatedCostUsd ?? 0, journalCost) + uncountedCost,
+    unknownOutcomeCalls:
+      Math.max(saved?.unknownOutcomeCalls ?? 0, journalUnknown) +
+      uncountedUnknown,
   };
 }
 
@@ -183,6 +247,8 @@ export async function assertRenderBudget(
   renderId: string,
   nextStepCostUsd: number,
 ): Promise<void> {
+  if (!Number.isFinite(nextStepCostUsd) || nextStepCostUsd < 0)
+    throw new Error("Réserve de coût invalide.");
   const budget = renderBudgetUsd();
   const totals = await renderUsageTotals(db, renderId);
   if (totals.estimatedCostUsd + nextStepCostUsd > budget) {
@@ -206,28 +272,31 @@ export async function measureProviderCall<T>(
     "outcome" | "latencyMs" | "error" | "errorCode"
   >,
   call: () => Promise<T>,
+  retryPolicy?: DurableAnalysisRetryPolicy,
 ): Promise<T> {
-  return durableStep(db, `${descriptor.step}-${descriptor.attemptNumber ?? 1}`,
+  return durableStep(
+    db,
+    `${descriptor.step}-${descriptor.attemptNumber ?? 1}`,
     descriptor.step === "removing_target" ? "image" : "analysis",
-    () => measureUncachedProviderCall(db, render, descriptor, call));
+    () => measureUncachedProviderCall(db, render, descriptor, call),
+    retryPolicy,
+  );
 }
 
 async function measureUncachedProviderCall<T>(
   db: Db,
   render: Pick<RenderDocument, "id" | "organizationId">,
-  descriptor: Omit<ProviderUsageInput, "outcome" | "latencyMs" | "error" | "errorCode">,
+  descriptor: Omit<
+    ProviderUsageInput,
+    "outcome" | "latencyMs" | "error" | "errorCode"
+  >,
   call: () => Promise<T>,
 ): Promise<T> {
   await assertRenderBudget(db, render.id, descriptor.estimatedCostUsd);
   const startedAt = Date.now();
+  let result: T;
   try {
-    const result = await call();
-    await recordProviderUsage(db, render, {
-      ...descriptor,
-      outcome: "succeeded",
-      latencyMs: Date.now() - startedAt,
-    });
-    return result;
+    result = await call();
   } catch (reason) {
     // A refusal the provider answered is known and unbilled. Anything else may
     // have reached the model, so it is `unknown` and its cost counts.
@@ -237,13 +306,18 @@ async function measureUncachedProviderCall<T>(
       reason !== null &&
       "providerCalled" in reason &&
       reason.providerCalled === false;
+    const observation = visionObservation(reason);
+    const priced = observation ? priceObservedUsage(descriptor, reason) : {};
     await recordProviderUsage(db, render, {
       ...descriptor,
-      ...(refused || notCalled ? { estimatedCostUsd: 0 } : {}),
-      outcome: refused || notCalled ? "failed" : "unknown",
+      ...priced,
+      ...(!observation && (refused || notCalled) ? { estimatedCostUsd: 0 } : {}),
+      outcome: observation || refused || notCalled ? "failed" : "unknown",
       latencyMs: Date.now() - startedAt,
       error: reason instanceof Error ? reason.message : "Appel indisponible",
-      errorCode: notCalled
+      errorCode: observation
+        ? "provider_response_rejected"
+        : notCalled
         ? "provider_not_called"
         : refused
           ? "provider_refused"
@@ -251,4 +325,41 @@ async function measureUncachedProviderCall<T>(
     });
     throw reason;
   }
+  // A persistence failure is not another provider call. Do not journal it a
+  // second time as an unknown request or discard the successful call's cost.
+  await recordProviderUsage(db, render, {
+    ...descriptor,
+    ...priceObservedUsage(descriptor, result),
+    outcome: "succeeded",
+    latencyMs: Date.now() - startedAt,
+  });
+  return result;
+}
+
+function priceObservedUsage(
+  descriptor: Pick<ProviderUsageInput, "provider" | "model" | "estimatedCostUsd" | "usage">,
+  result: unknown,
+): Partial<ProviderUsageInput> {
+  if (descriptor.provider !== "openai") return {};
+  let observation = visionObservation(result);
+  // Compatibility with existing inspectors returning an explicit usage envelope.
+  if (!observation && result && typeof result === "object" && "usage" in result) {
+    observation = {
+      usage: result.usage,
+      requestedModel: descriptor.model,
+      requestedServiceTier: serverConfig.openaiServiceTier,
+      baseUrl: serverConfig.openaiBaseUrl,
+    };
+  }
+  if (!observation) return {};
+  const estimate = estimateVisionUsage(observation, descriptor.estimatedCostUsd);
+  return {
+    estimatedCostUsd: estimate.estimatedCostUsd,
+    ...(observation.requestId ? { requestId: observation.requestId } : {}),
+    usage: {
+      ...descriptor.usage,
+      ...(observation.usage !== undefined ? { providerUsage: observation.usage } : {}),
+      costEstimate: estimate.provenance,
+    },
+  };
 }

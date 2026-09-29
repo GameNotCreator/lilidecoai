@@ -38,6 +38,12 @@ import type { Render } from "@lili/types";
 
 import { api, establishGuestEditorSession, getRender } from "@/lib/api";
 import { prepareImageForUpload } from "@/lib/client-image";
+import {
+  startRenderTracking,
+  type RenderTrackingIssue,
+} from "@/lib/render-tracking";
+import { renderTerminalAnnouncement } from "@/lib/render-progress";
+import { RenderProgressPanel } from "./render-progress-panel";
 
 type DimensionMode = "height_length" | "length_width";
 type ObjectDimensionPair = SimpleDimensionPair;
@@ -69,6 +75,7 @@ interface DemoObject {
   file: File | null;
   preview: string;
   kind: SimplePlacementKind;
+  isMirror: boolean;
   dimensionMode: DimensionMode;
   heightValue: string;
   lengthValue: string;
@@ -177,10 +184,19 @@ export function SimpleDemoStudio() {
   const [points, setPoints] = useState<Point[]>([]);
   const [scale, setScale] = useState<SceneScaleState | null>(null);
   const [render, setRender] = useState<Render | null>(null);
+  const [trackingIssue, setTrackingIssue] =
+    useState<RenderTrackingIssue | null>(null);
   const [regenFactors, setRegenFactors] = useState<Record<number, number>>({});
   const nextObjectId = useRef(2);
   const previewUrls = useRef(new Set<string>());
   const frameRef = useRef<HTMLButtonElement | null>(null);
+  const refreshTracking = useRef<(() => void) | null>(null);
+  const progressPanelRef = useRef<HTMLDivElement | null>(null);
+  const resultHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const focusResultAfterUpdate = useRef(false);
+  const renderInProgress =
+    render?.status === "processing" || render?.status === "queued";
+  const trackedRenderId = renderInProgress ? render.id : null;
 
   const busy = Boolean(busyLabel && ready);
   const objectsAreValid = objects.every(isObjectReady);
@@ -312,28 +328,44 @@ export function SimpleDemoStudio() {
   }, []);
 
   useEffect(() => {
-    if (!render) return;
-    if (render.status !== "processing" && render.status !== "queued") return;
-    const renderId = render.id;
-    const timer = window.setInterval(() => {
-      void getRender(renderId)
-        .then((next) => {
-          setRender(next);
-          if (next.status !== "processing" && next.status !== "queued") {
-            window.clearInterval(timer);
-          }
-        })
-        .catch((reason: unknown) => {
-          window.clearInterval(timer);
-          setError(
-            reason instanceof Error
-              ? reason.message
-              : "Impossible de suivre la génération.",
-          );
-        });
-    }, 1600);
-    return () => window.clearInterval(timer);
-  }, [render]);
+    if (!trackedRenderId) return;
+    const tracking = startRenderTracking({
+      renderId: trackedRenderId,
+      fetchRender: getRender,
+      onRender: (next) => {
+        if (
+          next.status !== "processing" &&
+          next.status !== "queued" &&
+          progressPanelRef.current?.contains(document.activeElement)
+        ) {
+          focusResultAfterUpdate.current = true;
+        }
+        setRender(next);
+      },
+      onInterrupted: setTrackingIssue,
+    });
+    refreshTracking.current = tracking.refresh;
+    const resume = () => {
+      if (document.visibilityState === "visible") tracking.resume();
+    };
+    window.addEventListener("online", resume);
+    window.addEventListener("focus", resume);
+    document.addEventListener("visibilitychange", resume);
+    return () => {
+      tracking.stop();
+      refreshTracking.current = null;
+      window.removeEventListener("online", resume);
+      window.removeEventListener("focus", resume);
+      document.removeEventListener("visibilitychange", resume);
+    };
+  }, [trackedRenderId]);
+
+  useEffect(() => {
+    if (!renderInProgress && focusResultAfterUpdate.current) {
+      focusResultAfterUpdate.current = false;
+      resultHeadingRef.current?.focus();
+    }
+  }, [renderInProgress]);
 
   // Free scale estimate once every point is placed (debounced, cancellable).
   useEffect(() => {
@@ -511,7 +543,10 @@ export function SimpleDemoStudio() {
         temporary: true,
         name,
         description: "Objet fourni par l’utilisateur pour cette visualisation.",
-        objectType: catalog.objectType,
+        objectType:
+          object.kind === "wall" && object.isMirror
+            ? "mirror"
+            : catalog.objectType,
         widthCm: roundDimension(lengthCm),
         heightCm: roundDimension(heightCm),
         depthCm: roundDimension(depthCm),
@@ -644,6 +679,7 @@ export function SimpleDemoStudio() {
         }),
       });
       setRender(created);
+      setTrackingIssue(null);
       setRegenFactors({});
       setStep(3);
     } catch (reason) {
@@ -725,6 +761,8 @@ export function SimpleDemoStudio() {
     setPoints([]);
     setScale(null);
     setRender(null);
+    setTrackingIssue(null);
+    focusResultAfterUpdate.current = false;
     setRegenFactors({});
     setBusyLabel("");
   }
@@ -925,6 +963,23 @@ export function SimpleDemoStudio() {
                         ))}
                       </div>
 
+                      {object.kind === "wall" && (
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={object.isMirror}
+                            disabled={busy}
+                            onChange={(event) =>
+                              updateObject(object.key, {
+                                isMirror: event.target.checked,
+                                product: null,
+                                noticesAcknowledged: false,
+                              })
+                            }
+                          />
+                          Cet objet est un miroir
+                        </label>
+                      )}
                       <div className="simple-field-label">
                         <Ruler size={19} />
                         <div>
@@ -1043,7 +1098,10 @@ export function SimpleDemoStudio() {
                       </div>
                       {objectReady && notices.length === 0 && (
                         <span className="simple-object-ready">
-                          <Check size={15} /> Objet {index + 1} prêt
+                          {object.product ? <Check size={15} /> : null}
+                          {object.product
+                            ? `Objet ${index + 1} détouré`
+                            : "Informations complètes · détourage à effectuer"}
                         </span>
                       )}
                       {notices.length > 0 && (
@@ -1405,36 +1463,37 @@ export function SimpleDemoStudio() {
 
       {activeStep === 3 && scene && (
         <div className="simple-demo-card simple-result-card">
+          <p
+            className="render-completion-announcement"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            {renderTerminalAnnouncement(render?.status)}
+          </p>
           <div className="simple-demo-title">
             <span>3</span>
             <div>
-              <h2>Votre visualisation</h2>
+              <h2 ref={resultHeadingRef} tabIndex={-1}>
+                Votre visualisation
+              </h2>
               <p>
-                {render?.status === "processing" || render?.status === "queued"
-                  ? "GPT Image 2 intègre vos objets…"
+                {renderInProgress
+                  ? "Suivez la préparation de votre image et comparez le placement dès qu’il est prêt."
                   : "Comparez le lieu original, l’aperçu et le résultat."}
               </p>
             </div>
           </div>
 
-          {(render?.status === "processing" || render?.status === "queued") && (
-            <div className="render-waiting" aria-live="polite">
-              <LoaderCircle className="spin" size={30} />
-              <strong>
-                {render.execution?.retrying
-                  ? "Reprise du traitement"
-                  : render.status === "queued"
-                    ? "Rendu en attente"
-                    : render.pipelineState === "quality_check"
-                      ? "Vérification du rendu"
-                      : "Création du rendu réaliste"}
-              </strong>
-              <span>
-                {render.execution?.retrying
-                  ? "Une étape est temporairement indisponible. Le traitement reprendra automatiquement et votre aperçu reste disponible."
-                  : "Cette étape peut prendre plusieurs minutes."}
-              </span>
-            </div>
+          {renderInProgress && render && (
+            <RenderProgressPanel
+              key={render.id}
+              render={render}
+              sceneUrl={scene.imageUrl}
+              trackingIssue={trackingIssue}
+              panelRef={progressPanelRef}
+              onRefresh={() => refreshTracking.current?.()}
+            />
           )}
 
           {render?.status === "failed" && (
@@ -1443,40 +1502,45 @@ export function SimpleDemoStudio() {
             </div>
           )}
 
-          {render && (render.status !== "failed" || compositeUrl) && (
-            <div
-              className={
-                compositeUrl
-                  ? "simple-result-grid triptych"
-                  : "simple-result-grid"
-              }
-            >
-              <figure>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={scene.imageUrl} alt="Photo avant" />
-                <figcaption>Avant</figcaption>
-              </figure>
-              {compositeUrl && (
+          {render &&
+            !renderInProgress &&
+            (render.status !== "failed" || compositeUrl) && (
+              <div
+                className={
+                  compositeUrl
+                    ? "simple-result-grid triptych"
+                    : "simple-result-grid"
+                }
+              >
                 <figure>
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={compositeUrl} alt="Aperçu déterministe" />
-                  <figcaption>Aperçu déterministe</figcaption>
+                  <img src={scene.imageUrl} alt="Photo avant" />
+                  <figcaption>Avant</figcaption>
                 </figure>
-              )}
-              {render.status === "succeeded" && render.resultUrl && (
-                <figure>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={render.resultUrl} alt="Visualisation après" />
-                  <figcaption>
-                    Après · {render.model ?? "gpt-image-2"}
-                  </figcaption>
-                  {render.qualityDecision?.status === "simulated" && (
-                    <p>Simulation — fidélité visuelle non évaluée.</p>
-                  )}
-                </figure>
-              )}
-            </div>
-          )}
+                {compositeUrl && (
+                  <figure>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={compositeUrl}
+                      alt="Aperçu du placement, avant le rendu réaliste"
+                    />
+                    <figcaption>Aperçu du placement</figcaption>
+                  </figure>
+                )}
+                {render.status === "succeeded" && render.resultUrl && (
+                  <figure>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={render.resultUrl} alt="Visualisation après" />
+                    <figcaption>
+                      Après · {render.model ?? "gpt-image-2"}
+                    </figcaption>
+                    {render.qualityDecision?.status === "simulated" && (
+                      <p>Simulation — fidélité visuelle non évaluée.</p>
+                    )}
+                  </figure>
+                )}
+              </div>
+            )}
 
           {render && compositePlacements.length > 0 && (
             <div className="simple-result-objects">
@@ -1600,6 +1664,7 @@ function createObject(id: number): DemoObject {
     file: null,
     preview: "",
     kind: "standing",
+    isMirror: false,
     dimensionMode: "height_length",
     heightValue: "",
     lengthValue: "",
@@ -1693,6 +1758,11 @@ export function aspectMismatch(
 function objectNotices(object: DemoObject): string[] {
   const notices: string[] = [];
   const cutout = object.product?.cutout;
+  if (cutout?.source === "matting") {
+    notices.push(
+      "Vérifiez le détourage affiché : l’objet doit être complet, sans morceau du fond ni du support. Changez la photo si nécessaire.",
+    );
+  }
   const mismatch = aspectMismatch(
     object.kind,
     objectDimensionPair(object),

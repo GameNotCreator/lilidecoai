@@ -91,7 +91,7 @@ test("MongoDB signup, logout and login keep a signed session", async ({
 test("landing and merchant dashboard expose the core promise", async ({
   page,
 }) => {
-  await page.goto("/");
+  await page.goto("/demo");
   await expect(
     page.getByRole("heading", { name: /Voyez vos objets chez vous/i }),
   ).toBeVisible();
@@ -554,6 +554,64 @@ test("required customer journey reaches a successful mock render", async ({
   await expect(page.getByRole("link", { name: "Acheter" })).toBeVisible();
 });
 
+test("simple demo distinguishes a failed cutout and requires matting review", async ({
+  page,
+}) => {
+  test.setTimeout(90_000);
+  let failPreparation = true;
+  // The mask provider is stubbed here; real Pinterest inference is exercised
+  // separately by check-matting.ts. This test covers the browser state only.
+  await page.route("**/v1/products/*/prepare", async (route) => {
+    if (failPreparation) {
+      failPreparation = false;
+      await route.fulfill({
+        status: 503,
+        json: { detail: "Le détourage avancé est momentanément indisponible." },
+      });
+      return;
+    }
+    const response = await route.fetch();
+    const product = await response.json();
+    await route.fulfill({
+      response,
+      json: {
+        ...product,
+        cutout: { ...product.cutout, source: "matting", warnings: [] },
+      },
+    });
+  });
+  await page.goto("/demo");
+  await page.getByLabel("Image de l’objet 1").setInputFiles({
+    name: "vase.png",
+    mimeType: "image/png",
+    buffer: await productFixture(),
+  });
+  await page.getByLabel("Hauteur de l’objet 1 en centimètres").fill("30");
+  await page.getByLabel("Longueur de l’objet 1 en centimètres").fill("18");
+  await expect(
+    page.getByText("Informations complètes · détourage à effectuer"),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Continuer avec 1 objet" }).click();
+  await expect(
+    page.getByText("Le détourage avancé est momentanément indisponible.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.getByText(/Objet 1 prêt|Objet 1 détouré/)).toHaveCount(0);
+  await page.getByRole("button", { name: "Continuer avec 1 objet" }).click();
+  await expect(page.getByAltText("Détourage de l’objet 1")).toBeVisible({
+    timeout: 60_000,
+  });
+  await expect(page.getByText(/Vérifiez le détourage affiché/)).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Ajoutez la photo du lieu" }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "Continuer", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Ajoutez la photo du lieu" }),
+  ).toBeVisible();
+});
+
 test("simple demo records the clicked coordinates and adds the object", async ({
   page,
 }) => {
@@ -632,6 +690,169 @@ test("simple demo records the clicked coordinates and adds the object", async ({
   await expect(
     page.getByText("Simulation — fidélité visuelle non évaluée."),
   ).toBeVisible();
+});
+
+test("simple demo explains real progress, previews placement and recovers tracking", async ({
+  page,
+}, testInfo) => {
+  test.setTimeout(120_000);
+  await page.goto("/demo");
+  await page.getByLabel("Image de l’objet 1").setInputFiles({
+    name: "vase-waiting.png",
+    mimeType: "image/png",
+    buffer: await productFixture(),
+  });
+  await page.getByLabel("Hauteur de l’objet 1 en centimètres").fill("42");
+  await page.getByLabel("Longueur de l’objet 1 en centimètres").fill("24");
+  await page.getByRole("button", { name: "Continuer avec 1 objet" }).click();
+  await page.getByLabel("Photo du lieu de réception").setInputFiles({
+    name: "room-waiting.png",
+    mimeType: "image/png",
+    buffer: await roomFixture(),
+  });
+  const picker = page.getByRole("button", {
+    name: "Placer le point 1 dans l’image",
+  });
+  await expect(picker).toBeVisible();
+  const bounds = await picker.boundingBox();
+  await picker.click({
+    position: { x: bounds!.width * 0.5, y: bounds!.height * 0.65 },
+  });
+
+  // A real local simulated render provides the images; only its delivery
+  // timeline is controlled here. No paid image provider is used by this test.
+  let completed: Record<string, unknown> | undefined;
+  let phase = "queued";
+  let interruptNext = false;
+  let admissions = 0;
+  let trackingStatus = 200;
+  let statusReads = 0;
+  const progress = () =>
+    phase === "succeeded"
+      ? completed
+      : {
+          ...completed,
+          status: phase === "queued" ? "queued" : "processing",
+          pipelineState: phase === "queued" ? "uploaded" : phase,
+          placement: { pipelineStage: phase },
+          resultUrl: null,
+          compositeUrl:
+            phase === "queued"
+              ? null
+              : (completed?.compositeUrl ?? completed?.resultUrl),
+          qualityDecision: undefined,
+          creditCharged: false,
+        };
+  await page.route("**/v1/renders/**", async (route) => {
+    if (
+      route.request().method() === "POST" &&
+      route.request().url().endsWith("/final")
+    ) {
+      admissions += 1;
+      const response = await route.fetch();
+      completed = await response.json();
+      await route.fulfill({ response, json: progress() });
+    } else if (
+      completed &&
+      route.request().method() === "GET" &&
+      route.request().url().endsWith(`/${completed.id}`)
+    ) {
+      statusReads += 1;
+      if (interruptNext) {
+        interruptNext = false;
+        await route.abort("connectionfailed");
+      } else if (trackingStatus !== 200) {
+        await route.fulfill({
+          status: trackingStatus,
+          json: { detail: "Rendu introuvable" },
+        });
+      } else await route.fulfill({ json: progress() });
+    } else await route.continue();
+  });
+  await page.getByRole("button", { name: /Générer avec GPT Image 2/i }).click();
+  await expect(
+    page.getByRole("heading", {
+      name: "Votre rendu est dans la file d’attente",
+    }),
+  ).toBeVisible();
+  await expect(
+    page.locator(".render-progress-steps [data-state=complete]"),
+  ).toHaveCount(0);
+  await expect(page.getByAltText("Visualisation après")).toHaveCount(0);
+  phase = "generating_final";
+  await expect(
+    page.getByRole("heading", { name: "Création du rendu réaliste" }),
+  ).toBeVisible();
+  await expect(
+    page.getByAltText(
+      "Aperçu du placement de vos objets, avant le rendu réaliste",
+    ),
+  ).toBeVisible();
+  await expect(page.getByText(/Image provisoire :/)).toBeVisible();
+  await expect(page.getByText(/Temps écoulé/)).toBeVisible();
+  await page
+    .getByRole("button", { name: "Photo d’origine", exact: true })
+    .click();
+  await expect(
+    page.getByAltText("Photo d’origine de votre intérieur"),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Aperçu du placement", exact: true })
+    .click();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  await page.evaluate(() => document.fonts.ready);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({
+    path: testInfo.outputPath("render-waiting.png"),
+    fullPage: true,
+    animations: "disabled",
+    scale: "css",
+  });
+  interruptNext = true;
+  await expect(
+    page.getByText(/Le suivi est momentanément interrompu/),
+  ).toBeVisible();
+  phase = "quality_check";
+  await page.getByRole("button", { name: "Vérifier maintenant" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Vérification du résultat" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(/Le suivi est momentanément interrompu/),
+  ).toHaveCount(0);
+  await expect(page.getByAltText("Visualisation après")).toHaveCount(0);
+  trackingStatus = 404;
+  await expect(
+    page.getByText(/Cette visualisation n’est plus disponible dans le suivi/),
+  ).toBeVisible();
+  const pausedReads = statusReads;
+  // Absence of automatic retries after a permanent response is time-based.
+  await page.waitForTimeout(4000);
+  expect(statusReads).toBe(pausedReads);
+  trackingStatus = 200;
+  await page.getByRole("button", { name: "Vérifier maintenant" }).click();
+  await expect(
+    page.getByText(/Cette visualisation n’est plus disponible dans le suivi/),
+  ).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "Photo d’origine", exact: true })
+    .focus();
+  phase = "succeeded";
+  await expect(
+    page.getByRole("heading", { name: "Votre visualisation" }),
+  ).toBeVisible();
+  await expect(page.getByAltText("Visualisation après")).toBeVisible();
+  await expect(page.locator(".render-completion-announcement")).toHaveText(
+    "Votre visualisation est prête.",
+  );
+  await expect(
+    page.getByRole("heading", { name: "Votre visualisation" }),
+  ).toBeFocused();
+  expect(admissions).toBe(1);
 });
 
 test("simple demo supports three numbered points and can reposition them", async ({

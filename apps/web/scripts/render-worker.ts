@@ -7,6 +7,7 @@ import {
   expireDurableRenders,
 } from "../lib/server/durable-queue";
 import { runWorkerOnce } from "../lib/server/render-worker";
+import { renderWorkerRevision } from "../lib/render-worker-revision.mjs";
 
 async function main() {
   if (process.argv.includes("--help")) {
@@ -15,12 +16,8 @@ async function main() {
     );
     return;
   }
-  if (
-    process.env.NODE_ENV === "production" &&
-    (!process.env.RENDER_WORKER_REVISION ||
-      process.env.RENDER_WORKER_REVISION === "local")
-  )
-    throw new Error("RENDER_WORKER_REVISION est obligatoire en production.");
+  if (process.env.NODE_ENV === "production")
+    renderWorkerRevision(process.env, true);
   const db = await database();
   await assertDurableDatabase(db);
   const workerId = `${hostname()}:${process.pid}:${crypto.randomUUID()}`;

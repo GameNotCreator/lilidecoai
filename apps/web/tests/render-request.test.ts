@@ -33,6 +33,62 @@ function request(): RenderInput {
 }
 
 describe("render request replay", () => {
+  it("keeps a supplied retry key and every spatial input in a detached snapshot", () => {
+    const original: RenderInput = {
+      engine: "spatial",
+      workflow: "standard",
+      mode: "insert",
+      outputQuality: "final",
+      placement: {
+        sceneId: "scene",
+        productId: "product",
+        rotationDegrees: 45,
+      },
+      placementPoint: { x: 0.3, y: 0.7 },
+      spatialReference: {
+        sceneFingerprint: "a".repeat(64),
+        surfaceId: "table",
+        lengthCm: 100,
+        points: [
+          { x: 0.1, y: 0.8 },
+          { x: 0.9, y: 0.8 },
+        ],
+      },
+      userInstructions: "Conserver le décor",
+      idempotencyKey: "original",
+    };
+    const source = {
+      id: "source",
+      engine: "spatial",
+      requestSnapshot: snapshotRenderInput(original),
+    } as RenderDocument;
+    const key = `retry:source:${crypto.randomUUID()}`;
+    expect(buildRetryInput(source, key)).toEqual({
+      ...original,
+      idempotencyKey: key,
+    });
+    buildRetryInput(source, key).placement.rotationDegrees = 90;
+    expect(source.requestSnapshot!.input.placement.rotationDegrees).toBe(45);
+    expect(() =>
+      buildRetryInput(source, `retry:other:${crypto.randomUUID()}`),
+    ).toThrow(/clé/);
+    expect(() => buildRetryInput(source, "retry:source:invalid")).toThrow(
+      /clé/,
+    );
+  });
+  it.each([undefined, snapshotRenderInput(request())])(
+    "refuses missing or inconsistent spatial inputs instead of switching to legacy",
+    (snapshot) => {
+      expect(() =>
+        buildRetryInput({
+          id: "source",
+          engine: "spatial",
+          placement: {},
+          requestSnapshot: snapshot,
+        } as RenderDocument),
+      ).toThrow(/spatiaux/);
+    },
+  );
   it("replays all three objects and settings from a detached snapshot", () => {
     const original = request();
     const snapshot = snapshotRenderInput(original);

@@ -5,6 +5,9 @@ import {
   type Render,
 } from "@lili/types";
 import { z } from "zod";
+import { ApiError, InvalidApiResponseError } from "./api-errors";
+
+export { ApiError, InvalidApiResponseError } from "./api-errors";
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
 let publicSessionToken = "";
@@ -36,10 +39,18 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     const payload = (await response.json().catch(() => null)) as {
       detail?: string;
     } | null;
-    throw new Error(payload?.detail ?? `Erreur API ${response.status}`);
+    throw new ApiError(
+      payload?.detail ?? `Erreur API ${response.status}`,
+      response.status,
+    );
   }
   if (response.status === 204) return undefined as T;
-  return response.json() as Promise<T>;
+  try {
+    return (await response.json()) as T;
+  } catch (reason) {
+    if (reason instanceof SyntaxError) throw new InvalidApiResponseError();
+    throw reason;
+  }
 }
 
 export async function establishPublicSession(
@@ -86,13 +97,33 @@ export async function establishGuestEditorSession(): Promise<void> {
   return guestSessionPromise;
 }
 
-export async function getProducts(): Promise<Product[]> {
-  const payload = await api<unknown[]>("/v1/products");
+/** Explicitly use the signed merchant cookie even after browsing a public widget. */
+export function merchantApi<T>(
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
+  const headers = new Headers(init.headers);
+  headers.delete("Authorization");
+  return api<T>(path, {
+    ...init,
+    headers: { ...Object.fromEntries(headers.entries()), Authorization: "" },
+  });
+}
+
+export async function getProducts(request = api): Promise<Product[]> {
+  const payload = await request<unknown[]>("/v1/products");
   return z.array(productSchema).parse(payload);
 }
 
-export async function getRender(renderId: string): Promise<Render> {
-  return renderSchema.parse(await api(`/v1/renders/${renderId}`));
+export async function getRender(
+  renderId: string,
+  signal?: AbortSignal,
+  request = api,
+): Promise<Render> {
+  const payload = await request(`/v1/renders/${renderId}`, { signal });
+  const parsed = renderSchema.safeParse(payload);
+  if (!parsed.success) throw new InvalidApiResponseError();
+  return parsed.data;
 }
 
 export { headers as demoHeaders };

@@ -8,18 +8,19 @@ import { redirect } from "next/navigation";
 import {
   isPlaceholderSecret,
   looksLikeBcryptHash,
+  normalizeUsername,
   readAdminCredentials,
   secretsMatch,
   usernameMatches,
   type AdminCredentials,
 } from "./admin-credentials";
 import { serverConfig } from "./config";
+import { isSameOriginRequest } from "./request-origin";
 
 export const ADMIN_COOKIE_NAME = "lili_backoffice";
 
 const issuer = "lilidecoai";
 const audience = "lilidecoai-backoffice";
-const developmentSecret = "lilidecoai-development-backoffice-secret-2026";
 const minimumProductionPasswordLength = 10;
 
 export interface AdminSession {
@@ -29,6 +30,7 @@ export interface AdminSession {
 
 /** Which ADMIN_* variables reach the server. Presence only, never values. */
 export type DetectedAdminVariables = {
+  ADMIN_CREDENTIALS_MODE: boolean;
   ADMIN_USERNAME: boolean;
   ADMIN_PASSWORD: boolean;
   ADMIN_PASSWORD_HASH: boolean;
@@ -48,25 +50,52 @@ export class AdminAuthError extends Error {
   }
 }
 
+/** Browser authentication mutations must originate from this exact site. */
+export function assertAdminRequestOrigin(request: Request): void {
+  if (!isSameOriginRequest(request))
+    throw new AdminAuthError("Origine de la requête refusée", 403);
+}
+
 /**
- * The back office is closed until credentials exist in the environment. This
- * stays true in demo mode, where the merchant API otherwise trusts everybody.
+ * Even the fixed account requires a private deployment signing secret.
+ * Demo mode never bypasses administrator authentication.
  */
 export function adminConfiguration(): AdminConfigurationStatus {
   const credentials = readAdminCredentials({
+    mode: process.env.ADMIN_CREDENTIALS_MODE,
     username: serverConfig.adminUsername,
     password: serverConfig.adminPassword,
     passwordHash: serverConfig.adminPasswordHash,
   });
   if (!credentials) {
-    // Separating these two cases matters on Vercel: variables are baked into a
-    // deployment at build time, so "nothing arrives" almost always means the
-    // deployment predates the variable rather than a typo in its value.
     return {
       configured: false,
-      reason: serverConfig.adminUsername
-        ? "ADMIN_USERNAME est bien reçu, mais ni ADMIN_PASSWORD ni ADMIN_PASSWORD_HASH n’est défini."
-        : "Aucune variable ADMIN_* n’atteint le serveur. Sur Vercel, ajoutez-les puis redéployez : une variable ne s’applique qu’aux déploiements créés après son ajout.",
+      reason:
+        process.env.ADMIN_CREDENTIALS_MODE?.trim() === "environment"
+          ? "Le mode de rotation exige ADMIN_PASSWORD_HASH ou ADMIN_PASSWORD."
+          : "ADMIN_CREDENTIALS_MODE doit être fixed ou environment.",
+      detected: detectedAdminVariables(),
+    };
+  }
+  if (
+    !serverConfig.sessionSecret ||
+    serverConfig.sessionSecret.length < 32 ||
+    isPlaceholderSecret(serverConfig.sessionSecret)
+  ) {
+    return {
+      configured: false,
+      reason: "APP_SESSION_SECRET doit être un secret privé d’au moins 32 caractères.",
+      detected: detectedAdminVariables(),
+    };
+  }
+  if (
+    serverConfig.adminSessionSecret &&
+    (serverConfig.adminSessionSecret.length < 32 ||
+      isPlaceholderSecret(serverConfig.adminSessionSecret))
+  ) {
+    return {
+      configured: false,
+      reason: "ADMIN_SESSION_SECRET doit être un secret privé d’au moins 32 caractères.",
       detected: detectedAdminVariables(),
     };
   }
@@ -101,6 +130,7 @@ export function adminConfiguration(): AdminConfigurationStatus {
 
 export function detectedAdminVariables(): DetectedAdminVariables {
   return {
+    ADMIN_CREDENTIALS_MODE: Boolean(process.env.ADMIN_CREDENTIALS_MODE),
     ADMIN_USERNAME: Boolean(serverConfig.adminUsername),
     ADMIN_PASSWORD: Boolean(serverConfig.adminPassword),
     ADMIN_PASSWORD_HASH: Boolean(serverConfig.adminPasswordHash),
@@ -131,10 +161,14 @@ export async function verifyAdminCredentials(
 export async function createAdminSession(
   username: string,
 ): Promise<{ token: string; cookie: string }> {
+  const status = adminConfiguration();
+  if (!status.configured) throw new AdminAuthError(status.reason, 503);
+  if (!usernameMatches(status.credentials.username, username))
+    throw new AdminAuthError("Identifiants invalides", 401);
   const maxAge = Math.round(serverConfig.adminSessionHours * 3600);
   const token = await new SignJWT({ scope: "backoffice" })
     .setProtectedHeader({ alg: "HS256" })
-    .setSubject(username)
+    .setSubject(status.credentials.username)
     .setIssuer(issuer)
     .setAudience(audience)
     .setIssuedAt()
@@ -156,11 +190,18 @@ export async function verifyAdminToken(
   token: string,
 ): Promise<AdminSession | null> {
   try {
+    const status = adminConfiguration();
+    if (!status.configured) return null;
     const { payload } = await jwtVerify(token, await secret(), {
       issuer,
       audience,
+      algorithms: ["HS256"],
     });
-    if (typeof payload.sub !== "string" || payload.scope !== "backoffice") {
+    if (
+      typeof payload.sub !== "string" ||
+      payload.scope !== "backoffice" ||
+      !usernameMatches(status.credentials.username, payload.sub)
+    ) {
       return null;
     }
     return {
@@ -218,14 +259,21 @@ export async function requireAdminPage(returnTo: string): Promise<AdminSession> 
 }
 
 async function secret(): Promise<Uint8Array> {
+  const status = adminConfiguration();
+  if (!status.configured) throw new AdminAuthError(status.reason, 503);
   const base =
     serverConfig.adminSessionSecret ??
-    serverConfig.sessionSecret ??
-    developmentSecret;
-  // Derived so a back-office token can never be replayed as a merchant token.
+    serverConfig.sessionSecret;
+  // A distinct key prevents merchant-token reuse. Binding it to the active
+  // credentials revokes existing sessions after either username or password rotation.
   const derived = await crypto.subtle.digest(
     "SHA-256",
-    new TextEncoder().encode(`${base}::backoffice`),
+    new TextEncoder().encode(JSON.stringify([
+      base,
+      "backoffice",
+      normalizeUsername(status.credentials.username),
+      status.credentials.passwordHash ?? status.credentials.password,
+    ])),
   );
   return new Uint8Array(derived);
 }

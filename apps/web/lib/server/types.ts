@@ -45,7 +45,7 @@ export interface AssetDocument {
 }
 
 export type ProductViewType =
-  "front" | "three_quarter" | "side" | "back" | "detail";
+  "front" | "three_quarter" | "side" | "back" | "detail" | "top";
 
 export interface ProductViewDocument {
   id: string;
@@ -71,6 +71,9 @@ export interface ProductVariantDocument {
 }
 
 export interface ProductDocument {
+  spatialMetadata?: import("zod").infer<
+    typeof import("@lili/types").spatialProductMetadataSchema
+  >;
   id: string;
   organizationId: string;
   createdByUserId?: string;
@@ -84,6 +87,8 @@ export interface ProductDocument {
   material: string;
   placementType: string;
   generationInstructions: string;
+  /** Explicit catalog veto; does not change commercial publication. */
+  visualizationBlockedReason?: string | null;
   lightingProfile: Record<string, unknown>;
   buyUrl: string | null;
   brand?: string;
@@ -102,7 +107,11 @@ export interface ProductDocument {
   cutoutAssetId?: string;
   /** Measurements and provenance of the stored cutout (set by /prepare). */
   cutout?: CutoutMetadata;
+  /** Idempotent local back-office preparation and its fenced in-flight lease. */
+  productPreparation?: import("./product-preparation").ProductPreparationState;
   views?: ProductViewDocument[];
+  planarTexture?: import("@lili/types").PlanarTexture | null;
+  spatialPreparation?: import("@lili/types").ProductGeometry | null;
   anchor?: {
     anchorType: string;
     xNormalized: number;
@@ -149,6 +158,8 @@ export interface RenderAuditDocument {
 }
 
 export interface RenderDocument {
+  engine?: "legacy" | "spatial";
+  spatialEvidence?: import("@lili/types").RenderEvidence;
   execution?: DurableExecution;
   id: string;
   organizationId: string;
@@ -218,6 +229,10 @@ export interface RenderDocument {
     imageQuality: string;
     editModel: string;
     visionModel: string;
+    /** Absent on admitted historical jobs: preserve their original allowance. */
+    visionCostPolicy?: "astra-token-allowance-v1";
+    volumeIntegrationPolicy?: "spatial-volume-local-matte-v1";
+    volumeRepairPolicy?: "spatial-volume-numeric-repair-v1";
   };
   selectedResultAssetId?: string;
   feedback?: { rating?: number; comment?: string; createdAt: Date };
@@ -248,6 +263,8 @@ export interface RenderDocument {
     estimatedCostUsd: number;
     unknownOutcomeCalls: number;
   };
+  /** Provider events already included in usageTotals, atomically recorded with it. */
+  usageCallIds?: string[];
   error?: string;
   qualityScore: number | null;
   creditCharged: boolean;
@@ -259,6 +276,7 @@ export interface RenderDocument {
 
 export interface RenderAttemptDocument {
   id: string;
+  usageAccountingVersion?: 2;
   organizationId: string;
   renderId: string;
   provider: string;

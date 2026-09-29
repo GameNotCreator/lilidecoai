@@ -48,6 +48,9 @@ export function storedProductAssetAccess(
  */
 export function productListFilter(tenant: Tenant): Filter<ProductDocument> {
   const organizationId = tenant.organizationId;
+  if (tenant.storefront) {
+    return { organizationId, status: "ready", createdByUserId: DEMO_CATALOG_USER_ID };
+  }
   if (tenant.publicProductId) {
     return {
       organizationId,

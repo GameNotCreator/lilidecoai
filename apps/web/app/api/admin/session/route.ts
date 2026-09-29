@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   adminConfiguration,
   adminSessionForRequest,
+  assertAdminRequestOrigin,
   clearAdminSessionCookie,
   createAdminSession,
   verifyAdminCredentials,
@@ -41,6 +42,7 @@ export async function GET(request: Request): Promise<Response> {
 
 export async function POST(request: Request): Promise<Response> {
   try {
+    assertAdminRequestOrigin(request);
     const status = adminConfiguration();
     if (!status.configured) {
       return detail(`Back office indisponible. ${status.reason}`, 503);
@@ -71,9 +73,14 @@ export async function POST(request: Request): Promise<Response> {
   }
 }
 
-export async function DELETE(): Promise<Response> {
-  return Response.json(
-    { authenticated: false },
-    { headers: { "Set-Cookie": clearAdminSessionCookie() } },
-  );
+export async function DELETE(request: Request): Promise<Response> {
+  try {
+    assertAdminRequestOrigin(request);
+    return Response.json(
+      { authenticated: false },
+      { headers: { "Set-Cookie": clearAdminSessionCookie() } },
+    );
+  } catch (reason) {
+    return adminErrorResponse(reason);
+  }
 }

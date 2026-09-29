@@ -29,6 +29,8 @@ let assets: ReturnType<typeof mongoStore>;
 const product = {
   id: "p1",
   organizationId: "org",
+  name: "Vase", widthCm: 20, heightCm: 30, depthCm: 20,
+  material: "Céramique", placementType: "table",
   status: "ready",
   assetId: "a-main",
   cutoutAssetId: "a-cutout",

@@ -191,6 +191,8 @@ export async function isolateProductWithModel(
 
 /** Per-cutout diagnostics; every flag but `ragged` asks for model isolation. */
 export interface CutoutQualityFlags {
+  /** More than one large disconnected subject in a single-object photo. */
+  multipleSubjects?: boolean;
   /** Nothing was removed: the cutout is still a full opaque rectangle. */
   opaque: boolean;
   /** Too much of the silhouette sits in the soft alpha band. */

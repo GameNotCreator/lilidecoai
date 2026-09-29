@@ -384,3 +384,5 @@ function assertFinitePoint(point: Point): void {
 }
 
 export * from "./simple-placement";
+export * from "./spatial-projection";
+export * from "./spatial-plane";

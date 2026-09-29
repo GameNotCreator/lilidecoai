@@ -101,6 +101,8 @@ async function createIndexes(db: Db): Promise<void> {
   // Remove the legacy TTL index if this database already has it.
   await c.assets.dropIndex("expiresAt_1").catch(() => undefined);
   await Promise.all([
+    db.collection("spatial_scene_cache").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
+    db.collection("spatial_source_reviews").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
     c.assets.createIndex({ id: 1 }, { unique: true }),
     c.assets.createIndex({ expiresAt: 1 }, { name: "asset_expiration_lookup" }),
     c.products.createIndex({ organizationId: 1, id: 1 }, { unique: true }),

@@ -26,6 +26,7 @@ describe("product creation payload", () => {
       collection: "",
       currency: "TND",
       generationInstructions: "",
+      visualizationBlockedReason: null,
       lightingSource: "front",
       reflectance: "matte",
       tags: [],
@@ -83,6 +84,13 @@ describe("product creation payload", () => {
 });
 
 describe("partial product update", () => {
+  it("preserves an omitted visualization veto and only clears it explicitly", () => {
+    expect(adminProductPatchSchema.parse({ description: "Texte" })).not.toHaveProperty("visualizationBlockedReason");
+    expect(adminProductPatchSchema.parse({ visualizationBlockedReason: null }).visualizationBlockedReason).toBeNull();
+    expect(adminProductPatchSchema.parse({ visualizationBlockedReason: "  " }).visualizationBlockedReason).toBeNull();
+    expect(adminProductPatchSchema.parse({ visualizationBlockedReason: " Photo avec plante " }).visualizationBlockedReason).toBe("Photo avec plante");
+    expect(() => adminProductPatchSchema.parse({ visualizationBlockedReason: "x".repeat(501) })).toThrow();
+  });
   // Regression: `.partial()` keeps applying `.default()` to absent keys, which
   // erased the description, the type and the sizes on every partial update.
   it("only carries the keys actually sent", () => {

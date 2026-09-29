@@ -20,6 +20,7 @@ import {
   renderUsageTotals,
 } from "../lib/server/provider-usage";
 import { mongoStore } from "./helpers/mongo-store";
+import { observeVisionResponse } from "../lib/server/ai/openai-vision-cost";
 
 const db = {} as Db;
 const render = { id: "r", organizationId: "org" };
@@ -58,6 +59,9 @@ describe("provider usage journal", () => {
       estimatedCostUsd: 0.12,
       unknownOutcomeCalls: 0,
     });
+    // The legacy pipeline retains its existing summary semantics.
+    expect(renders.rows[0]!.estimatedCostUsd).toBeUndefined();
+    expect(renders.rows[0]!.attemptCount).toBeUndefined();
   });
 
   // A13 of the audit: a lost response was recorded as costing nothing.
@@ -100,6 +104,7 @@ describe("provider usage journal", () => {
     mocks.collections.mockReturnValue({
       renders,
       renderAttempts: {
+        ...renderAttempts,
         async insertOne() {
           throw new Error("journal down");
         },
@@ -116,6 +121,129 @@ describe("provider usage journal", () => {
         latencyMs: 10,
       }),
     ).resolves.toBeUndefined();
+    expect(await renderUsageTotals(db, "r")).toMatchObject({
+      calls: 1,
+      estimatedCostUsd: 0.12,
+    });
+    process.env.RENDER_MAX_COST_USD = "0.2";
+    const nextCall = vi.fn().mockResolvedValue("should not be called");
+    await expect(
+      measureProviderCall(
+        db,
+        render,
+        {
+          step: "spatial-analysis",
+          provider: "openai",
+          model: "m",
+          estimatedCostUsd: 0.12,
+        },
+        nextCall,
+      ),
+    ).rejects.toBeInstanceOf(RenderBudgetError);
+    expect(nextCall).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("still journals a paid call when the summary update fails", async () => {
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    mocks.collections.mockReturnValue({
+      renders: {
+        ...renders,
+        updateOne: vi.fn().mockRejectedValue(new Error("summary down")),
+      },
+      renderAttempts,
+    });
+    await recordProviderUsage(db, render, {
+      step: "spatial-generation",
+      provider: "openai",
+      model: "m",
+      outcome: "unknown",
+      estimatedCostUsd: 0.12,
+      latencyMs: 10,
+    });
+    expect(renderAttempts.rows).toHaveLength(1);
+    expect(renderAttempts.rows[0]).toMatchObject({
+      usageOutcome: "unknown",
+      estimatedCostUsd: 0.12,
+    });
+    process.env.RENDER_MAX_COST_USD = "0.2";
+    expect(await renderUsageTotals(db, "r")).toMatchObject({
+      calls: 1,
+      estimatedCostUsd: 0.12,
+    });
+    await expect(assertRenderBudget(db, "r", 0.12)).rejects.toBeInstanceOf(
+      RenderBudgetError,
+    );
+    warn.mockRestore();
+  });
+
+  it("counts disjoint partial writes once after a worker restart", async () => {
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    const descriptor = {
+      step: "spatial-generation",
+      provider: "openai",
+      model: "m",
+      outcome: "succeeded" as const,
+      estimatedCostUsd: 0.12,
+      latencyMs: 10,
+    };
+    // First call survives only in the summary; second only in the journal.
+    mocks.collections.mockReturnValue({
+      renders,
+      renderAttempts: {
+        ...renderAttempts,
+        insertOne: vi.fn().mockRejectedValue(new Error("journal down")),
+      },
+    });
+    await recordProviderUsage(db, render, descriptor);
+    mocks.collections.mockReturnValue({
+      renders: {
+        ...renders,
+        updateOne: vi.fn().mockRejectedValue(new Error("summary down")),
+      },
+      renderAttempts,
+    });
+    await recordProviderUsage(db, render, descriptor);
+    mocks.collections.mockReturnValue({ renders, renderAttempts });
+    await recordProviderUsage(db, render, descriptor);
+    expect(await renderUsageTotals(db, "r")).toEqual({
+      calls: 3,
+      estimatedCostUsd: 0.36,
+      unknownOutcomeCalls: 0,
+    });
+    process.env.RENDER_MAX_COST_USD = "0.4";
+    await expect(assertRenderBudget(db, "r", 0.12)).rejects.toBeInstanceOf(
+      RenderBudgetError,
+    );
+    warn.mockRestore();
+  });
+
+  it("stops when neither accounting record can be persisted", async () => {
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    const insert = vi.fn().mockRejectedValue(new Error("journal down"));
+    mocks.collections.mockReturnValue({
+      renders: {
+        ...renders,
+        updateOne: vi.fn().mockRejectedValue(new Error("summary down")),
+      },
+      renderAttempts: { ...renderAttempts, insertOne: insert },
+    });
+    const call = vi.fn().mockResolvedValue("paid result");
+    await expect(
+      measureProviderCall(
+        db,
+        render,
+        {
+          step: "spatial-analysis",
+          provider: "openai",
+          model: "m",
+          estimatedCostUsd: 0.12,
+        },
+        call,
+      ),
+    ).rejects.toMatchObject({ status: 402, retryable: false });
+    expect(call).toHaveBeenCalledOnce();
+    expect(insert).toHaveBeenCalledOnce();
     warn.mockRestore();
   });
 });
@@ -166,6 +294,40 @@ describe("render budget", () => {
 });
 
 describe("measureProviderCall", () => {
+  it.each([false, true])("prices observed usage without changing the QA result (rejected=%s)", async (rejected) => {
+    const value = { accepted: false, checks: [{ score: 0 }] };
+    const failure = new Error("invalid local review");
+    const pending = measureProviderCall(db, render, {
+      step: "spatial-review", provider: "openai", model: "gpt-6-astra", estimatedCostUsd: 0.9,
+      usage: { reviewExecutionPolicy: "kept" },
+    }, async () => observeVisionResponse({
+      usage: { input_tokens: 1532, output_tokens: 2936, input_tokens_details: { cache_write_tokens: 1529, cached_tokens: 0 } },
+      service_tier: "default", model: "gpt-6-astra",
+    }, { requestedModel: "gpt-6-astra", baseUrl: "https://api.openai.com/v1", requestId: "req-fixture" },
+    () => { if (rejected) throw failure; return value; }));
+    if (rejected) await expect(pending).rejects.toBe(failure);
+    else expect(await pending).toBe(value);
+    expect(renderAttempts.rows[0]).toMatchObject({
+      usageOutcome: rejected ? "failed" : "succeeded", estimatedCostUsd: 0.1659425,
+      requestId: "req-fixture", usage: { reviewExecutionPolicy: "kept",
+        providerUsage: { input_tokens: 1532, output_tokens: 2936 },
+        costEstimate: { method: "reported-tokens", invoice: false } },
+    });
+    expect((await renderUsageTotals(db, "r")).estimatedCostUsd).toBeCloseTo(0.1659425);
+  });
+  it("retains the allowance when observed usage is absent and prevents the next expensive call", async () => {
+    await measureProviderCall(db, render, {
+      step: "spatial-review", provider: "openai", model: "gpt-6-astra", estimatedCostUsd: 0.9,
+    }, async () => observeVisionResponse({}, { requestedModel: "gpt-6-astra", requestedServiceTier: "default", baseUrl: "https://api.openai.com/v1" }, () => ({ accepted: false })));
+    expect(renderAttempts.rows[0]).toMatchObject({ estimatedCostUsd: 0.9,
+      usage: { costEstimate: { method: "allowance" } } });
+    const next = vi.fn();
+    await expect(measureProviderCall(db, render, { step: "spatial-review", provider: "openai", model: "gpt-6-astra", estimatedCostUsd: 0.9 }, next)).rejects.toBeInstanceOf(RenderBudgetError);
+    expect(next).not.toHaveBeenCalled();
+  });
+  it.each([NaN, Infinity, -1])("refuses invalid next-call reserve %s", async (value) => {
+    await expect(assertRenderBudget(db, "r", value)).rejects.toThrow(/invalide/);
+  });
   it("journals a success and returns its value", async () => {
     const result = await measureProviderCall(
       db,

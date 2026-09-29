@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import {
   AdminAuthError,
+  assertAdminRequestOrigin,
   requireAdminRequest,
   type AdminSession,
 } from "./admin-auth";
@@ -26,6 +27,8 @@ export async function withAdmin(
   handler: (context: AdminContext) => Promise<Response>,
 ): Promise<Response> {
   try {
+    if (!["GET", "HEAD", "OPTIONS"].includes(request.method))
+      assertAdminRequestOrigin(request);
     const session = await requireAdminRequest(request);
     const db = await database();
     const organization = await resolveAdminOrganization(db);

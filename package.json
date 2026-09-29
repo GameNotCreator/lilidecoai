@@ -11,14 +11,17 @@
     "packages/*"
   ],
   "overrides": {
-    "next@16.2.12": {
-      "postcss": "8.5.25",
-      "sharp": "0.35.3"
-    }
+    "next@16.3.6": {
+      "postcss": "8.5.25"
+    },
+    "nanoid@>=3 <3.3.18": "3.3.18",
+    "js-yaml@>=4 <4.3.2": "4.3.2",
+    "vitest": "4.1.11"
   },
   "scripts": {
     "dev": "npm run dev:web",
     "dev:web": "npm run dev --workspace @visualizer/web",
+    "preview:boutique": "node apps/web/scripts/preview-storefront-local.mjs",
     "build": "npm run build --workspace @visualizer/web",
     "lint": "npm run lint --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
@@ -36,6 +39,7 @@
     "worker:render": "node --conditions=react-server --env-file-if-exists=.env --import tsx apps/web/scripts/render-worker.ts",
     "test:durable": "npm run test --workspace @visualizer/web -- tests/durable-steps.test.ts tests/durable-queue.test.ts",
     "test:durable:integration": "node apps/web/scripts/test-durable-integration.mjs",
+    "test:release": "node --test apps/web/scripts/test-vercel-build.mjs apps/web/scripts/test-prepare-release-candidate.mjs apps/web/scripts/test-production-smoke.mjs testpratiques/scripts/test-production-preflight-policy.mjs",
     "format": "prettier --write ."
   },
   "devDependencies": {

@@ -217,7 +217,7 @@ export function ProductCreateForm({
       setPhase("Objet prêt");
       router.push(
         afterCreate === "visualizer"
-          ? `/?product=${product.id}`
+          ? `/demo?product=${product.id}`
           : "/app/catalog",
       );
       router.refresh();

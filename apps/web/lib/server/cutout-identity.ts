@@ -88,8 +88,8 @@ export function cutoutTrust(cutout: CutoutMetadata | undefined): CutoutTrust {
 /**
  * The matte's own verdict on the photo, recorded on every prepare.
  *
- * Only two outcomes make the cutout genuinely unusable, and neither is a policy
- * choice: `opaque` means nothing was removed, so compositing it would paste the
+ * `multipleSubjects` rejects large separated subjects that cannot describe a
+ * single product. `opaque` means nothing was removed, so compositing it would paste the
  * photo's background into the room; `vanished` means nothing survived, so there
  * is no product left to paste. Everything else — a soft edge, a retained
  * contact shadow, a pocket of background inside the silhouette — ships with a
@@ -103,6 +103,14 @@ export function cutoutTrust(cutout: CutoutMetadata | undefined): CutoutTrust {
 export function cutoutVerdict(
   quality: CutoutQualityFlags,
 ): NonNullable<CutoutMetadata["verdict"]> {
+  if (quality.multipleSubjects) {
+    return {
+      usable: false,
+      code: "multiple_subjects",
+      detail:
+        "Plusieurs objets distincts apparaissent dans cette image. Recadrez la photo autour d’un seul objet avant de continuer.",
+    };
+  }
   if (quality.vanished) {
     return {
       usable: false,

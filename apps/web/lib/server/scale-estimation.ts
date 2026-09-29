@@ -710,7 +710,7 @@ export async function estimateSceneScale(
         model: serverConfig.openaiVisionModel,
         store: false,
         service_tier: serverConfig.openaiServiceTier,
-        reasoning: { effort: "high" },
+        reasoning: { effort: serverConfig.openaiVisionReasoning ?? "high" },
         max_output_tokens: 8_000,
         input: [
           {
@@ -793,6 +793,7 @@ export function sceneScaleCacheKey(
   kinds: readonly SimplePlacementKind[],
 ): string {
   const payload = JSON.stringify({
+    reasoning: serverConfig.openaiVisionReasoning ?? "high",
     version: SCALE_ESTIMATION_VERSION,
     model: serverConfig.openaiVisionModel,
     points: points.map((point) => [
@@ -842,6 +843,27 @@ export async function getOrEstimateSceneScale(
   const key = sceneScaleCacheKey(points, normalizedKinds);
   const cached = cachedEstimate(scene, key, points.length);
   if (cached) return { ...cached, cached: true };
+
+  // Durable renders retain the scene as it was at admission. The browser's
+  // scale request can finish afterwards, so consult only this exact cache
+  // entry without replacing the immutable source/placement snapshot.
+  const refreshed = await collections(db).scenes.findOne(
+    {
+      id: scene.id,
+      organizationId: scene.organizationId,
+      assetId: scene.assetId,
+      status: { $ne: "deleted" },
+      expiresAt: { $gt: new Date() },
+      ...(scene.publicSessionId
+        ? { publicSessionId: scene.publicSessionId }
+        : {}),
+    },
+    { projection: { _id: 0, [`analysis.simpleScale.${key}`]: 1 } },
+  );
+  const refreshedCache = refreshed
+    ? cachedEstimate(refreshed, key, points.length)
+    : null;
+  if (refreshedCache) return { ...refreshedCache, cached: true };
 
   const asset = await readAsset(db, scene.assetId);
   if (!asset) return { ...fallbackEstimate(points.length), cached: false };

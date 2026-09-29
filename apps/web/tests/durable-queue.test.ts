@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "mongodb";
 import type { RenderDocument } from "../lib/server/types";
 import { mongoStore } from "./helpers/mongo-store";
@@ -19,6 +19,26 @@ import {
   heartbeat,
   expireDurableRenders,
 } from "../lib/server/durable-queue";
+
+afterEach(() => vi.unstubAllEnvs());
+
+describe("worker snapshot fencing", () => {
+  it("separates different source snapshots even when Vercel supplies the same Git HEAD", () => {
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "a".repeat(40));
+    vi.stubEnv("RENDER_WORKER_REVISION", `sha256:${"1".repeat(64)}`);
+    const first = workerFingerprint();
+    vi.stubEnv("RENDER_WORKER_REVISION", `sha256:${"2".repeat(64)}`);
+    expect(workerFingerprint()).not.toBe(first);
+    vi.stubEnv("RENDER_WORKER_REVISION", `sha256:${"1".repeat(64)}`);
+    expect(workerFingerprint()).toBe(first);
+  });
+  it("does not let invalid production identity claim a compatible fingerprint through Git", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "a".repeat(40));
+    vi.stubEnv("RENDER_WORKER_REVISION", "local");
+    expect(() => workerFingerprint()).toThrow("immutable");
+  });
+});
 
 let renders: ReturnType<typeof mongoStore>;
 let wallets: ReturnType<typeof mongoStore>;

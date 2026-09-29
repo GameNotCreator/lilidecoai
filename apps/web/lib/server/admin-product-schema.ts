@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { spatialProductMetadataSchema } from "@lili/types";
 
 export const objectTypes = [
   "vase",
@@ -61,6 +62,8 @@ const shortTextSchema = z.string().trim().max(80);
 const tagsSchema = z.union([z.array(z.string()), z.string()]);
 const currencySchema = z.string().trim().min(2).max(6);
 const instructionsSchema = z.string().trim().max(1_500);
+const visualizationBlockedReasonSchema = z.string().trim().max(500)
+  .transform(value => value || null).nullable();
 const lightingSchema = z.string().trim().max(40);
 const variantsSchema = z.array(variantSchema).max(24);
 const dimensionSchema = z.coerce.number().positive().max(2_000);
@@ -79,6 +82,7 @@ const buyUrlSchema = z
   );
 
 export const adminProductSchema = z.object({
+  spatialMetadata: spatialProductMetadataSchema.optional(),
   name: nameSchema,
   description: descriptionSchema.default(""),
   objectType: objectTypeSchema.default("other"),
@@ -97,6 +101,7 @@ export const adminProductSchema = z.object({
   stock: optionalNumber(1_000_000),
   buyUrl: buyUrlSchema,
   generationInstructions: instructionsSchema.default(""),
+  visualizationBlockedReason: visualizationBlockedReasonSchema.default(null),
   lightingSource: lightingSchema.default("front"),
   reflectance: lightingSchema.default("matte"),
   variants: variantsSchema.default([]),
@@ -109,6 +114,7 @@ export const adminProductSchema = z.object({
  * an absent key means "do not touch", an explicit null means "clear".
  */
 export const adminProductPatchSchema = z.object({
+  spatialMetadata: spatialProductMetadataSchema.optional(),
   name: nameSchema.optional(),
   description: descriptionSchema.optional(),
   objectType: objectTypeSchema.optional(),
@@ -127,6 +133,7 @@ export const adminProductPatchSchema = z.object({
   stock: optionalNumber(1_000_000).optional(),
   buyUrl: buyUrlSchema.optional(),
   generationInstructions: instructionsSchema.optional(),
+  visualizationBlockedReason: visualizationBlockedReasonSchema.optional(),
   lightingSource: lightingSchema.optional(),
   reflectance: lightingSchema.optional(),
   variants: variantsSchema.optional(),

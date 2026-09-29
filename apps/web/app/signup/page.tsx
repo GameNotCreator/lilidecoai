@@ -1,4 +1,9 @@
 import { AuthForm } from "@/components/auth-form";
+import type { Metadata } from "next";
+export const metadata: Metadata = {
+  title: "Inscription",
+  robots: { index: false, follow: false },
+};
 
 export default async function SignupPage({
   searchParams,

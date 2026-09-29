@@ -9,8 +9,10 @@ le défaut demeure `RENDER_EXECUTION_MODE=web`.
 - MongoDB Atlas ou replica set : la finalisation, le journal et le crédit
   nécessitent les transactions. Un MongoDB standalone est refusé au démarrage.
 - Même base, stockage privé, modèles, qualité et révision sur le web et le
-  worker. Sur Vercel, `VERCEL_GIT_COMMIT_SHA` identifie la révision ;
-  `RENDER_WORKER_REVISION` fournit un repli explicite pour les livraisons CLI.
+  worker. `RENDER_WORKER_REVISION`, lorsqu'elle est fournie, est prioritaire :
+  le paquet CLI emploie l'identité `sha256:...` de son manifeste vérifié.
+  À défaut, `VERCEL_GIT_COMMIT_SHA` doit contenir une révision Git complète.
+  Une valeur explicite invalide est refusée en production même si Git est valide.
 - Vercel Pro avec Fluid Compute pour le cron chaque minute et la fonction
   de 800 secondes. Aucun hébergement supplémentaire du worker n'est nécessaire.
 - Le dimensionnement mémoire, les quotas fournisseurs et la charge restent à
@@ -18,18 +20,39 @@ le défaut demeure `RENDER_EXECUTION_MODE=web`.
 
 ## Exécution Vercel
 
-Configurer `RENDER_EXECUTION_MODE=durable` en production. Le cron
-`/api/cron/render-worker` s'authentifie avec `CRON_SECRET` et réserve au plus deux
-rendus par invocation (`RENDER_WORKER_CONCURRENCY`, borné à quatre). Les baux
-MongoDB empêchent deux invocations de traiter le même rendu. Le journal
-`render_worker_tick` indique les traitements et erreurs de chaque invocation.
+Configurer `RENDER_EXECUTION_MODE=durable` en production. Après l'enregistrement
+du rendu, la route web envoie un réveil au worker dédié
+`POST /api/cron/render-worker`, authentifié avec `CRON_SECRET`. Ce dernier répond
+202 puis lance le traitement dans sa propre fonction de 800 secondes. Aucun
+appel image ne s'exécute dans le callback de la route web limitée à 300 secondes.
+
+La destination vient de `VERCEL_URL`, automatiquement disponible sur Vercel,
+ou de `RENDER_WORKER_ORIGIN` : une origine HTTPS explicite du même déploiement,
+sans chemin, identifiants ni paramètres. Aucun en-tête client ne la détermine.
+Si Deployment Protection protège le domaine `*.vercel.app`, configurer
+`VERCEL_AUTOMATION_BYPASS_SECRET` côté serveur pour le réveil. Un domaine
+personnalisé explicitement configuré doit permettre l'accès à cette route ;
+le secret de protection Vercel n'est jamais envoyé à un autre domaine.
+Le délai du réveil est limité à cinq secondes, sans redirection ni nouvelle
+tentative automatique. Un échec n'annule jamais la demande enregistrée.
+
+Le cron `GET /api/cron/render-worker`, toujours authentifié avec `CRON_SECRET`,
+reste le secours chaque minute. Chaque invocation réserve au plus deux rendus
+(`RENDER_WORKER_CONCURRENCY`, borné à quatre). Les baux et les limites atomiques
+MongoDB restent communs aux réveils et aux crons : une seule exécution possède
+un rendu. Le journal `render_worker_tick` indique les traitements et erreurs de
+chaque invocation. `render_worker_dispatch` distingue un réveil accepté,
+refusé, indisponible ou non configuré, sans écrire de secret ni de photo.
 
 Après cinq minutes, le worker termine l'étape en cours puis remet le rendu en
 file avant la suivante. Cette interruption volontaire conserve les checkpoints
 et le crédit réservé, sans consommer une tentative d'échec. Le prochain cron
 reprend le même rendu. Un arrêt brutal reste couvert par les baux et les règles
 `provider_unknown` décrites ci-dessous. Le délai métier maximal est de trente
-minutes par défaut ; la première prise en charge peut attendre le prochain cron.
+minutes par défaut. Un réveil fonctionnel évite l'attente du premier cron quand
+une place de traitement est disponible. La saturation, une reprise ou un réveil
+indisponible peuvent encore attendre le cron ; aucun délai de démarrage garanti
+n'est annoncé.
 
 Sources : [fréquence des crons](https://vercel.com/docs/cron-jobs/usage-and-pricing),
 [durée des fonctions](https://vercel.com/docs/functions/configuring-functions/duration).
@@ -39,7 +62,7 @@ Sources : [fréquence des crons](https://vercel.com/docs/cron-jobs/usage-and-pri
 ```powershell
 npm ci --include=dev
 $env:RENDER_EXECUTION_MODE = 'durable'
-$env:RENDER_WORKER_REVISION = 'revision-de-la-preproduction'
+$env:RENDER_WORKER_REVISION = (Get-Content release-candidate.json -Raw | ConvertFrom-Json).workerRevision
 npm run worker:render
 ```
 

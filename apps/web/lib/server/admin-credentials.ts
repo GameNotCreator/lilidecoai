@@ -1,4 +1,10 @@
+import "server-only";
+
 import { createHash, timingSafeEqual } from "node:crypto";
+
+const defaultUsername = "LiliDeco";
+const defaultPasswordHash =
+  "$2b$12$uHN/kryIhgRsOG8CaWGQdOQ0DU0mIK32jUHF1K0L43/EqeQXA/ODq";
 
 export interface AdminCredentials {
   username: string;
@@ -7,24 +13,29 @@ export interface AdminCredentials {
 }
 
 export interface AdminCredentialEnvironment {
+  mode?: string;
   username?: string;
   password?: string;
   passwordHash?: string;
 }
 
 /**
- * Reads the back-office credentials. A password (clear text) or a bcrypt hash
- * is mandatory: without one the back office stays closed, even in demo mode.
+ * The requested account is the default. Old ADMIN_* values cannot silently
+ * replace it; an operator must explicitly enable environment-based rotation.
  */
 export function readAdminCredentials(
   environment: AdminCredentialEnvironment,
 ): AdminCredentials | null {
+  const mode = trimmed(environment.mode) ?? "fixed";
+  if (mode === "fixed")
+    return { username: defaultUsername, passwordHash: defaultPasswordHash };
+  if (mode !== "environment") return null;
   const password = trimmed(environment.password);
   const passwordHash = trimmed(environment.passwordHash);
   if (!password && !passwordHash) return null;
   return {
-    username: trimmed(environment.username) ?? "admin",
-    ...(password ? { password } : {}),
+    username: trimmed(environment.username) ?? defaultUsername,
+    ...(password && !passwordHash ? { password } : {}),
     ...(passwordHash ? { passwordHash } : {}),
   };
 }

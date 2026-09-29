@@ -28,7 +28,11 @@ function value(row: Row, path: string): unknown {
 }
 
 /** Writes through a dotted path, creating intermediate objects. */
-function setPath(row: Row, path: string, mutate: (current: unknown) => unknown): void {
+function setPath(
+  row: Row,
+  path: string,
+  mutate: (current: unknown) => unknown,
+): void {
   const segments = path.split(".");
   let target = row;
   for (const segment of segments.slice(0, -1)) {
@@ -41,7 +45,11 @@ function setPath(row: Row, path: string, mutate: (current: unknown) => unknown):
   target[last] = mutate(target[last]);
 }
 
-function matchesOperator(actual: unknown, op: string, expected: unknown): boolean {
+function matchesOperator(
+  actual: unknown,
+  op: string,
+  expected: unknown,
+): boolean {
   const values = Array.isArray(actual) ? actual : [actual];
   switch (op) {
     case "$gt":
@@ -67,9 +75,13 @@ function matchesOperator(actual: unknown, op: string, expected: unknown): boolea
 
 function matches(row: Row, filter: Row): boolean {
   return Object.entries(filter).every(([key, expected]) => {
-    if (key === "$or") return (expected as Row[]).some((part) => matches(row, part));
-    if (key === "$and") return (expected as Row[]).every((part) => matches(row, part));
+    if (key === "$or")
+      return (expected as Row[]).some((part) => matches(row, part));
+    if (key === "$and")
+      return (expected as Row[]).every((part) => matches(row, part));
     const actual = value(row, key);
+    if (expected instanceof Date)
+      return actual instanceof Date && actual.getTime() === expected.getTime();
     if (expected && typeof expected === "object" && !Array.isArray(expected)) {
       return Object.entries(expected as Row).every(([op, operand]) =>
         matchesOperator(actual, op, operand),
@@ -82,7 +94,11 @@ function matches(row: Row, filter: Row): boolean {
 
 function apply(row: Row, update: Row): void {
   for (const [field, delta] of Object.entries(asRow(update.$inc ?? {}))) {
-    setPath(row, field, (current) => ((current as number) ?? 0) + (delta as number));
+    setPath(
+      row,
+      field,
+      (current) => ((current as number) ?? 0) + (delta as number),
+    );
   }
   for (const [field, item] of Object.entries(asRow(update.$push ?? {}))) {
     // `{ $each, $slice }` bounds an array, as `processedKeys` needs.
@@ -121,6 +137,12 @@ export function mongoStore() {
   const rows: Row[] = [];
   return {
     rows,
+    async deleteOne(filter: Row) {
+      const index = rows.findIndex((row) => matches(row, filter));
+      if (index < 0) return { deletedCount: 0 };
+      rows.splice(index, 1);
+      return { deletedCount: 1 };
+    },
     async insertOne(row: Row) {
       rows.push(structuredClone(row));
       return { insertedId: row.id };

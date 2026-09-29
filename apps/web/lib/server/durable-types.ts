@@ -5,10 +5,14 @@ import type {
 } from "./types";
 
 export interface DurableStep {
-  status: "running" | "completed" | "retry" | "unknown";
+  status: "running" | "completed" | "retry" | "unknown" | "failed";
   attempts: number;
   output?: unknown;
   startedAt: Date;
+  completedAt?: Date;
+  durationMs?: number;
+  /** Terminal execution failure; provider billing can still be unknown. */
+  failure?: string;
 }
 
 export interface DurableExecution {

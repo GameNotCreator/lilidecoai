@@ -220,3 +220,74 @@ describe("durable checkpoint recovery", () => {
     expect(mocks.read).not.toHaveBeenCalled();
   });
 });
+
+describe("opt-in analysis recovery", () => {
+  const retryPolicy = { maxAttempts: 2 as const, respectRetryable: true };
+  it("persists a terminal refusal across worker changes", async () => {
+    const judge = vi
+      .fn()
+      .mockRejectedValue(
+        Object.assign(new Error("invalid review"), { retryable: false }),
+      );
+    await expect(
+      run(() => durableStep(db, "judge", "analysis", judge, retryPolicy)),
+    ).rejects.toMatchObject({ code: "permanent", message: "invalid review" });
+    await renders.updateOne(
+      { id: "r" },
+      { $set: { "execution.token": "second" } },
+    );
+    await expect(
+      run(
+        () => durableStep(db, "judge", "analysis", judge, retryPolicy),
+        "second",
+      ),
+    ).rejects.toMatchObject({ code: "permanent", message: "invalid review" });
+    expect(judge).toHaveBeenCalledOnce();
+    expect((await renders.findOne({ id: "r" }))!.execution).toMatchObject({
+      steps: {
+        judge: { status: "failed", attempts: 1, failure: "invalid review" },
+      },
+    });
+  });
+  it.each([
+    new Error("network failure"),
+    new DurableExecutionError("429", "retry"),
+  ])("ends the second failed attempt immediately (%s)", async (error) => {
+    const judge = vi.fn().mockRejectedValue(error);
+    for (const code of ["retry", "permanent", "permanent"])
+      await expect(
+        run(() => durableStep(db, "judge", "analysis", judge, retryPolicy)),
+      ).rejects.toMatchObject({ code });
+    expect(judge).toHaveBeenCalledTimes(2);
+    expect((await renders.findOne({ id: "r" }))!.execution).toMatchObject({
+      steps: {
+        judge: { status: "failed", attempts: 2 },
+      },
+    });
+  });
+  it("does not override lease-loss fencing with a terminal review failure", async () => {
+    const judge = vi
+      .fn()
+      .mockRejectedValue(new DurableExecutionError("lost", "lease_lost"));
+    await expect(
+      run(() => durableStep(db, "judge", "analysis", judge, retryPolicy)),
+    ).rejects.toMatchObject({ code: "lease_lost" });
+    expect((await renders.findOne({ id: "r" }))!.execution).toMatchObject({
+      steps: {
+        judge: { status: "running" },
+      },
+    });
+  });
+  it("keeps three attempts for historical analysis without the opt-in policy", async () => {
+    const judge = vi
+      .fn()
+      .mockRejectedValue(
+        Object.assign(new Error("refused"), { retryable: false }),
+      );
+    for (const code of ["retry", "retry", "retry", "permanent"])
+      await expect(
+        run(() => durableStep(db, "judge", "analysis", judge)),
+      ).rejects.toMatchObject({ code });
+    expect(judge).toHaveBeenCalledTimes(3);
+  });
+});

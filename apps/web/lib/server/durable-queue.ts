@@ -11,6 +11,7 @@ import {
   executionFence,
 } from "./durable-context";
 import { requireAcceptedQuality } from "./render-quality";
+import { renderWorkerRevision } from "../render-worker-revision.mjs";
 
 export const LEASE_MS = 90_000;
 export const MAX_JOB_ATTEMPTS = 12;
@@ -34,10 +35,7 @@ export function workerFingerprint(): string {
     .update(
       JSON.stringify({
         engine: DURABLE_ENGINE_VERSION,
-        revision:
-          process.env.VERCEL_GIT_COMMIT_SHA ||
-          process.env.RENDER_WORKER_REVISION ||
-          "local",
+        revision: renderWorkerRevision(process.env),
         model: serverConfig.openaiModel,
         vision: serverConfig.openaiVisionModel,
         quality: serverConfig.openaiQuality,

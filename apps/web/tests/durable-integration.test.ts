@@ -20,15 +20,24 @@ import {
   prepareExecution,
   reserveDurableCredit,
   validateExecutionSources,
+  workerFingerprint,
 } from "../lib/server/durable-queue";
 import { durableStep } from "../lib/server/durable-steps";
+import { measureProviderCall, recordProviderUsage, renderUsageTotals, assertRenderBudget, RenderBudgetError } from "../lib/server/provider-usage";
+import { reviewVisualRender } from "../lib/server/ai/visual-review";
+import { SPATIAL_REVIEW_EXECUTION_POLICY as reviewPolicy } from "../lib/server/spatial-review-policy";
 import { collections } from "../lib/server/mongodb";
 import { storeAsset } from "../lib/server/assets";
 import { createRender } from "../lib/server/rendering";
+import { buildRetryInput } from "../lib/server/render-request";
 import { serverConfig } from "../lib/server/config";
 import { runWorkerOnce } from "../lib/server/render-worker";
 import { releaseStaleHolds } from "../lib/server/credits";
-import type { RenderDocument, SceneDocument } from "../lib/server/types";
+import { cachedSpatialRoom, SpatialCacheBusyError } from "../lib/server/spatial-scene-cache";
+import { globalRoom } from "./fixtures/spatial-room";
+import { cachedSourceReview, SourceReviewBusyError } from "../lib/server/spatial-source-review";
+import { savePlanarTexture, readVerifiedPlanarTexture } from "../lib/server/planar-texture";
+import type { ProductDocument, RenderDocument, SceneDocument } from "../lib/server/types";
 
 const uri = process.env.DURABLE_TEST_MONGODB_URI;
 describe.skipIf(!uri)("real MongoDB replica-set invariants", () => {
@@ -37,6 +46,49 @@ describe.skipIf(!uri)("real MongoDB replica-set invariants", () => {
   let render: RenderDocument;
   let resultAssetId: string;
   const originalConfig = { ...serverConfig };
+  it("persists texture corners and rejects a stale editor on real MongoDB", async () => {
+    const image = await sharp({create:{width:300,height:400,channels:3,background:"red"}}).png().toBuffer();
+    const asset = await storeAsset(db,{organizationId:"org",kind:"product",visibility:"organization",buffer:image,contentType:"image/png"});
+    const product = {id:crypto.randomUUID(),organizationId:"org",objectType:"rug",placementType:"floor",widthCm:80,heightCm:1,depthCm:100,assetId:asset.id,updatedAt:new Date(1)} as ProductDocument;
+    await collections(db).products.insertOne(product);
+    const input={assetId:asset.id,corners:[{x:.1,y:.1},{x:.9,y:.1},{x:.9,y:.9},{x:.1,y:.9}]};
+    const saved=await savePlanarTexture(db,product,input);
+    expect((await readVerifiedPlanarTexture(db,saved)).buffer).toEqual(image);
+    await expect(savePlanarTexture(db,product,input)).rejects.toThrow(/fiche a changé/);
+    expect((await collections(db).products.findOne({id:product.id}))!.planarTexture).toEqual(saved.planarTexture);
+  });
+  it("shares source diagnostics between clients and retains a rejection", async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const input = { organizationId: "org", productFingerprint: crypto.randomUUID(), references: [{ view: "catalog", data: Buffer.from("source") }], expiresAt: new Date(Date.now() + 60000), model: "test" };
+    const value = { references: [{ index: 0, sameProduct: true, singleUnambiguousProduct: true, readable: true, completeSilhouette: false, confidence: .9, reason: "Produit coupé" }] };
+    const load = vi.fn(async () => { started(); await hold; return { value, durationMs: 1 }; });
+    const owner = cachedSourceReview(db, input, load);
+    await ready;
+    try { await expect(cachedSourceReview(db, input, load)).rejects.toBeInstanceOf(SourceReviewBusyError); }
+    finally { release(); }
+    await owner;
+    expect(await cachedSourceReview(db, input, load)).toEqual(value);
+    expect(load).toHaveBeenCalledOnce();
+  });
+  it("shares a single room analysis across concurrent MongoDB clients", async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const input = { organizationId: "org", assetId: crypto.randomUUID(), room: Buffer.from("room"), expiresAt: new Date(Date.now() + 60000), model: "test" };
+    const load = vi.fn(async () => { started(); await hold; return { value: globalRoom, usage: undefined, durationMs: 1 }; });
+    const owner = cachedSpatialRoom(db, input, load);
+    await ready;
+    const others = await Promise.allSettled(Array.from({ length: 5 }, () => cachedSpatialRoom(db, input, load)));
+    expect(others.every(result => result.status === "rejected" && result.reason instanceof SpatialCacheBusyError)).toBe(true);
+    release();
+    await owner;
+    expect((await cachedSpatialRoom(db, input, load)).cached).toBe(true);
+    expect(load).toHaveBeenCalledOnce();
+  });
   afterEach(() => {
     Object.assign(serverConfig, originalConfig);
     vi.unstubAllGlobals();
@@ -54,6 +106,11 @@ describe.skipIf(!uri)("real MongoDB replica-set invariants", () => {
       { organizationId: 1, idempotencyKey: 1 },
       { unique: true },
     );
+    // Same admission uniqueness constraint installed by database() in production.
+    await collections(db).renders.createIndex(
+      { organizationId: 1, idempotencyKey: 1 },
+      { unique: true },
+    );
     await assertDurableDatabase(db);
   });
   afterAll(async () => {
@@ -63,6 +120,7 @@ describe.skipIf(!uri)("real MongoDB replica-set invariants", () => {
   beforeEach(async () => {
     for (const name of [
       "renders",
+      "render_attempts",
       "wallets",
       "credit_transactions",
       "assets",
@@ -119,6 +177,84 @@ describe.skipIf(!uri)("real MongoDB replica-set invariants", () => {
       () => work(claimed!),
     );
   };
+  it("recovers disjoint accounting writes from MongoDB after changing clients", async () => {
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    const faulty = (name: string, method: string) => new Proxy(db, {
+      get(target, property, receiver) {
+        if (property !== "collection") return Reflect.get(target, property, receiver);
+        return (collectionName: string) => new Proxy(target.collection(collectionName), {
+          get(collection, key) {
+            if (collectionName === name && key === method)
+              return async () => { throw new Error("Injected accounting write failure"); };
+            const value = Reflect.get(collection, key);
+            return typeof value === "function" ? value.bind(collection) : value;
+          },
+        });
+      },
+    });
+    const descriptor = { step: "spatial-generation", provider: "openai", model: "test", outcome: "succeeded" as const, estimatedCostUsd: 0.12, latencyMs: 1 };
+    try {
+      await recordProviderUsage(faulty("render_attempts", "insertOne"), render, descriptor);
+      await recordProviderUsage(faulty("renders", "updateOne"), render, descriptor);
+      await recordProviderUsage(db, render, descriptor);
+      const otherClient = await new MongoClient(uri!).connect();
+      try {
+        const otherDb = otherClient.db(db.databaseName);
+        expect(await renderUsageTotals(otherDb, render.id)).toEqual({ calls: 3, estimatedCostUsd: 0.36, unknownOutcomeCalls: 0 });
+        vi.stubEnv("RENDER_MAX_COST_USD", "0.4");
+        await expect(assertRenderBudget(otherDb, render.id, 0.12)).rejects.toBeInstanceOf(RenderBudgetError);
+        expect((await collections(otherDb).renders.findOne({ id: render.id }))!.usageCallIds).toHaveLength(2);
+        expect(await collections(otherDb).renderAttempts.countDocuments({ renderId: render.id })).toBe(2);
+      } finally { await otherClient.close(); }
+    } finally { warn.mockRestore(); }
+  });
+  it.each(["unavailable", "malformed"] as const)(
+    "persists v11 review exhaustion across MongoDB leases (%s)",
+    async (scenario) => {
+      Object.assign(serverConfig, { aiMockMode: false, openaiApiKey: "fake-test-only", openaiMaxCostUsd: 20 });
+      await collections(db).renders.updateOne({ id: "r" }, {
+        $set: { "execution.configFingerprint": workerFingerprint() },
+      });
+      const fetchMock = vi.fn(async () => scenario === "unavailable"
+        ? new Response("offline", { status: 503 }) : new Response("not json"));
+      vi.stubGlobal("fetch", fetchMock);
+      const stage = `spatial-review-test-${scenario}`;
+      const image = { data: new Uint8Array([1, 2, 3]), mimeType: "image/png" as const };
+      const check = (claimed: RenderDocument) => measureProviderCall(db, claimed, {
+        step: stage, provider: "openai", model: "test", estimatedCostUsd: 0.03,
+      }, () => reviewVisualRender({
+        room: image, composition: image, generated: image,
+        products: [{ id: "product", name: "Chair", image }], replacement: false,
+        deadlineMs: claimed.execution!.deadlineAt.getTime(), executionPolicy: reviewPolicy.version,
+      }), reviewPolicy.retry);
+      await withClaim(async (claimed) => {
+        await reserveDurableCredit(db, claimed);
+        await expect(check(claimed)).rejects.toMatchObject({
+          code: scenario === "unavailable" ? "retry" : "permanent",
+        });
+      });
+      await collections(db).renders.updateOne({ id: "r" }, {
+        $set: { "execution.leaseUntil": new Date(0) },
+      });
+      await withClaim(async (claimed) => {
+        await reserveDurableCredit(db, claimed);
+        await expect(check(claimed)).rejects.toMatchObject({ code: "permanent" });
+        await expect(check(claimed)).rejects.toMatchObject({ code: "permanent" });
+        await endDurableRender(db, claimed, "failed", "Review unavailable", "permanent", true);
+      });
+      const attempts = scenario === "unavailable" ? 2 : 1;
+      expect(fetchMock).toHaveBeenCalledTimes(attempts);
+      const saved = (await collections(db).renders.findOne({ id: "r" }))!;
+      expect(saved.status).toBe("failed");
+      expect(saved.resultAssetId).toBeUndefined();
+      expect(saved.execution!.steps[`${stage}-1`]).toMatchObject({ status: "failed", attempts });
+      const usage = await collections(db).renderAttempts.find({ renderId: "r", stage }).toArray();
+      expect(usage).toHaveLength(attempts);
+      expect(usage.every(row => row.usageOutcome === "unknown" && row.estimatedCostUsd === 0.03)).toBe(true);
+      expect(await collections(db).wallets.findOne({ organizationId: "org" }))
+        .toMatchObject({ balance: 10, reserved: 0 });
+    },
+  );
   const accepted = () => ({
     resultAssetId,
     qualityDecision: {
@@ -135,6 +271,83 @@ describe.skipIf(!uri)("real MongoDB replica-set invariants", () => {
       Array.from({ length: 8 }, (_, i) => claimRender(db, `worker-${i}`)),
     );
     expect(results.filter(Boolean)).toHaveLength(1);
+  });
+  it("freezes spatial admission and product dimensions without spending or requiring a cutout", async () => {
+    vi.stubEnv("RENDER_EXECUTION_MODE", "durable");
+    Object.assign(serverConfig, { spatialAdmissionMode: "internal-all", spatialOrganizationIds: ["org"], aiMockMode: false, openAIImageEnabled: true, openaiApiKey: "unused-test-key" });
+    const productId = crypto.randomUUID();
+    await collections(db).products.insertOne({ id: productId, organizationId: "org", assetId: resultAssetId, name: "Chair", objectType: "furniture", placementType: "floor", widthCm: 42, heightCm: 80, depthCm: 45, views: [] } as unknown as ProductDocument);
+    await collections(db).scenes.updateOne({ id: "scene" }, { $set: { assetId: resultAssetId, widthPx: 600, heightPx: 400 } });
+    const input = { engine: "spatial" as const, placement: { sceneId: "scene", productId, surfaceType: "floor" }, placementPoint: { x: 0.5, y: 0.8 }, idempotencyKey: "spatial-admission" };
+    const admissions = await Promise.all(Array.from({ length: 8 }, () => createRender(db, "org", input)));
+    const admitted = admissions[0]!;
+    expect(new Set(admissions.map(item => item.id)).size).toBe(1);
+    expect(await collections(db).renders.countDocuments({ organizationId: "org", idempotencyKey: input.idempotencyKey })).toBe(1);
+    expect(await collections(db).renderAttempts.countDocuments({ renderId: admitted.id })).toBe(0);
+    expect(admitted.status).toBe("queued"); expect(admitted.engine).toBe("spatial");
+    const source = await collections(db).renders.findOne({ id: admitted.id });
+    const retryKey = `retry:${admitted.id}:${crypto.randomUUID()}`;
+    const retries = await Promise.all(Array.from({ length: 8 }, () => createRender(db, "org", buildRetryInput(source!, retryKey))));
+    expect(new Set(retries.map(item => item.id)).size).toBe(1);
+    expect(retries[0]!.id).not.toBe(admitted.id);
+    expect(await collections(db).renders.countDocuments({ organizationId: "org", idempotencyKey: retryKey })).toBe(1);
+    expect(await collections(db).renderAttempts.countDocuments({ renderId: retries[0]!.id })).toBe(0);
+    await collections(db).products.updateOne({ id: productId }, { $set: { heightCm: 8 } });
+    serverConfig.spatialOrganizationIds = [];
+    const duplicate = await createRender(db, "org", input);
+    expect(duplicate.id).toBe(admitted.id);
+    const saved = await collections(db).renders.findOne({ id: admitted.id });
+    expect(saved!.execution!.products[0]!.heightCm).toBe(80);
+    expect(saved!.engineVersions!.prompt).toBe("spatial-v11");
+    expect(saved!.engineVersions!.visionCostPolicy).toBe("astra-token-allowance-v1");
+    expect(saved!.requestSnapshot!.input.engine).toBe("spatial");
+    await expect(createRender(db, "org", { ...input, idempotencyKey: "after-disabled" })).rejects.toThrow(/internes/);
+    expect((await collections(db).wallets.findOne({ organizationId: "org" }))!.balance).toBe(10);
+  });
+  it("freezes the selected rug texture and retains its source asset in a v10 admission", async () => {
+    vi.stubEnv("RENDER_EXECUTION_MODE", "durable");
+    Object.assign(serverConfig, { spatialAdmissionMode: "internal-all", spatialOrganizationIds: ["org"], aiMockMode: false, openAIImageEnabled: true, openaiApiKey: "unused-test-key" });
+    const productId = crypto.randomUUID();
+    const planarTexture = {
+      version: 1 as const, assetId: resultAssetId, fingerprint: "a".repeat(64),
+      widthPx: 600, heightPx: 400, productWidthCm: 120, productDepthCm: 160,
+      confirmedAt: new Date().toISOString(),
+      corners: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }],
+    };
+    await collections(db).products.insertOne({ id: productId, organizationId: "org", assetId: resultAssetId, name: "Rug", objectType: "rug", placementType: "floor", widthCm: 120, heightCm: 1, depthCm: 160, views: [], planarTexture } as unknown as ProductDocument);
+    await collections(db).scenes.updateOne({ id: "scene" }, { $set: { assetId: resultAssetId, widthPx: 600, heightPx: 400 } });
+    const admitted = await createRender(db, "org", { engine: "spatial", placement: { sceneId: "scene", productId, surfaceType: "floor" }, placementPoint: { x: 0.5, y: 0.8 }, idempotencyKey: "rug-admission" });
+    await collections(db).products.updateOne({ id: productId }, { $unset: { planarTexture: "" }, $set: { widthCm: 130 } });
+    const saved = await collections(db).renders.findOne({ id: admitted.id });
+    expect(saved!.engineVersions!.prompt).toBe("spatial-v11");
+    expect(saved!.execution!.products[0]!.planarTexture).toEqual(planarTexture);
+    expect(saved!.execution!.products[0]!.widthCm).toBe(120);
+    expect(saved!.execution!.sourceAssetIds).toContain(resultAssetId);
+    expect((await collections(db).wallets.findOne({ organizationId: "org" }))!.balance).toBe(10);
+  });
+  it("freezes a restricted solid-base admission and its repair contract without spending", async () => {
+    vi.stubEnv("RENDER_EXECUTION_MODE", "durable");
+    Object.assign(serverConfig, { spatialAdmissionMode: "solid-base-only", spatialOrganizationIds: ["org"], aiMockMode: false, openAIImageEnabled: true, openaiApiKey: "unused-test-key", mattingUrl: "https://matting.example.test", mattingToken: "unused-local-only", mattingTimeoutMs: 60000 });
+    const network = vi.fn(() => { throw new Error("Admission must not call a provider"); });
+    vi.stubGlobal("fetch", network);
+    const productId = crypto.randomUUID();
+    await collections(db).products.insertOne({ id: productId, organizationId: "org", assetId: resultAssetId, name: "Basket", objectType: "other", placementType: "floor", widthCm: 32, heightCm: 32, depthCm: 33, views: [] } as unknown as ProductDocument);
+    await collections(db).scenes.updateOne({ id: "scene" }, { $set: { assetId: resultAssetId, widthPx: 600, heightPx: 400 } });
+    const input = { engine: "spatial" as const, placement: { sceneId: "scene", productId, surfaceType: "floor" }, placementPoint: { x: 0.5, y: 0.8 }, idempotencyKey: "restricted-admission" };
+    await expect(createRender(db, "org", input)).rejects.toThrow(/uniquement les paniers/);
+    const spatialMetadata = { measurementConvention: "Dimensions extérieures", dimensionSource: "catalog" as const, supports: ["floor" as const], characteristicParts: ["complete rim"], contactProfile: "solid-base" as const, volumeFamily: "basket" as const };
+    await collections(db).products.updateOne({ id: productId }, { $set: { spatialMetadata } });
+    const admitted = await createRender(db, "org", input);
+    await collections(db).products.updateOne({ id: productId }, { $unset: { spatialMetadata: "" } });
+    serverConfig.spatialOrganizationIds = [];
+    const duplicate = await createRender(db, "org", input);
+    expect(duplicate.id).toBe(admitted.id);
+    const saved = await collections(db).renders.findOne({ id: admitted.id });
+    expect(saved!.engineVersions).toMatchObject({ prompt: "spatial-v13", volumeIntegrationPolicy: "spatial-volume-local-matte-v1", volumeRepairPolicy: "spatial-volume-numeric-repair-v1" });
+    expect(saved!.execution!.products[0]!.spatialMetadata).toEqual(spatialMetadata);
+    expect(await collections(db).renderAttempts.countDocuments({ renderId: admitted.id })).toBe(0);
+    expect(network).not.toHaveBeenCalled();
+    expect((await collections(db).wallets.findOne({ organizationId: "org" }))!.balance).toBe(10);
   });
   it("cancel and completion racing yield either one debit or one refund", async () => {
     await withClaim(async (claimed) => {
@@ -340,32 +553,47 @@ describe.skipIf(!uri)("real MongoDB replica-set invariants", () => {
       await seedPipeline();
       vi.stubEnv("RENDER_EXECUTION_MODE", "durable");
       try {
-        const result = await createRender(db, "org", {
-          workflow,
-          idempotencyKey: "durable-full",
-          placement: {
-            sceneId: "scene",
-            productId: "p",
-            xNormalized: 0.5,
-            yNormalized: 0.8,
-            scale: 0.2,
-            surfaceType: "table",
-          },
-          simplePlacements: [
-            {
+        const scheduleWake = vi.fn();
+        const result = await createRender(
+          db,
+          "org",
+          {
+            workflow,
+            idempotencyKey: "durable-full",
+            placement: {
+              sceneId: "scene",
               productId: "p",
-              placementPoint: { x: 0.5, y: 0.8 },
-              dimensionPair: {
-                mode: "height_length",
-                heightCm: 20,
-                lengthCm: 10,
-              },
-              pixelsPerCm: 2,
-              placementKind: "standing",
+              xNormalized: 0.5,
+              yNormalized: 0.8,
+              scale: 0.2,
+              surfaceType: "table",
             },
-          ],
-        });
+            simplePlacements: [
+              {
+                productId: "p",
+                placementPoint: { x: 0.5, y: 0.8 },
+                dimensionPair: {
+                  mode: "height_length",
+                  heightCm: 20,
+                  lengthCm: 10,
+                },
+                pixelsPerCm: 2,
+                placementKind: "standing",
+              },
+            ],
+          },
+          undefined,
+          scheduleWake,
+        );
         expect(result.status).toBe("queued");
+        expect(scheduleWake).toHaveBeenCalledOnce();
+        expect(scheduleWake).toHaveBeenCalledWith(expect.any(Function));
+        expect(
+          await collections(db).renders.findOne({ id: result.id }),
+        ).toMatchObject({
+          status: "queued",
+          creditCharged: false,
+        });
         // Change the catalogue after admission. The worker must retain the frozen dimensions.
         await db
           .collection("products")

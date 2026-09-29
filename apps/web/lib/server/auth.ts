@@ -14,6 +14,8 @@ export interface Tenant {
   role: "owner" | "admin" | "member" | "viewer" | "guest" | "platform_admin";
   publicProductId?: string;
   publicSessionId?: string;
+  /** Public concept-store visitor; never a merchant or an internal pilot. */
+  storefront?: true;
   /**
    * Set only for the identity demo mode hands to a request that carries no
    * session at all. It looks like an organization owner so the demo works
@@ -27,6 +29,7 @@ export interface Tenant {
 const cookieName = "lili_session";
 const guestCookieName = "lili_guest_session";
 const publicCookieName = "lili_public_session";
+const storefrontCookieName = "lili_storefront_session";
 const developmentSecret = "lilidecoai-development-session-secret-2026";
 
 function secret(): Uint8Array {
@@ -54,6 +57,7 @@ export async function tenantsForRequest(request: Request): Promise<Tenant[]> {
     readCookie(request, cookieName),
     readCookie(request, guestCookieName),
     readCookie(request, publicCookieName),
+    readCookie(request, storefrontCookieName),
   ].filter((token): token is string => Boolean(token));
   const tenants: Tenant[] = [];
   for (const token of candidates) {
@@ -84,7 +88,8 @@ export async function tenantForRequest(request: Request): Promise<Tenant> {
       : undefined) ??
     readCookie(request, cookieName) ??
     readCookie(request, guestCookieName) ??
-    readCookie(request, publicCookieName);
+    readCookie(request, publicCookieName) ??
+    readCookie(request, storefrontCookieName);
   if (token) {
     const tenant = await verifySessionToken(token);
     if (tenant) return tenant;
@@ -118,6 +123,11 @@ export async function verifySessionToken(
     }
     if (typeof payload.publicSessionId === "string") {
       tenant.publicSessionId = payload.publicSessionId;
+    }
+    if (payload.storefront === true) {
+      if (tenant.role !== "viewer" || !tenant.publicSessionId?.startsWith("storefront:") ||
+          tenant.userId !== tenant.publicSessionId || tenant.publicProductId) return null;
+      tenant.storefront = true;
     }
     return tenant;
   } catch {
@@ -191,10 +201,26 @@ export async function createGuestSession(existing?: Tenant): Promise<{
   };
 }
 
+export async function createStorefrontSession(
+  organizationId: string,
+  request: Request,
+): Promise<{ token: string; cookie: string }> {
+  const cookie = readCookie(request, storefrontCookieName);
+  const existing = cookie ? await verifySessionToken(cookie) : null;
+  const sessionId = `storefront:${crypto.randomUUID()}`;
+  const tenant: Tenant = existing?.storefront && existing.organizationId === organizationId
+    ? existing
+    : { organizationId, userId: sessionId, role: "viewer", publicSessionId: sessionId, storefront: true };
+  const token = await signTenant(tenant, "24h");
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  return { token, cookie: `${storefrontCookieName}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400${secure}` };
+}
+
 async function signTenant(tenant: Tenant, expiresIn: string): Promise<string> {
   return new SignJWT({
     organizationId: tenant.organizationId,
     role: tenant.role,
+    ...(tenant.storefront ? { storefront: true } : {}),
     ...(tenant.publicProductId
       ? { publicProductId: tenant.publicProductId }
       : {}),

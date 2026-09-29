@@ -83,6 +83,48 @@ describe("image model capability and accounting", () => {
     expect(result.error?.code).toBe("render_deadline");
     expect(result.estimatedCostUsd).toBe(0);
   });
+  it("transmits the spatial guide after the room and identity reference", async () => {
+    const fetchMock = vi.fn(async () =>
+      Response.json({ data: [{ b64_json: "AQID" }] }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await new OpenAIImageProvider().edit({
+      ...request(),
+      references: [
+        {
+          data: new Uint8Array([1]),
+          mimeType: "image/webp",
+          role: "composition",
+        },
+        {
+          data: new Uint8Array([2]),
+          mimeType: "image/webp",
+          role: "product_front",
+        },
+        {
+          data: new Uint8Array([3]),
+          mimeType: "image/webp",
+          role: "spatial_guide",
+        },
+        {
+          data: new Uint8Array([4]),
+          mimeType: "image/webp",
+          role: "product_detail",
+        },
+      ],
+    });
+    const body = (
+      fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    )[1].body as FormData;
+    const images = body.getAll("image[]") as Blob[];
+    expect(
+      await Promise.all(
+        images.map(async (file) => [
+          ...new Uint8Array(await file.arrayBuffer()),
+        ]),
+      ),
+    ).toEqual([[1], [2], [3], [4]]);
+  });
 });
 
 function request() {

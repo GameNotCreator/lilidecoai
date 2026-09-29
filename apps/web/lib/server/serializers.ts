@@ -3,6 +3,7 @@ import type { ProductDocument, RenderDocument, SceneDocument } from "./types";
 
 export function productResponse(product: ProductDocument) {
   return {
+    spatialMetadata: product.spatialMetadata ?? undefined,
     id: product.id,
     name: product.name,
     description: product.description,
@@ -68,8 +69,28 @@ export function sceneResponse(scene: SceneDocument) {
   };
 }
 
+function renderErrorResponse(render: RenderDocument) {
+  const error = render.error ?? null;
+  const prefix = "Le placement ne permet pas une intégration fiable : ";
+  if (render.engine !== "spatial" || !error?.startsWith(prefix)) return error;
+
+  // Translate at the API boundary; retain the technical cause in stored evidence.
+  switch (error.slice(prefix.length)) {
+    case "An uncertainty hypothesis intersects the image frame":
+      return "Le produit risque de dépasser la photo. Choisissez un point plus éloigné du bord ou une photo plus large.";
+    case "An uncertainty footprint leaves free support":
+      return "Le produit risque de dépasser la surface disponible. Choisissez un autre emplacement ou un support plus grand.";
+    case "Expanded uncertain volume intersects a hole, obstacle or reflection":
+      return "Le produit risque de recouvrir un obstacle, une ouverture ou un reflet. Choisissez un emplacement plus dégagé.";
+    default:
+      return "Ce placement ne peut pas être confirmé à partir de cette photo. Choisissez un autre emplacement ou une autre photo.";
+  }
+}
+
 export function renderResponse(render: RenderDocument) {
   return {
+    engine: render.engine ?? "legacy",
+    spatialEvidence: render.spatialEvidence,
     id: render.id,
     status: render.status,
     provider: render.provider,
@@ -77,7 +98,7 @@ export function renderResponse(render: RenderDocument) {
     requestedSize: render.requestedSize,
     resultUrl: assetUrl(render.resultAssetId),
     compositeUrl: assetUrl(render.compositeAssetId),
-    error: render.error ?? null,
+    error: renderErrorResponse(render),
     qualityScore: render.qualityScore,
     qualityDecision: render.qualityDecision,
     creditCharged: render.creditCharged,
@@ -105,7 +126,10 @@ export function renderResponse(render: RenderDocument) {
     // Intermediate images, when the run asked for them. Absent otherwise.
     stages: render.stages,
     attemptCount: render.attemptCount ?? 0,
-    estimatedCostUsd: render.estimatedCostUsd ?? 0,
+    estimatedCostUsd:
+      (render.engine === "spatial"
+        ? render.usageTotals?.estimatedCostUsd
+        : undefined) ?? render.estimatedCostUsd ?? 0,
     /**
      * Every paid call this render made, not only its final edit. Diagnostic:
      * the cost is estimated from local constants, not reconciled.

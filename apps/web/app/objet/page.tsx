@@ -3,6 +3,7 @@ import { ProductCreateForm } from "@/components/product-create-form";
 
 export const metadata: Metadata = {
   title: "Ajouter un objet",
+  robots: { index: false, follow: false },
 };
 
 export default function ObjectPage() {

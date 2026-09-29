@@ -1,6 +1,7 @@
 import "server-only";
 
 import { DEMO_MERCHANT_SLUG } from "./types";
+import { renderWorkerRevision } from "../render-worker-revision.mjs";
 
 function clean(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
@@ -47,6 +48,24 @@ function openAIQuality(): "low" | "medium" | "high" | "xhigh" | "max" {
 }
 
 export const serverConfig = {
+  merchantSignupEnabled: clean(process.env.MERCHANT_SIGNUP_ENABLED) === "true" ||
+    (process.env.NODE_ENV !== "production" && clean(process.env.MERCHANT_SIGNUP_ENABLED) !== "false"),
+  // Internal opt-in only; anonymous storefront sessions remain excluded.
+  spatialOrganizationIds: (clean(process.env.SPATIAL_ORGANIZATION_IDS) ?? "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean),
+  // New admission is narrow by default; already admitted jobs keep their version.
+  spatialAdmissionMode:
+    clean(process.env.SPATIAL_ADMISSION_MODE) === "internal-all"
+      ? "internal-all"
+      : "solid-base-only",
+  mattingUrl: clean(process.env.MATTING_URL),
+  mattingToken: clean(process.env.MATTING_TOKEN),
+  mattingTimeoutMs: Math.min(
+    120_000,
+    Math.max(1_000, Number(clean(process.env.MATTING_TIMEOUT_MS)) || 60_000),
+  ),
   mongodbUri:
     clean(process.env.MONGODB_URI) ?? "mongodb://127.0.0.1:27017/lilidecoai",
   mongodbDb: clean(process.env.MONGODB_DB) ?? "lilidecoai",
@@ -77,6 +96,10 @@ export const serverConfig = {
   openaiApiKey: clean(process.env.OPENAI_API_KEY),
   openaiModel: clean(process.env.OPENAI_MODEL) ?? "gpt-image-2.5-sunburst",
   openaiVisionModel: clean(process.env.OPENAI_VISION_MODEL) ?? "gpt-6-astra",
+  openaiVisionReasoning:
+    clean(process.env.OPENAI_VISION_REASONING) === "medium"
+      ? ("medium" as const)
+      : ("high" as const),
   openaiServiceTier: clean(process.env.OPENAI_SERVICE_TIER) ?? "default",
   openaiQuality: openAIQuality(),
   openaiBaseUrl:
@@ -106,7 +129,7 @@ export const serverConfig = {
   adminOrganizationSlug:
     clean(process.env.ADMIN_ORGANIZATION_SLUG) ?? DEMO_MERCHANT_SLUG,
   adminOrganizationName:
-    clean(process.env.ADMIN_ORGANIZATION_NAME) ?? "Atelier Lili",
+    clean(process.env.ADMIN_ORGANIZATION_NAME) ?? "LiliDeco",
 };
 
 function sessionHours(): number {
@@ -117,17 +140,8 @@ function sessionHours(): number {
 
 export function assertProductionConfig(): void {
   if (process.env.NODE_ENV !== "production") return;
-  if (
-    process.env.RENDER_EXECUTION_MODE === "durable" &&
-    !(
-      process.env.VERCEL_GIT_COMMIT_SHA ||
-      (process.env.RENDER_WORKER_REVISION !== "local" &&
-        process.env.RENDER_WORKER_REVISION)
-    )
-  )
-    throw new Error(
-      "RENDER_WORKER_REVISION is required for durable rendering in production",
-    );
+  if (process.env.RENDER_EXECUTION_MODE === "durable")
+    renderWorkerRevision(process.env, true);
   if (!process.env.MONGODB_URI) {
     throw new Error("MONGODB_URI is required in production");
   }

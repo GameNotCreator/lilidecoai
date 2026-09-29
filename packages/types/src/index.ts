@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { renderEngineSchema, renderEvidenceSchema, spatialProductMetadataSchema, spatialReferenceSchema } from "./spatial";
+export * from "./spatial";
 
 export const placementModeSchema = z.enum(["quick", "wall", "surface"]);
 export const renderModeSchema = z.enum(["insert", "replace"]);
@@ -14,6 +16,7 @@ export const surfaceTypeSchema = z.enum([
   "existing_object",
 ]);
 export const productViewTypeSchema = z.enum([
+  "top",
   "front",
   "three_quarter",
   "side",
@@ -115,6 +118,8 @@ const legacySurfaceSchema = z.enum([
 
 export const renderRequestSchema = z
   .object({
+    engine: renderEngineSchema.optional(),
+    spatialReference: spatialReferenceSchema.optional(),
     workflow: z.enum(["standard", "simple_point"]).default("standard"),
     mode: renderModeSchema.default("insert"),
     placement: z.object({
@@ -282,6 +287,7 @@ export const cutoutMetadataSchema = z.object({
 });
 
 export const productSchema = z.object({
+  spatialMetadata: spatialProductMetadataSchema.optional(),
   id: z.string().uuid(),
   name: z.string(),
   description: z.string().default(""),
@@ -340,6 +346,8 @@ export const qualityDecisionSchema = z.object({
 export type QualityDecision = z.infer<typeof qualityDecisionSchema>;
 
 export const renderSchema = z.object({
+  engine: renderEngineSchema.optional(),
+  spatialEvidence: renderEvidenceSchema.optional(),
   id: z.string().uuid(),
   status: renderStatusSchema,
   provider: z.string().nullable(),

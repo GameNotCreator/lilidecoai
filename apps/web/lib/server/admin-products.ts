@@ -1,9 +1,13 @@
 import "server-only";
+import { currentPlanarTexture } from "../planar-texture";
+import { spatialPreparationForCatalog } from "./spatial-policy";
+import { productPreparationStatus } from "./product-preparation";
 
 import type { Db, Filter, Sort } from "mongodb";
 import type { z } from "zod";
 
 import {
+  adminProductSchema,
   productStatuses,
   roundOrNull,
   variantSchema,
@@ -133,12 +137,14 @@ export async function createProduct(
     description: input.description,
     objectType: input.objectType,
     sku: input.sku ?? null,
+    spatialMetadata: input.spatialMetadata,
     widthCm: input.widthCm,
     heightCm: input.heightCm,
     depthCm: input.depthCm,
     material: input.material,
     placementType: input.placementType,
     generationInstructions: input.generationInstructions,
+    visualizationBlockedReason: input.visualizationBlockedReason,
     lightingProfile: {
       source: input.lightingSource,
       reflectance: input.reflectance,
@@ -172,11 +178,13 @@ export async function updateProduct(
     ...fields,
     updatedAt: new Date(),
   };
+  next.spatialPreparation = spatialPreparationForCatalog(next);
   await collections(db).products.updateOne(
     { id: product.id, organizationId: product.organizationId },
     {
       $set: {
         ...fields,
+        spatialPreparation: next.spatialPreparation,
         updatedAt: next.updatedAt,
       },
     },
@@ -196,6 +204,11 @@ export async function setProductStatus(
 ): Promise<ProductDocument> {
   const c = collections(db);
   const resolved = resolveStatus(status, product);
+  if (resolved === "ready" && !await c.assets.findOne({
+    id: product.assetId, organizationId: product.organizationId, kind: "product",
+  })) {
+    throw new AdminProductError("Ajoutez une photo produit disponible avant de publier cette fiche.");
+  }
   const archivedAt = resolved === "archived" ? new Date() : null;
   const assetIds = imageAssetIds(product);
   const updatedAt = new Date();
@@ -227,13 +240,30 @@ export async function setProductStatus(
   if (resolved !== "ready") {
     await syncProductAssetVisibility(db, product, resolved);
   }
-  await c.products.updateOne(
-    { id: product.id, organizationId: product.organizationId },
+  const publicationFilter: Filter<ProductDocument> = resolved === "ready" ? {
+    assetId: product.assetId ?? { $exists: false },
+    cutoutAssetId: product.cutoutAssetId ?? { $exists: false },
+    updatedAt: product.updatedAt, status: product.status,
+    widthCm: product.widthCm, heightCm: product.heightCm, depthCm: product.depthCm,
+    ...(product.productPreparation ? {
+      "productPreparation.completed.preparedAt": product.productPreparation.completed?.preparedAt ?? { $exists: false },
+      "productPreparation.completed.geometryFingerprint": product.productPreparation.completed?.geometryFingerprint ?? { $exists: false },
+      "productPreparation.completed.metadataSha256": product.productPreparation.completed?.metadataSha256 ?? { $exists: false },
+      "productPreparation.completed.configuration": product.productPreparation.completed?.configuration ?? { $exists: false },
+      "productPreparation.failure.at": product.productPreparation.failure?.at ?? { $exists: false },
+      "productPreparation.lease.token": product.productPreparation.lease?.token ?? { $exists: false },
+    } : { productPreparation: { $exists: false } }),
+  } : {};
+  const statusUpdate = await c.products.updateOne(
+    { id: product.id, organizationId: product.organizationId, ...publicationFilter },
     {
-      $set: { status: resolved, archivedAt, updatedAt },
+      $set: { status: resolved, archivedAt, updatedAt, spatialPreparation: spatialPreparationForCatalog(product) },
       $unset: { expiresAt: "" },
     },
   );
+  if (resolved === "ready" && !statusUpdate.matchedCount) {
+    throw new AdminProductError("La fiche ou sa préparation a changé. Rechargez le produit avant de le publier.", 409);
+  }
   if (assetIds.length) {
     await c.assets.updateMany(
       { id: { $in: assetIds } },
@@ -245,7 +275,7 @@ export async function setProductStatus(
     // public image ever belonging to a draft if the product update fails.
     await syncProductAssetVisibility(db, product, resolved);
   }
-  const restored = { ...product, status: resolved, archivedAt, updatedAt };
+  const restored = { ...product, status: resolved, archivedAt, updatedAt, spatialPreparation: spatialPreparationForCatalog(product) };
   delete restored.expiresAt;
   return restored;
 }
@@ -319,6 +349,9 @@ export async function duplicateProduct(
   // carried.
   delete copy.cutout;
   delete copy.views;
+  delete copy.planarTexture;
+  delete copy.spatialPreparation;
+  delete copy.productPreparation;
   delete copy.expiresAt;
   await collections(db).products.insertOne(copy);
   return copy;
@@ -428,11 +461,15 @@ export async function overview(
 export function adminProductResponse(product: ProductDocument) {
   return {
     ...productResponse(product),
+    visualizationBlockedReason: product.visualizationBlockedReason ?? null,
+    sourceAssetId: product.assetId ?? null,
+    planarTexture: currentPlanarTexture(product),
     organizationId: product.organizationId,
     lightingSource: String(product.lightingProfile?.source ?? "front"),
     reflectance: String(product.lightingProfile?.reflectance ?? "matte"),
     viewCount: (product.views ?? []).length,
     hasCutout: Boolean(product.cutoutAssetId),
+    preparation: productPreparationStatus(product),
     temporary: Boolean(product.expiresAt),
     expiresAt: product.expiresAt ? product.expiresAt.toISOString() : null,
     archivedAt: product.archivedAt ? product.archivedAt.toISOString() : null,
@@ -567,15 +604,23 @@ async function countByStatus(
   return { all, draft, processing, ready, archived };
 }
 
-/** A product only goes live once it owns a usable cutout. */
+const commercialPublicationSchema = adminProductSchema.omit({
+  spatialMetadata: true, generationInstructions: true,
+  lightingSource: true, reflectance: true, variants: true,
+}).strip();
+
+/** Publishing a commercial listing does not grant visualization admission. */
 function resolveStatus(
   requested: (typeof productStatuses)[number],
-  product: Pick<ProductDocument, "cutoutAssetId">,
+  product: ProductDocument,
 ): ProductDocument["status"] {
-  if (requested === "ready" && !product.cutoutAssetId) {
+  if (requested === "ready" && !product.assetId) {
     throw new AdminProductError(
-      "Ajoutez une photo et lancez la préparation avant de publier ce produit.",
+      "Ajoutez une photo avant de publier ce produit au catalogue.",
     );
+  }
+  if (requested === "ready" && !commercialPublicationSchema.safeParse(product).success) {
+    throw new AdminProductError("Complétez les informations et les dimensions du produit avant de le publier.");
   }
   return requested;
 }
@@ -585,6 +630,7 @@ function documentFields(
   current?: ProductDocument,
 ): Partial<ProductDocument> {
   const fields: Partial<ProductDocument> = {};
+  if (input.spatialMetadata !== undefined) fields.spatialMetadata = input.spatialMetadata;
   if (input.name !== undefined) fields.name = input.name;
   if (input.description !== undefined) fields.description = input.description;
   if (input.objectType !== undefined) fields.objectType = input.objectType;
@@ -612,6 +658,9 @@ function documentFields(
   if (input.buyUrl !== undefined) fields.buyUrl = input.buyUrl;
   if (input.generationInstructions !== undefined) {
     fields.generationInstructions = input.generationInstructions;
+  }
+  if (input.visualizationBlockedReason !== undefined) {
+    fields.visualizationBlockedReason = input.visualizationBlockedReason;
   }
   if (input.lightingSource !== undefined || input.reflectance !== undefined) {
     fields.lightingProfile = {

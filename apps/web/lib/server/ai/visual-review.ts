@@ -5,6 +5,16 @@ import { z } from "zod";
 import { serverConfig } from "../config";
 import type { QualityReview } from "../render-quality";
 import { markProviderRefusal } from "../provider-usage";
+import { SPATIAL_REVIEW_EXECUTION_POLICY } from "../spatial-review-policy";
+import {
+  observeVisionResponse,
+  preserveVisionObservation,
+} from "./openai-vision-cost";
+import {
+  SPATIAL_VOLUME_NUMERIC_REPAIR_POLICY,
+  volumeReviewObservationsSchema,
+  type VolumeReviewObservations,
+} from "../spatial-volume-repair";
 
 export const VISUAL_REVIEW_VERSION = "visual-review-v2";
 export const VISUAL_REVIEW_TIMEOUT_MS = 45_000;
@@ -28,20 +38,30 @@ export interface VisualProductReference {
   id: string;
   name: string;
   image: VisualImage;
+  views?: Array<{ view: string; image: VisualImage }>;
   /** Planned projected bounds, clipped to the unpadded room frame, in 0..1. */
   expectedBox?: VisualBox;
+  /** A spatial volume bounds possible geometry; it is not a known silhouette. */
+  expectedGeometry?: {
+    kind: "volume-envelope";
+    contact: { x: number; y: number };
+  };
   dimensionsCm?: { width: number; height: number; depth: number };
   /** False means the dimensions in the room are an estimate, not a measurement. */
   scaleVerified?: boolean;
 }
 
 export interface VisualReviewInput {
+  model?: string;
   room: VisualImage;
   composition: VisualImage;
   products: VisualProductReference[];
   replacement: boolean;
   instructions?: string;
   deadlineMs: number;
+  executionPolicy?: typeof SPATIAL_REVIEW_EXECUTION_POLICY.version;
+  /** Opt-in on v13 only; historical review results retain their exact shape. */
+  geometryObservationPolicy?: typeof SPATIAL_VOLUME_NUMERIC_REPAIR_POLICY;
 }
 
 type QualityCheck = { name: string; score: number; reason: string };
@@ -58,6 +78,7 @@ export interface VisualPreflightResult {
 export type VisualQualityReview = QualityReview & {
   confidence: number;
   repairFeedback: string;
+  geometryObservations?: VolumeReviewObservations;
 };
 
 export class VisualReviewError extends Error {
@@ -73,6 +94,7 @@ export class VisualReviewError extends Error {
 }
 
 const unit = z.number().finite().min(0).max(1);
+const contactPoint = z.object({ x: unit, y: unit }).strict().nullable();
 const evidence = z
   .object({
     passed: z.boolean(),
@@ -159,6 +181,24 @@ export const visualRenderSchema = z
     feedback: z.string().trim().min(1).max(300),
   })
   .strict();
+const envelopeRenderSchema = visualRenderSchema
+  .extend({
+    products: z
+      .array(
+        visualRenderSchema.shape.products.element
+          .extend({
+            observedContact: contactPoint,
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(12),
+  })
+  .strict();
+const renderSchemaFor = (products: VisualProductReference[]) =>
+  products.some((p) => p.expectedGeometry?.kind === "volume-envelope")
+    ? envelopeRenderSchema
+    : visualRenderSchema;
 
 type Evidence = z.infer<typeof evidence>;
 
@@ -190,7 +230,9 @@ export async function inspectVisualPreflight(
       "The product may cover its own support in the composition; verify that support against the original room. For replacements, the old target may be gone in the composition and is allowed to exist in the original room.",
     ].join(" "),
   );
-  return parseVisualPreflight(payload, input.products);
+  return preserveVisionObservation(payload, () =>
+    parseVisualPreflight(payload, input.products),
+  );
 }
 
 /** The final image is accepted only after comparison with all source images. */
@@ -202,19 +244,31 @@ export async function reviewVisualRender(
   const payload = await callInspector(
     input,
     "render_visual_review",
-    visualRenderSchema,
+    renderSchemaFor(input.products),
     [
       "Review the final generated image against the original room AND the planned composition AND every original catalog reference.",
       "Check exact intended position/size (not simply a plausible position somewhere in the room), perspective, surface contact, edge matting, fine components, natural lighting/shadows and occlusion ordering.",
       "Reject cut-and-paste appearance, halos/white fringing, hard rectangular edges, floating feet, over-dark/duplicated shadows, missing/transformed components, incorrect color/material, duplicated products and unintended changes to architecture/furniture.",
       "observedBox must be read from the final image, never copied from expectedBox without observing it. Return null when the silhouette cannot be located confidently, and fail present/position/scale as appropriate.",
+      ...(input.products.some((p) => p.expectedGeometry)
+        ? [
+            "For volume-envelope contracts, expectedBox is only the outer bound of a projected cuboid, NOT an exact silhouette. A round vase or open chair need not fill its corners. Assess scale from catalog proportions, the projected dimensions and room evidence, never demand enlargement just to fill the box. Report observedContact as the visually located centre of the base on its support plane, NOT the bottommost silhouette pixel and NOT copied from the expected contact. Return null when uncertain or hidden. For other products report observedContact:null. Envelope acceptance requires confidence and scale/position/contact scores >=0.9; this remains visual plausibility, not metric validation.",
+          ]
+        : []),
       "Set foregroundOccluded only when a specific pre-existing foreground object visibly hides part of this product in the final image. Name that object and the hidden product region in checks.occlusion.reason. A smaller, cropped, missing or moved product is not evidence of foreground occlusion. Confidence, identity, position, scale and occlusion scores must be at least 0.9 to justify this exception to full-silhouette size comparison.",
       "For insert mode, replacementComplete is not applicable and should pass with a reason stating this. For replace mode, verify complete removal of every indicated old target, appendage and old shadow; don't count removal of those named targets as a background defect.",
       "Occlusion passes only when real foreground objects appropriately cover the inserted object; do not accept a product pasted across a shelf lip, table edge or foreground furniture that should hide it.",
     ].join(" "),
     input.generated,
   );
-  return parseVisualRender(payload, input.products, input.replacement);
+  return preserveVisionObservation(payload, () =>
+    parseVisualRender(
+      payload,
+      input.products,
+      input.replacement,
+      input.geometryObservationPolicy,
+    ),
+  );
 }
 
 /** Local policy is stricter than a model's top-level `accepted` declaration. */
@@ -256,8 +310,10 @@ export function parseVisualRender(
   payload: unknown,
   products: VisualProductReference[],
   replacement: boolean,
+  geometryObservationPolicy?: typeof SPATIAL_VOLUME_NUMERIC_REPAIR_POLICY,
 ): VisualQualityReview {
-  const parsed = visualRenderSchema.safeParse(payload);
+  validateGeometryObservationPolicy(geometryObservationPolicy, products);
+  const parsed = renderSchemaFor(products).safeParse(payload);
   if (!parsed.success) throw malformed();
   const data = parsed.data;
   requireProductCoverage(data.products, products);
@@ -298,6 +354,25 @@ export function parseVisualRender(
         score: 0,
         reason: "Silhouette du produit non localisable avec certitude.",
       });
+    } else if (expected.expectedGeometry) {
+      const observedContact = contactPoint.parse(
+        "observedContact" in item ? item.observedContact : null,
+      );
+      checks.push(
+        ...envelopeGeometryChecks(expected, item.observedBox, observedContact),
+      );
+      const strongEvidence =
+        item.confidence >= 0.9 &&
+        [item.checks.scale, item.checks.position, item.checks.contact].every(
+          (check) => check.passed && check.score >= 0.9,
+        );
+      checks.push({
+        name: `${item.id}.geometry_visual_scale`,
+        score: strongEvidence ? 1 : 0,
+        reason: strongEvidence
+          ? "Taille et contact plausibles selon la revue visuelle ; précision métrique non démontrée."
+          : "Preuves visuelles insuffisantes de la taille et du contact dans l’enveloppe volumique.",
+      });
     } else if (expected.expectedBox) {
       checks.push(
         ...geometryChecks(
@@ -321,6 +396,27 @@ export function parseVisualRender(
   const accepted =
     data.accepted && data.score >= MIN_VISUAL_CHECK_SCORE && allPassed;
   const repairFeedback = buildRepairFeedback(checks, data.feedback);
+  const geometryObservations = geometryObservationPolicy
+    ? volumeReviewObservationsSchema.parse({
+        policy: geometryObservationPolicy,
+        source: "validated-visual-review",
+        coordinateSpace: "normalized-original-room",
+        reviewConfidence: data.confidence,
+        products: data.products.map((item) => {
+          const expected = products.find((product) => product.id === item.id)!;
+          return {
+            productId: item.id,
+            confidence: item.confidence,
+            foregroundOccluded: item.foregroundOccluded,
+            expectedBox: expected.expectedBox,
+            expectedContact: expected.expectedGeometry!.contact,
+            observedBox: item.observedBox,
+            observedContact:
+              "observedContact" in item ? item.observedContact : null,
+          };
+        }),
+      })
+    : undefined;
   return {
     accepted,
     score: Math.min(data.score, ...checks.map((check) => check.score)),
@@ -336,6 +432,9 @@ export function parseVisualRender(
       "geometry",
       "geometry_position",
       "geometry_scale",
+      "geometry_envelope",
+      "geometry_contact",
+      "geometry_visual_scale",
     ]),
     // Geometry contracts are fixed. Repairs must restore them, not enlarge all
     // products from one uncalibrated opinion or a multi-product average.
@@ -354,7 +453,30 @@ export function parseVisualRender(
     feedback: accepted ? data.feedback : repairFeedback.slice(0, 300),
     repairFeedback,
     checks,
+    ...(geometryObservations ? { geometryObservations } : {}),
   };
+}
+
+function validateGeometryObservationPolicy(
+  policy: VisualReviewInput["geometryObservationPolicy"],
+  products: VisualProductReference[],
+) {
+  if (policy === undefined) return;
+  if (
+    policy !== SPATIAL_VOLUME_NUMERIC_REPAIR_POLICY ||
+    products.some(
+      (product) =>
+        product.expectedGeometry?.kind !== "volume-envelope" ||
+        !product.expectedBox ||
+        !validBox(product.expectedBox) ||
+        !contactPoint.safeParse(product.expectedGeometry.contact).success ||
+        product.expectedGeometry.contact === null,
+    )
+  )
+    throw new VisualReviewError(
+      "invalid_input",
+      "Contrat d’observation géométrique invalide.",
+    );
 }
 
 function toCheck(name: string, value: Evidence): QualityCheck {
@@ -391,6 +513,58 @@ function buildRepairFeedback(checks: QualityCheck[], fallback: string): string {
 }
 
 /** Conservative tolerances allow visual localization noise, not placement drift. */
+function envelopeGeometryChecks(
+  product: VisualProductReference,
+  observed: VisualBox,
+  contact: { x: number; y: number } | null,
+): QualityCheck[] {
+  const expected = product.expectedBox,
+    target = product.expectedGeometry?.contact;
+  if (
+    !expected ||
+    !validBox(expected) ||
+    !target ||
+    ![target.x, target.y].every((n) => Number.isFinite(n) && n >= 0 && n <= 1)
+  )
+    throw new VisualReviewError(
+      "invalid_input",
+      "Contrat d’enveloppe ou de contact invalide.",
+    );
+  const width = expected.xMax - expected.xMin,
+    height = expected.yMax - expected.yMin;
+  const tx = Math.max(0.003, width * 0.04),
+    ty = Math.max(0.003, height * 0.04);
+  const contained =
+    observed.xMin >= expected.xMin - tx &&
+    observed.xMax <= expected.xMax + tx &&
+    observed.yMin >= expected.yMin - ty &&
+    observed.yMax <= expected.yMax + ty;
+  const anchored =
+    contact !== null &&
+    Math.abs(contact.x - target.x) <= Math.max(0.01, width * 0.08) &&
+    Math.abs(contact.y - target.y) <= Math.max(0.01, height * 0.08) &&
+    contact.x >= observed.xMin - tx &&
+    contact.x <= observed.xMax + tx &&
+    contact.y >= observed.yMin - ty &&
+    contact.y <= observed.yMax + ty;
+  return [
+    {
+      name: `${product.id}.geometry_envelope`,
+      score: contained ? 1 : 0,
+      reason: contained
+        ? "Silhouette contenue dans l’enveloppe prévue ; son remplissage n’est pas une mesure de taille."
+        : "Le produit dépasse son enveloppe de placement.",
+    },
+    {
+      name: `${product.id}.geometry_contact`,
+      score: anchored ? 1 : 0,
+      reason: anchored
+        ? "Centre de contact observé conforme au point prévu."
+        : "Contact non localisable ou décalé : vérifier la base sur le support, sans agrandir le produit pour remplir l’enveloppe.",
+    },
+  ];
+}
+
 function geometryChecks(
   id: string,
   expected: VisualBox,
@@ -498,6 +672,10 @@ function validateImage(image: VisualImage): void {
 }
 
 function validateInput(input: VisualReviewInput): void {
+  validateGeometryObservationPolicy(
+    input.geometryObservationPolicy,
+    input.products,
+  );
   if (!Number.isFinite(input.deadlineMs))
     throw new VisualReviewError(
       "invalid_input",
@@ -518,10 +696,27 @@ function validateInput(input: VisualReviewInput): void {
   validateImage(input.composition);
   for (const product of input.products) {
     validateImage(product.image);
+    if ((product.views?.length ?? 0) > 6)
+      throw new VisualReviewError("invalid_input", "Trop de vues produit.");
+    for (const view of product.views ?? []) {
+      validateImage(view.image);
+      if (!view.view || view.view.length > 80)
+        throw new VisualReviewError(
+          "invalid_input",
+          "Libellé de vue invalide.",
+        );
+    }
     if (
       !product.id ||
       product.id.length > 160 ||
-      (product.expectedBox && !validBox(product.expectedBox))
+      (product.expectedBox && !validBox(product.expectedBox)) ||
+      (product.expectedGeometry &&
+        (!product.expectedBox ||
+          product.expectedGeometry.kind !== "volume-envelope" ||
+          ![
+            product.expectedGeometry.contact.x,
+            product.expectedGeometry.contact.y,
+          ].every((n) => Number.isFinite(n) && n >= 0 && n <= 1)))
     ) {
       throw new VisualReviewError(
         "invalid_input",
@@ -553,17 +748,26 @@ async function callInspector(
       "Le service de contrôle visuel n’est pas configuré.",
     );
   }
-  // Reserve 1s for recording the verdict. Never turn an expired deadline into
-  // a positive timeout, and never retry an ambiguous/provider-refused review.
-  const timeoutMs = Math.min(
-    VISUAL_REVIEW_TIMEOUT_MS,
-    input.deadlineMs - Date.now() - 1_000,
-  );
-  if (timeoutMs < 2_000)
-    throw new VisualReviewError(
-      "deadline",
-      "Temps insuffisant pour vérifier le rendu.",
+  const executionPolicy =
+    input.executionPolicy === SPATIAL_REVIEW_EXECUTION_POLICY.version
+      ? SPATIAL_REVIEW_EXECUTION_POLICY
+      : undefined;
+  // This function never retries. The durable caller owns the bounded retries.
+  function remainingTimeout() {
+    const timeout = Math.min(
+      executionPolicy?.timeoutMs ?? VISUAL_REVIEW_TIMEOUT_MS,
+      input.deadlineMs -
+        Date.now() -
+        (executionPolicy?.deadlineReserveMs ?? 1_000),
     );
+    if (timeout < (executionPolicy?.minimumTimeoutMs ?? 2_000))
+      throw new VisualReviewError(
+        "deadline",
+        "Temps insuffisant pour vérifier le rendu.",
+      );
+    return Math.floor(timeout);
+  }
+  const timeoutMs = remainingTimeout();
   const images: Array<{ label: string; image: VisualImage }> = [
     { label: "ORIGINAL ROOM: untouched source scene", image: input.room },
     {
@@ -579,10 +783,16 @@ async function callInspector(
           },
         ]
       : []),
-    ...input.products.map((product) => ({
-      label: `ORIGINAL CATALOG REFERENCE for placement ${JSON.stringify(product.id)}`,
-      image: product.image,
-    })),
+    ...input.products.flatMap((product) => [
+      {
+        label: `ORIGINAL CATALOG REFERENCE for placement ${JSON.stringify(product.id)}`,
+        image: product.image,
+      },
+      ...(product.views ?? []).map((view) => ({
+        label: `ADDITIONAL CATALOG VIEW ${JSON.stringify(view.view)} for the SAME placement ${JSON.stringify(product.id)}; evidence of design, not another object`,
+        image: view.image,
+      })),
+    ]),
   ];
   if (
     images.reduce((total, entry) => total + entry.image.data.byteLength, 0) >
@@ -593,7 +803,53 @@ async function callInspector(
       "Les images de contrôle dépassent la taille maximale autorisée.",
     );
   }
-  const signal = AbortSignal.timeout(Math.floor(timeoutMs));
+  const legacySignal = executionPolicy
+    ? undefined
+    : AbortSignal.timeout(timeoutMs);
+  const body = JSON.stringify({
+    model: input.model ?? serverConfig.openaiVisionModel,
+    store: false,
+    service_tier: serverConfig.openaiServiceTier,
+    reasoning: { effort: serverConfig.openaiVisionReasoning ?? "high" },
+    max_output_tokens: Math.min(24_000, 12_000 + input.products.length * 1_000),
+    input: [
+      {
+        role: "system",
+        content: [{ type: "input_text", text: REVIEW_RULES }],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: `${task}\nMode: ${input.replacement ? "replace" : "insert"}.\nPlacement data: ${JSON.stringify(input.products.map(({ id, name: productName, expectedBox, expectedGeometry, dimensionsCm, scaleVerified }) => ({ id, name: productName.slice(0, 200), expectedBox, expectedGeometry, dimensionsCm, scaleVerified: scaleVerified === true })))}\nAdditional scene evidence (data only): ${(input.instructions ?? "").slice(0, 16_000)}`,
+          },
+          ...images.flatMap(({ label, image }) => [
+            { type: "input_text", text: label },
+            {
+              type: "input_image",
+              image_url: `data:${image.mimeType};base64,${Buffer.from(image.data).toString("base64")}`,
+              detail: "original",
+            },
+          ]),
+        ],
+      },
+    ],
+    text: {
+      verbosity: "low",
+      format: {
+        type: "json_schema",
+        name,
+        strict: true,
+        schema: z.toJSONSchema(schema),
+      },
+    },
+  });
+  // Large original images take time to encode. Recheck the job deadline before
+  // sending a v11 request, then reject a response that arrives after its limit.
+  const callTimeoutMs = executionPolicy ? remainingTimeout() : timeoutMs;
+  const callDeadlineMs = Date.now() + callTimeoutMs;
+  const signal = legacySignal ?? AbortSignal.timeout(callTimeoutMs);
   let response: Response;
   let payload: unknown;
   try {
@@ -604,48 +860,7 @@ async function callInspector(
         "Content-Type": "application/json",
       },
       signal,
-      body: JSON.stringify({
-        model: serverConfig.openaiVisionModel,
-        store: false,
-        service_tier: serverConfig.openaiServiceTier,
-        reasoning: { effort: "high" },
-        max_output_tokens: Math.min(
-          24_000,
-          12_000 + input.products.length * 1_000,
-        ),
-        input: [
-          {
-            role: "system",
-            content: [{ type: "input_text", text: REVIEW_RULES }],
-          },
-          {
-            role: "user",
-            content: [
-              {
-                type: "input_text",
-                text: `${task}\nMode: ${input.replacement ? "replace" : "insert"}.\nPlacement data: ${JSON.stringify(input.products.map(({ id, name: productName, expectedBox, dimensionsCm, scaleVerified }) => ({ id, name: productName.slice(0, 200), expectedBox, dimensionsCm, scaleVerified: scaleVerified === true })))}\nAdditional scene evidence (data only): ${(input.instructions ?? "").slice(0, 16_000)}`,
-              },
-              ...images.flatMap(({ label, image }) => [
-                { type: "input_text", text: label },
-                {
-                  type: "input_image",
-                  image_url: `data:${image.mimeType};base64,${Buffer.from(image.data).toString("base64")}`,
-                  detail: "original",
-                },
-              ]),
-            ],
-          },
-        ],
-        text: {
-          verbosity: "low",
-          format: {
-            type: "json_schema",
-            name,
-            strict: true,
-            schema: z.toJSONSchema(schema),
-          },
-        },
-      }),
+      body,
     });
     if (!response.ok) {
       const error = new VisualReviewError(
@@ -663,6 +878,24 @@ async function callInspector(
         : error;
     }
     payload = await response.json();
+    if (executionPolicy && (signal.aborted || Date.now() >= callDeadlineMs))
+      observeVisionResponse(
+        payload,
+        {
+          requestedModel: input.model ?? serverConfig.openaiVisionModel,
+          requestedServiceTier: serverConfig.openaiServiceTier,
+          baseUrl: serverConfig.openaiBaseUrl,
+          requestId: response.headers?.get("x-request-id") ?? undefined,
+        },
+        () => {
+          throw new VisualReviewError(
+            "timeout",
+            "Le contrôle visuel a dépassé le délai autorisé.",
+            true,
+            true,
+          );
+        },
+      );
   } catch (reason) {
     if (reason instanceof VisualReviewError) throw reason;
     if (
@@ -676,6 +909,7 @@ async function callInspector(
         true,
       );
     }
+    if (executionPolicy && reason instanceof SyntaxError) throw malformed();
     throw new VisualReviewError(
       "provider_error",
       "Le contrôle visuel n’a pas retourné de réponse exploitable.",
@@ -683,7 +917,16 @@ async function callInspector(
       true,
     );
   }
-  return extractStructuredReview(payload);
+  return observeVisionResponse(
+    payload,
+    {
+      requestedModel: input.model ?? serverConfig.openaiVisionModel,
+      requestedServiceTier: serverConfig.openaiServiceTier,
+      baseUrl: serverConfig.openaiBaseUrl,
+      requestId: response.headers?.get("x-request-id") ?? undefined,
+    },
+    () => extractStructuredReview(payload),
+  );
 }
 
 /** A valid-looking JSON fragment in an incomplete or refused response is not evidence. */

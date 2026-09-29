@@ -19,6 +19,7 @@ import {
   productQueryFilter,
   productSortSpec,
   setProductStatus,
+  updateProduct,
 } from "../lib/server/admin-products";
 import {
   productAssetVisibility,
@@ -69,6 +70,55 @@ beforeEach(() => {
 });
 
 describe("catalogue publication boundary", () => {
+  it("persists preparation at publication and refreshes it when dimensions change", async () => {
+    const original = product();
+    products.rows.push(original as unknown as Record<string, unknown>);
+    assets.rows.push({ id: original.assetId, organizationId: original.organizationId, kind: "product" });
+    const published = await setProductStatus(db, original, "ready");
+    expect(published.spatialPreparation?.dimensions.widthCm).toBe(20);
+    expect(products.rows[0]!.spatialPreparation).toEqual(
+      published.spatialPreparation,
+    );
+    const edited = await updateProduct(db, published, { widthCm: 25 });
+    expect(edited.spatialPreparation?.dimensions.widthCm).toBe(25);
+    expect(edited.spatialPreparation?.fingerprint).not.toBe(
+      published.spatialPreparation?.fingerprint,
+    );
+    const incomplete = await updateProduct(db, edited, { depthCm: 0 });
+    expect(incomplete.spatialPreparation).toBeNull();
+    expect(incomplete.status).toBe("ready");
+  });
+  it("publishes a commercial listing with its original photo and no prepared cutout", async () => {
+    const original = product({ cutoutAssetId: undefined, cutout: undefined });
+    products.rows.push({ ...original });
+    assets.rows.push({ id: original.assetId, organizationId: original.organizationId, kind: "product", visibility: "private" });
+    const published = await setProductStatus(db, original, "ready");
+    expect(published.status).toBe("ready");
+    expect(published.cutoutAssetId).toBeUndefined();
+    expect(published.productPreparation).toBeUndefined();
+    expect(assets.rows[0]?.visibility).toBe("published");
+  });
+  it.each([
+    { name: "" }, { widthCm: 0 }, { heightCm: 0 }, { depthCm: -1 },
+    { assetId: undefined },
+  ])("refuses commercial publication without a valid photo and catalog fields: %j", async patch => {
+    const original = product(patch);
+    products.rows.push({ ...original });
+    assets.rows.push({ id: "asset-main", organizationId: original.organizationId, kind: "product", visibility: "private" });
+    await expect(setProductStatus(db, original, "ready")).rejects.toMatchObject({ status: 422 });
+    expect(products.rows[0]?.status).toBe("draft");
+    expect(assets.rows[0]?.visibility).toBe("private");
+  });
+  it.each(["missing", "foreign", "wrong-kind"])("refuses a %s source asset", async state => {
+    const original = product();
+    products.rows.push({ ...original });
+    if (state !== "missing") assets.rows.push({
+      id: original.assetId, organizationId: state === "foreign" ? "other-org" : original.organizationId,
+      kind: state === "wrong-kind" ? "scene" : "product", visibility: "private",
+    });
+    await expect(setProductStatus(db, original, "ready")).rejects.toMatchObject({ status: 422 });
+    expect(products.rows[0]?.status).toBe("draft");
+  });
   it("keeps catalogue draft images private and publishes only ready images", () => {
     expect(productAssetVisibility(product())).toBe("organization");
     expect(productAssetVisibility(product({ status: "processing" }))).toBe(
@@ -166,6 +216,7 @@ describe("asset state follows product state", () => {
     for (const id of [item.assetId, item.cutoutAssetId]) {
       assets.rows.push({
         id,
+        kind: id === item.assetId ? "product" : "cutout",
         organizationId: item.organizationId,
         visibility,
         ownerSessionId: "guest:old",

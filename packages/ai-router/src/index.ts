@@ -13,7 +13,7 @@ export type SurfaceType =
   | "existing_object";
 
 export type ProductViewType =
-  "front" | "three_quarter" | "side" | "back" | "detail";
+  "front" | "three_quarter" | "side" | "back" | "detail" | "top";
 
 export type PipelineState =
   | "uploaded"
@@ -48,7 +48,8 @@ export interface ImageReference {
     | "product_detail"
     | "composition"
     | "target_mask"
-    | "intermediate";
+    | "intermediate"
+    | "spatial_guide";
 }
 
 export interface ProviderImage {

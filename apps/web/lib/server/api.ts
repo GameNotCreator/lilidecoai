@@ -6,6 +6,7 @@ import {
   sceneAnalysisRequestSchema,
   segmentationRequestSchema,
   simplePlacementKindSchema,
+  spatialPreviewRequestSchema,
   type CutoutMetadata,
 } from "@lili/types";
 import type { Db } from "mongodb";
@@ -17,7 +18,6 @@ import {
   assetUrl,
   deleteAsset,
   normalizeImage,
-  prepareCutout,
   readAsset,
   privateVisibility,
   storeAsset,
@@ -41,12 +41,15 @@ import {
 } from "./admin-products";
 import { cloudinaryStorageConfigured, serverConfig } from "./config";
 import {
-  CUTOUT_VERSION,
   CutoutUnusableError,
   cutoutTrust,
   cutoutVerdict,
 } from "./cutout-identity";
 import { CreditError, getCredits } from "./credits";
+import {
+  MattingUnavailableError,
+  prepareProductCutout,
+} from "./product-cutout";
 import { collections, database, pingMongo } from "./mongodb";
 import {
   selectPlacementIntentProvider,
@@ -59,6 +62,7 @@ import { createRender, RenderError, type DeferRenderTask } from "./rendering";
 import { stopRender } from "./render-lifecycle";
 import { checkpointAssetIds } from "./checkpoint-assets";
 import { buildRetryInput } from "./render-request";
+import { spatialRetryBodySchema } from "../spatial-retry";
 import {
   productAssetVisibility,
   productListFilter,
@@ -72,9 +76,11 @@ import type {
   SceneDocument,
   SegmentationDocument,
 } from "./types";
-import {
-  DEMO_MERCHANT_SLUG,
-} from "./types";
+import { DEMO_MERCHANT_SLUG } from "./types";
+import { validateSpatialAdmission, canUseSpatialPilot, canReadSpatialRenders } from "./spatial-policy";
+import { getRoomGeometry, buildSpatialPlan } from "./spatial-planning";
+import { SpatialCacheBusyError } from "./spatial-scene-cache";
+import { assertStorefrontRoute, normalizeStorefrontRender } from "./storefront";
 
 const productCreateSchema = z.object({
   temporary: z.boolean().default(false),
@@ -157,7 +163,8 @@ export async function dispatchApi(
             : serverConfig.openaiApiKey
               ? serverConfig.openaiModel
               : null,
-          executionMode: process.env.RENDER_EXECUTION_MODE === "durable" ? "durable" : "web",
+          executionMode:
+            process.env.RENDER_EXECUTION_MODE === "durable" ? "durable" : "web",
           openAIConfigured: Boolean(serverConfig.openaiApiKey),
           googleConfigured: Boolean(serverConfig.googleApiKey),
           previewModel: serverConfig.googlePreviewImageModel,
@@ -170,10 +177,6 @@ export async function dispatchApi(
     }
 
     const db = await database();
-    if (serverConfig.demoMode) {
-      await ensureDemoSeed(db);
-    }
-
     if (path[0] === "auth") {
       return await handleAuth(db, request, path.slice(1));
     }
@@ -182,7 +185,7 @@ export async function dispatchApi(
       path.length === 3 &&
       request.method === "GET"
     ) {
-      if (path[1] === DEMO_MERCHANT_SLUG) {
+      if (serverConfig.demoMode && path[1] === DEMO_MERCHANT_SLUG) {
         await ensureDemoSeed(db);
         await ensureDemoCredits(db);
       }
@@ -190,6 +193,16 @@ export async function dispatchApi(
     }
 
     const tenant = await tenantForRequest(request);
+    if (!serverConfig.demoMode && tenant.publicSessionId && !tenant.storefront) {
+      const storefront = await collections(db).organizations.findOne({ slug: serverConfig.adminOrganizationSlug });
+      if (storefront?.id === tenant.organizationId)
+        throw new AuthError("Utilisez la visualisation depuis la boutique LiliDeco.", 403);
+    }
+    if (tenant.storefront) assertStorefrontRoute(request, path);
+    if (serverConfig.demoMode && !tenant.storefront) await ensureDemoSeed(db);
+    if (path[0] === "render-capabilities" && request.method === "GET") {
+      return Response.json({ spatial: canUseSpatialPilot(tenant, serverConfig.spatialOrganizationIds ?? []) });
+    }
     if (path[0] === "products") {
       return await handleProducts(db, tenant, request, path.slice(1));
     }
@@ -248,6 +261,7 @@ async function handleAuth(
   path: string[],
 ): Promise<Response> {
   if (path[0] === "guest" && request.method === "POST") {
+    if (!serverConfig.demoMode) throw new AuthError("La démonstration publique n’est pas activée.", 403);
     await ensureDemoSeed(db);
     await ensureDemoCredits(db);
     // The body may still carry a `sessionId`; it is deliberately ignored.
@@ -264,6 +278,7 @@ async function handleAuth(
     );
   }
   if (path[0] === "signup" && request.method === "POST") {
+    if (!serverConfig.merchantSignupEnabled) throw new AuthError("La création de comptes marchands n’est pas ouverte.", 403);
     const body = (await request.json()) as {
       name?: string;
       email?: string;
@@ -414,7 +429,7 @@ async function handleProducts(
   if (path[1] === "assets" && request.method === "POST") {
     const file = await uploadedFile(request);
     const viewType = z
-      .enum(["front", "three_quarter", "side", "back", "detail"])
+      .enum(["front", "three_quarter", "side", "back", "top", "detail"])
       .parse(file.fields.viewType ?? "front");
     const currentViews = product.views ?? [];
     if (
@@ -490,34 +505,21 @@ async function handleProducts(
     if (!product.assetId) throw new ApiInputError("Photo produit requise");
     const source = await readAsset(db, product.assetId);
     if (!source) return error("Photo produit introuvable", 404);
-    const cutout = await prepareCutout(source.buffer);
+    const cutout = await prepareProductCutout(source.buffer, { objectType: product.objectType });
     const warnings = [...cutout.warnings];
-    // PRO-008 / A03. The model used to RE-RENDER the product here whenever the
-    // local matte struggled, and that image became the cutout — that is, the
-    // identity reference the render composites and re-stamps over its own
-    // output. The only check was that the result was transparent enough, never
-    // that it was still the customer's object.
-    //
-    // It cannot be salvaged by using the model's alpha over the original
-    // pixels either: `selectOutputSize` quantises the request to three aspect
-    // buckets, no mask is sent, and the answer comes back at 0.5-0.75x the
-    // source resolution, so nothing relates the two grids. The call is gone.
-    //
-    // What replaces it is a verdict. Two outcomes are genuinely unusable and
-    // are refused; every softer doubt is recorded and still shipped, because
-    // its frequency on real photos has never been measured and refusing on a
-    // guess would turn away customers whose photo works.
+    // Segmentation may supply an aligned alpha mask, never replacement
+    // product pixels. The same unusable-cutout gate still applies afterward.
     const verdict = cutoutVerdict(cutout.quality);
     if (!verdict.usable) throw new CutoutUnusableError(verdict);
     const metadata: CutoutMetadata = {
       widthPx: cutout.widthPx,
       heightPx: cutout.heightPx,
       baseRowFraction: cutout.baseRowFraction,
-      source: "heuristic",
+      source: cutout.source,
       synthetic: false,
       shadowRemoved: cutout.shadowRemoved,
       warnings,
-      cutoutVersion: CUTOUT_VERSION,
+      cutoutVersion: cutout.version,
       verdict,
     };
     const asset = await storeAsset(db, {
@@ -625,6 +627,28 @@ async function handleScenes(
       : {}),
   });
   if (!scene) return error("Scène introuvable", 404);
+  if (["spatial-analysis", "spatial-preview"].includes(path[1] ?? "") && request.method === "POST") {
+    if (!canUseSpatialPilot(tenant, serverConfig.spatialOrganizationIds ?? [])) throw new AuthError("Essai spatial interne non activé.", 403);
+    if (scene.status === "deleted" || scene.expiresAt.getTime() <= Date.now()) return error("Photo expirée ou supprimée.", 410);
+    if (serverConfig.aiMockMode || !serverConfig.openaiApiKey) return error("Analyse spatiale indisponible.", 503);
+    const previewInput = path[1] === "spatial-preview" ? spatialPreviewRequestSchema.parse(await request.json()) : undefined;
+    let geometry: ReturnType<typeof validateSpatialAdmission> | undefined;
+    if (previewInput) {
+      const product = await c.products.findOne({ id: previewInput.productId, organizationId: tenant.organizationId });
+      if (!product) return error("Produit introuvable", 404);
+      geometry = validateSpatialAdmission({ engine: "spatial", placement: { sceneId: scene.id, productId: product.id }, surfaceType: previewInput.surfaceType, placementPoint: previewInput.point, spatialReference: previewInput.reference, idempotencyKey: "preview-only" }, product, true);
+    }
+    await enforcePaidLimit(db, tenant, "spatial-room", 100, 1000, 600_000);
+    const asset = await readAsset(db, scene.assetId);
+    if (!asset) return error("Photo expirée.", 410);
+    const room = await sharp(asset.buffer).rotate().webp({ lossless: true }).toBuffer();
+    try {
+      const analysis = await getRoomGeometry(db, scene, room, serverConfig.openaiVisionModel);
+      if (!previewInput || !geometry) return Response.json({ ready: true, sceneFingerprint: analysis.fingerprint });
+      const plan = await buildSpatialPlan(room, analysis, { point: previewInput.point, kind: previewInput.surfaceType === "floor" ? "floor" : previewInput.surfaceType === "shelf" ? "shelf" : "table", size: geometry.dimensions, shape: geometry.shape, yawDegrees: previewInput.yawDegrees, reference: previewInput.reference });
+      return Response.json(plan.preview);
+    } catch (reason) { if (reason instanceof SpatialCacheBusyError) return Response.json({ pending: true }, { status: 202, headers: { "Retry-After": "2" } }); throw reason; }
+  }
   if (path.length === 1 && request.method === "GET") {
     return Response.json(sceneResponse(scene));
   }
@@ -1051,10 +1075,17 @@ async function handleRenders(
   deferRenderTask?: DeferRenderTask,
 ): Promise<Response> {
   const c = collections(db);
+  if (path.length === 2 && path[0] === "by-request" && request.method === "GET") {
+    if (!canReadSpatialRenders(tenant)) throw new AuthError("Rendu spatial interne non accessible.", 403);
+    const key = z.string().min(1).max(160).parse(path[1]);
+    const render = await c.renders.findOne({ organizationId: tenant.organizationId, engine: "spatial", idempotencyKey: key, publicSessionId: { $exists: false } });
+    return Response.json(render ? renderResponse(render) : { detail: "Cette demande n’est pas encore enregistrée." }, { status: render ? 200 : 404, headers: { "Cache-Control": "no-store" } });
+  }
   if (path.length === 0 && request.method === "GET") {
     const renders = await c.renders
       .find({
         organizationId: tenant.organizationId,
+        ...(!canReadSpatialRenders(tenant) ? { engine: { $ne: "spatial" } } : {}),
         ...(tenant.publicSessionId
           ? { publicSessionId: tenant.publicSessionId }
           : {}),
@@ -1072,12 +1103,22 @@ async function handleRenders(
     request.method === "POST" &&
     (path.length === 0 || qualityEndpoint !== null)
   ) {
-    await enforcePaidLimit(db, tenant, "render", 12, 200, 600_000);
     const body = (await request.json()) as Record<string, unknown>;
     const input = renderRequestSchema.parse({
       ...body,
       ...(qualityEndpoint ? { outputQuality: qualityEndpoint } : {}),
     });
+    if (input.engine === "spatial" && !canUseSpatialPilot(tenant, serverConfig.spatialOrganizationIds ?? [])) throw new AuthError("Essai spatial interne non activé.", 403);
+    if (tenant.storefront) {
+      // A lost response must remain recoverable even if the catalogue changed
+      // after admission. This returns only this visitor's already admitted job.
+      const existing = await c.renders.findOne({
+        organizationId: tenant.organizationId, publicSessionId: tenant.publicSessionId,
+        idempotencyKey: input.idempotencyKey, engine: { $ne: "spatial" },
+      });
+      if (existing) return Response.json(renderResponse(existing), { status: 200 });
+    }
+    await enforcePaidLimit(db, tenant, "render", 12, 200, 600_000);
     if (tenant.publicSessionId) {
       if (
         tenant.publicProductId &&
@@ -1143,7 +1184,7 @@ async function handleRenders(
     const result = await createRender(
       db,
       tenant.organizationId,
-      normalizedInput,
+      await normalizeStorefrontRender(db, tenant, normalizedInput),
       tenant.publicSessionId,
       deferRenderTask,
     );
@@ -1157,6 +1198,7 @@ async function handleRenders(
       : {}),
   });
   if (!render) return error("Rendu introuvable", 404);
+  if (render.engine === "spatial" && !canReadSpatialRenders(tenant)) throw new AuthError("Rendu spatial interne non accessible.", 403);
   if (path.length === 1 && request.method === "GET") {
     return Response.json(renderResponse(render));
   }
@@ -1207,11 +1249,16 @@ async function handleRenders(
   }
   if (path[1] === "retry" && request.method === "POST") {
     await enforcePaidLimit(db, tenant, "render", 12, 200, 600_000);
-    const retryInput = buildRetryInput(render);
+    const key =
+      render.engine === "spatial"
+        ? spatialRetryBodySchema.parse(await request.json().catch(() => null))
+            .idempotencyKey
+        : undefined;
+    const retryInput = buildRetryInput(render, key);
     const result = await createRender(
       db,
       tenant.organizationId,
-      retryInput,
+      await normalizeStorefrontRender(db, tenant, retryInput),
       tenant.publicSessionId,
       deferRenderTask,
     );
@@ -1282,6 +1329,8 @@ async function publicVisualizer(
   merchantSlug: string,
   productId: string,
 ): Promise<Response> {
+  if (!serverConfig.demoMode && merchantSlug === serverConfig.adminOrganizationSlug)
+    return error("Ouvrez ce produit depuis la boutique LiliDeco pour le visualiser.", 403);
   const organization = await collections(db).organizations.findOne({
     slug: merchantSlug,
   });
@@ -1438,6 +1487,8 @@ function errorResponse(reason: unknown): Response {
     return error(reason.issues[0]?.message ?? "Données invalides", 422);
   }
   if (reason instanceof AuthError) return error(reason.message, reason.status);
+  if (reason instanceof MattingUnavailableError)
+    return error(reason.message, 503);
   if (reason instanceof RenderError)
     return error(reason.message, reason.status);
   if (reason && typeof reason === "object" && "status" in reason) {

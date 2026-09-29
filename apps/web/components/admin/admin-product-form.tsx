@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -27,6 +27,7 @@ import {
   type AdminProduct,
 } from "@/lib/admin-client";
 import { prepareImageForUpload } from "@/lib/client-image";
+import { PlanarTextureEditor } from "./planar-texture-editor";
 
 interface VariantRow {
   key: string;
@@ -42,6 +43,12 @@ interface VariantRow {
 }
 
 interface FormState {
+  measurementConvention: string;
+  dimensionSource: "catalog" | "measured" | "estimated";
+  supports: Array<"floor" | "table" | "shelf" | "wall">;
+  characteristicParts: string;
+  contactProfile: "" | "solid-base";
+  volumeFamily: "" | "basket" | "vase";
   name: string;
   description: string;
   objectType: string;
@@ -60,12 +67,19 @@ interface FormState {
   stock: string;
   buyUrl: string;
   generationInstructions: string;
+  visualizationBlockedReason: string;
   lightingSource: string;
   reflectance: string;
   variants: VariantRow[];
 }
 
 const emptyForm: FormState = {
+  measurementConvention: "",
+  dimensionSource: "catalog",
+  supports: ["table"],
+  characteristicParts: "",
+  contactProfile: "",
+  volumeFamily: "",
   name: "",
   description: "",
   objectType: "vase",
@@ -84,6 +98,7 @@ const emptyForm: FormState = {
   stock: "",
   buyUrl: "",
   generationInstructions: "",
+  visualizationBlockedReason: "",
   lightingSource: "front",
   reflectance: "matte",
   variants: [],
@@ -101,7 +116,14 @@ const dimensionHints: Record<string, string> = {
   other: "Renseignez les mesures au point le plus large.",
 };
 
-const viewOrder = ["front", "three_quarter", "side", "back", "detail"] as const;
+const viewOrder = [
+  "front",
+  "three_quarter",
+  "side",
+  "back",
+  "top",
+  "detail",
+] as const;
 
 export function AdminProductForm({ productId }: { productId?: string }) {
   const router = useRouter();
@@ -114,6 +136,7 @@ export function AdminProductForm({ productId }: { productId?: string }) {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const mutationInFlight = useRef(false);
 
   useEffect(() => {
     if (!productId) return;
@@ -153,6 +176,8 @@ export function AdminProductForm({ productId }: { productId?: string }) {
   }
 
   async function run(label: string, task: () => Promise<unknown>) {
+    if (mutationInFlight.current) return;
+    mutationInFlight.current = true;
     setBusy(label);
     setError("");
     setNotice("");
@@ -161,22 +186,37 @@ export function AdminProductForm({ productId }: { productId?: string }) {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Action impossible");
     } finally {
+      mutationInFlight.current = false;
       setBusy("");
     }
   }
 
   async function save() {
+    if (
+      !form.measurementConvention.trim() &&
+      (form.contactProfile || product?.spatialMetadata?.contactProfile)
+    ) {
+      setError(
+        "Renseignez la convention de mesure pour enregistrer ou retirer le profil de placement à base pleine.",
+      );
+      return;
+    }
     const payload = toPayload(form);
     if (!payload) {
-      setError("Nom, matière et dimensions (largeur, hauteur) sont obligatoires.");
+      setError(
+        "Nom, matière et dimensions (largeur, hauteur) sont obligatoires.",
+      );
       return;
     }
     await run("save", async () => {
       if (editing && product) {
-        const updated = await adminApi<AdminProduct>(`/products/${product.id}`, {
-          method: "PATCH",
-          body: JSON.stringify(payload),
-        });
+        const updated = await adminApi<AdminProduct>(
+          `/products/${product.id}`,
+          {
+            method: "PATCH",
+            body: JSON.stringify(payload),
+          },
+        );
         setProduct(updated);
         setForm(toForm(updated));
         setNotice("Fiche enregistrée.");
@@ -231,7 +271,7 @@ export function AdminProductForm({ productId }: { productId?: string }) {
       setProduct(updated);
       setNotice(
         type === "front"
-          ? "Photo de face remplacée. Lancez la préparation pour republier."
+          ? "Photo de face remplacée. Vous pouvez publier la fiche ; préparez la nouvelle photo pour la visualisation."
           : "Vue ajoutée.",
       );
     });
@@ -262,7 +302,9 @@ export function AdminProductForm({ productId }: { productId?: string }) {
       }
       setProduct(updated);
       setForm(toForm(updated));
-      setNotice(label);
+      setNotice(
+        name === "prepare" ? (updated.preparation?.detail ?? label) : label,
+      );
       router.refresh();
     });
   }
@@ -288,6 +330,22 @@ export function AdminProductForm({ productId }: { productId?: string }) {
   }
 
   const viewsByType = new Map((product?.views ?? []).map((v) => [v.type, v]));
+  const preparation = product?.preparation;
+  const preparationStatus =
+    preparation?.status ??
+    (product?.assetUrl ? "not-prepared" : "missing-photo");
+  const preparing = busy === "prepare" || preparationStatus === "preparing";
+  const unsavedChanges = Boolean(
+    product && JSON.stringify(form) !== JSON.stringify(toForm(product)),
+  );
+  const preparationLabels = {
+    "missing-photo": "Photo nécessaire",
+    "not-prepared": "À préparer",
+    stale: "Préparation à mettre à jour",
+    preparing: "Préparation en cours",
+    ready: "Prêt pour la visualisation",
+    failed: "Préparation à reprendre",
+  };
 
   return (
     <>
@@ -316,7 +374,7 @@ export function AdminProductForm({ productId }: { productId?: string }) {
             className="bo-button bo-button-primary"
             type="button"
             onClick={() => void save()}
-            disabled={busy === "save"}
+            disabled={Boolean(busy) || preparing}
           >
             {busy === "save" ? (
               <LoaderCircle className="spin" size={16} />
@@ -476,6 +534,116 @@ export function AdminProductForm({ productId }: { productId?: string }) {
           <section className="bo-panel">
             <div className="bo-panel-head">
               <div>
+                <h2>Placement spatial</h2>
+                <p>
+                  Décrivez les mesures réellement connues et les détails à
+                  préserver.
+                </p>
+              </div>
+            </div>
+            <TextField
+              id="measurementConvention"
+              label="Convention de mesure"
+              value={form.measurementConvention}
+              onChange={(value) => set("measurementConvention", value)}
+              placeholder="Dimensions hors tout, anses et fleurs comprises…"
+            />
+            <div className="bo-field">
+              <label htmlFor="dimensionSource">Origine des dimensions</label>
+              <select
+                id="dimensionSource"
+                value={form.dimensionSource}
+                onChange={(event) =>
+                  set(
+                    "dimensionSource",
+                    event.target.value as FormState["dimensionSource"],
+                  )
+                }
+              >
+                <option value="catalog">Catalogue fournisseur</option>
+                <option value="measured">Mesurées</option>
+                <option value="estimated">Estimées</option>
+              </select>
+            </div>
+            <fieldset className="bo-support-options">
+              <legend>Supports compatibles</legend>
+              <div>
+                {(
+                  [
+                    ["floor", "Sol"],
+                    ["table", "Table"],
+                    ["shelf", "Étagère"],
+                    ["wall", "Mur"],
+                  ] as const
+                ).map(([value, label]) => (
+                  <label className="bo-switch" key={value}>
+                    <input
+                      type="checkbox"
+                      checked={form.supports.includes(value)}
+                      onChange={(event) =>
+                        set(
+                          "supports",
+                          event.target.checked
+                            ? [...form.supports, value]
+                            : form.supports.filter((item) => item !== value),
+                        )
+                      }
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+            <div className="bo-field">
+              <label htmlFor="volumeFamily">Profil de placement interne</label>
+              <select
+                id="volumeFamily"
+                aria-describedby="volumeFamily-help"
+                value={
+                  form.contactProfile === "solid-base" ? form.volumeFamily : ""
+                }
+                onChange={(event) => {
+                  const volumeFamily = event.target
+                    .value as FormState["volumeFamily"];
+                  setForm((current) => ({
+                    ...current,
+                    volumeFamily,
+                    contactProfile: volumeFamily ? "solid-base" : "",
+                  }));
+                }}
+              >
+                <option value="">Désactivé — placement habituel</option>
+                <option value="basket">Panier opaque à base pleine</option>
+                <option value="vase">Vase opaque à base pleine</option>
+              </select>
+              <small id="volumeFamily-help">
+                Réservé aux essais internes sur les paniers et vases opaques
+                dont toute la base repose sur le support. Les objets en verre
+                transparent sont exclus. La convention de mesure doit être
+                renseignée. Ce choix n’ouvre pas la fonctionnalité aux
+                visiteurs.
+              </small>
+            </div>
+            <div className="bo-field">
+              <label htmlFor="characteristicParts">
+                Parties caractéristiques (une par ligne)
+              </label>
+              <textarea
+                id="characteristicParts"
+                rows={3}
+                value={form.characteristicParts}
+                maxLength={4500}
+                onChange={(event) =>
+                  set("characteristicParts", event.target.value)
+                }
+                placeholder="Bague autour du col&#10;Quatre pieds et barreaux du dossier"
+              />
+            </div>
+          </section>
+
+          <section className="bo-panel">
+            <div className="bo-panel-head">
+              <div>
                 <h2>Tailles & déclinaisons</h2>
                 <p>
                   Une ligne par taille disponible. Laissez vide si le produit
@@ -608,7 +776,9 @@ export function AdminProductForm({ productId }: { productId?: string }) {
                     onClick={() =>
                       set(
                         "variants",
-                        form.variants.filter((item) => item.key !== variant.key),
+                        form.variants.filter(
+                          (item) => item.key !== variant.key,
+                        ),
                       )
                     }
                   >
@@ -635,11 +805,17 @@ export function AdminProductForm({ productId }: { productId?: string }) {
                 <select
                   id="lightingSource"
                   value={form.lightingSource}
-                  onChange={(event) => set("lightingSource", event.target.value)}
+                  onChange={(event) =>
+                    set("lightingSource", event.target.value)
+                  }
                 >
                   <option value="front">Face uniforme</option>
-                  <option value="softbox-left">Diffuse, depuis la gauche</option>
-                  <option value="softbox-right">Diffuse, depuis la droite</option>
+                  <option value="softbox-left">
+                    Diffuse, depuis la gauche
+                  </option>
+                  <option value="softbox-right">
+                    Diffuse, depuis la droite
+                  </option>
                 </select>
               </div>
               <div className="bo-field">
@@ -768,6 +944,7 @@ export function AdminProductForm({ productId }: { productId?: string }) {
                           type="file"
                           accept="image/png,image/jpeg,image/webp"
                           aria-label={`Vue ${viewLabels[type]}`}
+                          disabled={Boolean(busy) || preparing}
                           onChange={(event) => {
                             const selected = event.target.files?.[0];
                             if (selected) void uploadView(type, selected);
@@ -783,6 +960,7 @@ export function AdminProductForm({ productId }: { productId?: string }) {
                           <button
                             type="button"
                             className="bo-link-danger"
+                            disabled={Boolean(busy) || preparing}
                             onClick={() => void removeView(type)}
                           >
                             Retirer
@@ -798,45 +976,161 @@ export function AdminProductForm({ productId }: { productId?: string }) {
             )}
 
             {editing && (
-              <button
-                className="bo-button bo-button-secondary bo-button-block"
-                type="button"
-                onClick={() =>
-                  void action(
-                    "prepare",
-                    "Détourage prêt. La fiche reste en brouillon jusqu’à sa publication.",
-                  )
-                }
-                disabled={busy === "prepare"}
-              >
-                {busy === "prepare" ? (
-                  <LoaderCircle className="spin" size={16} />
-                ) : (
-                  <Wand2 size={16} />
+              <div>
+                <div
+                  className={`bo-alert ${preparationStatus === "ready" ? "bo-alert-ok" : preparationStatus === "failed" ? "bo-alert-error" : ""}`}
+                  role="status"
+                >
+                  <div>
+                    <strong>
+                      {preparing
+                        ? "Préparation en cours"
+                        : preparationLabels[preparationStatus]}
+                    </strong>
+                    <p>
+                      {preparing
+                        ? "La photo est en cours de préparation. La boutique utilisera le résultat une fois cette étape terminée."
+                        : (preparation?.detail ??
+                          "Ajoutez la photo de face, enregistrez les dimensions puis préparez l’article pour sa visualisation.")}
+                    </p>
+                    {preparationStatus === "ready" &&
+                      preparation?.preparedAt && (
+                        <small>
+                          Préparé le {formatDate(preparation.preparedAt)}
+                        </small>
+                      )}
+                  </div>
+                </div>
+                {preparationStatus === "ready" && product?.cutoutUrl && (
+                  <figure className="bo-prepared-preview">
+                    <div>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={product.cutoutUrl}
+                        alt={`Détourage préparé de ${product.name}`}
+                      />
+                    </div>
+                    <figcaption>
+                      Résultat préparé pour la visualisation
+                    </figcaption>
+                  </figure>
                 )}
-                Détourer et préparer
-              </button>
+                <div className="bo-field">
+                  <small>
+                    La photo est préparée ici et le résultat est conservé pour
+                    les visualisations des clients. Une préparation encore à
+                    jour est réutilisée. Après un changement de photo ou de
+                    dimensions, mettez-la à jour avant de proposer à nouveau la
+                    visualisation de l’article.
+                  </small>
+                </div>
+                {unsavedChanges && (
+                  <div className="bo-field">
+                    <small>
+                      Enregistrez vos modifications avant de préparer cet
+                      article.
+                    </small>
+                  </div>
+                )}
+                <button
+                  className="bo-button bo-button-secondary bo-button-block"
+                  type="button"
+                  onClick={() =>
+                    void action(
+                      "prepare",
+                      "Préparation terminée. Vous pouvez publier la fiche.",
+                    )
+                  }
+                  disabled={
+                    Boolean(busy) ||
+                    preparing ||
+                    unsavedChanges ||
+                    preparationStatus === "missing-photo" ||
+                    preparationStatus === "ready"
+                  }
+                >
+                  {preparing ? (
+                    <LoaderCircle className="spin" size={16} />
+                  ) : preparationStatus === "ready" ? (
+                    <CheckCircle2 size={16} />
+                  ) : (
+                    <Wand2 size={16} />
+                  )}
+                  {preparing
+                    ? "Préparation en cours…"
+                    : preparationStatus === "ready"
+                      ? "Préparation à jour"
+                      : preparationStatus === "stale"
+                        ? "Mettre à jour la préparation"
+                        : preparationStatus === "failed"
+                          ? "Réessayer la préparation"
+                          : "Préparer pour la visualisation"}
+                </button>
+                {preparationStatus === "preparing" && !busy && (
+                  <button
+                    type="button"
+                    className="bo-button bo-button-ghost bo-button-block"
+                    onClick={() =>
+                      void run("preparation-status", async () => {
+                        if (product)
+                          setProduct(
+                            await adminApi<AdminProduct>(
+                              `/products/${product.id}`,
+                            ),
+                          );
+                      })
+                    }
+                  >
+                    Actualiser l’état de la préparation
+                  </button>
+                )}
+              </div>
             )}
           </section>
 
+          {editing && product?.objectType === "rug" && (
+            <PlanarTextureEditor
+              key={product.updatedAt}
+              product={product}
+              onSaved={setProduct}
+            />
+          )}
           {editing && product && (
             <section className="bo-panel">
               <div className="bo-panel-head">
                 <div>
                   <h2>Publication</h2>
                   <p>
-                    {product.hasCutout
-                      ? "Le produit dispose d’un détourage exploitable."
-                      : "Préparez le détourage avant de publier."}
+                    La fiche peut être publiée avec sa photo. La visualisation
+                    demande aussi une préparation valide : vérifiez le détourage
+                    avant de la proposer aux clients.
                   </p>
                 </div>
               </div>
               <div className="bo-actions-column">
+                <div className="bo-field">
+                  <label htmlFor="visualizationBlockedReason">Motif de désactivation de la visualisation</label>
+                  <textarea
+                    id="visualizationBlockedReason"
+                    rows={3}
+                    maxLength={500}
+                    value={form.visualizationBlockedReason}
+                    onChange={(event) => set("visualizationBlockedReason", event.target.value)}
+                    aria-describedby="visualization-block-hint"
+                  />
+                  <p id="visualization-block-hint" className="bo-hint">
+                    Laissez vide pour lever le blocage après vérification. Un motif
+                    enregistré bloque la préparation et les nouvelles visualisations,
+                    tout en laissant la fiche visible au catalogue.
+                  </p>
+                </div>
                 {product.status === "ready" ? (
                   <button
                     className="bo-button bo-button-secondary"
                     type="button"
-                    onClick={() => void action("unpublish", "Produit dépublié.")}
+                    onClick={() =>
+                      void action("unpublish", "Produit dépublié.")
+                    }
                   >
                     <EyeOff size={16} /> Dépublier
                   </button>
@@ -845,6 +1139,11 @@ export function AdminProductForm({ productId }: { productId?: string }) {
                     className="bo-button bo-button-secondary"
                     type="button"
                     onClick={() => void action("publish", "Produit publié.")}
+                    disabled={
+                      Boolean(busy) ||
+                      unsavedChanges ||
+                      !product.sourceAssetId
+                    }
                   >
                     <CheckCircle2 size={16} /> Publier sur le site
                   </button>
@@ -874,14 +1173,13 @@ export function AdminProductForm({ productId }: { productId?: string }) {
                       void action("persist", "Produit rendu permanent.")
                     }
                   >
-                    Rendre permanent (expire le{" "}
-                    {formatDate(product.expiresAt)})
+                    Rendre permanent (expire le {formatDate(product.expiresAt)})
                   </button>
                 )}
                 {product.status === "ready" && (
                   <a
                     className="bo-button bo-button-ghost"
-                    href={`/demo?product=${product.id}`}
+                    href={`/visualiser?products=${encodeURIComponent(product.id)}`}
                     target="_blank"
                     rel="noreferrer"
                   >
@@ -1001,6 +1299,19 @@ function replaceAt(
 
 function toForm(product: AdminProduct): FormState {
   return {
+    measurementConvention: product.spatialMetadata?.measurementConvention ?? "",
+    dimensionSource: product.spatialMetadata?.dimensionSource ?? "catalog",
+    supports: product.spatialMetadata?.supports ?? [
+      product.placementType === "floor"
+        ? "floor"
+        : product.placementType === "wall"
+          ? "wall"
+          : "table",
+    ],
+    characteristicParts:
+      product.spatialMetadata?.characteristicParts.join("\n") ?? "",
+    contactProfile: product.spatialMetadata?.contactProfile ?? "",
+    volumeFamily: product.spatialMetadata?.volumeFamily ?? "",
     name: product.name,
     description: product.description,
     objectType: product.objectType,
@@ -1014,11 +1325,13 @@ function toForm(product: AdminProduct): FormState {
     heightCm: String(product.heightCm),
     depthCm: String(product.depthCm),
     weightKg: product.weightKg === null ? "" : String(product.weightKg),
-    price: product.priceCents === null ? "" : (product.priceCents / 100).toFixed(2),
+    price:
+      product.priceCents === null ? "" : (product.priceCents / 100).toFixed(2),
     currency: product.currency || "TND",
     stock: product.stock === null ? "" : String(product.stock),
     buyUrl: product.buyUrl ?? "",
     generationInstructions: product.generationInstructions ?? "",
+    visualizationBlockedReason: product.visualizationBlockedReason ?? "",
     lightingSource: product.lightingSource || "front",
     reflectance: product.reflectance || "matte",
     variants: (product.variants ?? []).map((variant) => ({
@@ -1030,7 +1343,9 @@ function toForm(product: AdminProduct): FormState {
       heightCm: variant.heightCm === null ? "" : String(variant.heightCm),
       depthCm: variant.depthCm === null ? "" : String(variant.depthCm),
       price:
-        variant.priceCents === null ? "" : (variant.priceCents / 100).toFixed(2),
+        variant.priceCents === null
+          ? ""
+          : (variant.priceCents / 100).toFixed(2),
       stock: variant.stock === null ? "" : String(variant.stock),
       available: variant.available,
     })),
@@ -1044,6 +1359,23 @@ function toPayload(form: FormState): Record<string, unknown> | null {
     return null;
   }
   return {
+    ...(form.measurementConvention.trim()
+      ? {
+          spatialMetadata: {
+            measurementConvention: form.measurementConvention.trim(),
+            dimensionSource: form.dimensionSource,
+            supports: form.supports,
+            characteristicParts: form.characteristicParts
+              .split("\n")
+              .map((part) => part.trim())
+              .filter(Boolean),
+            ...(form.contactProfile
+              ? { contactProfile: form.contactProfile }
+              : {}),
+            ...(form.volumeFamily ? { volumeFamily: form.volumeFamily } : {}),
+          },
+        }
+      : {}),
     name: form.name.trim(),
     description: form.description.trim(),
     objectType: form.objectType,
@@ -1062,6 +1394,7 @@ function toPayload(form: FormState): Record<string, unknown> | null {
     stock: numberOrNull(form.stock),
     buyUrl: form.buyUrl.trim() || null,
     generationInstructions: form.generationInstructions.trim(),
+    visualizationBlockedReason: form.visualizationBlockedReason.trim() || null,
     lightingSource: form.lightingSource,
     reflectance: form.reflectance,
     variants: form.variants

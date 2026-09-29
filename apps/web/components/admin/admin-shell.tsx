@@ -10,6 +10,7 @@ import {
   LayoutDashboard,
   LogOut,
   PlusCircle,
+  ClipboardList,
 } from "lucide-react";
 
 import { adminApi } from "@/lib/admin-client";
@@ -18,6 +19,7 @@ const links = [
   { href: "/admin", label: "Tableau de bord", icon: LayoutDashboard },
   { href: "/admin/produits", label: "Banque de produits", icon: Boxes },
   { href: "/admin/produits/nouveau", label: "Nouveau produit", icon: PlusCircle },
+  { href: "/admin/commandes", label: "Commandes", icon: ClipboardList },
   { href: "/admin/operations", label: "Opérations IA", icon: Activity },
 ];
 
@@ -49,7 +51,7 @@ export function AdminShell({
           <span>LD</span>
           <div>
             <strong>Back office</strong>
-            <small>Lili Deco AI</small>
+            <small>LiliDeco</small>
           </div>
         </div>
         <nav>

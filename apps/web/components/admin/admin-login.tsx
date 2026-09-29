@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, KeyRound, LoaderCircle, Lock, ShieldAlert, X } from "lucide-react";
+import { KeyRound, LoaderCircle, Lock, ShieldAlert } from "lucide-react";
 
 import { adminApi } from "@/lib/admin-client";
 
@@ -10,8 +10,6 @@ type DetectedVariables = Record<string, boolean>;
 
 export function AdminLogin({
   configured,
-  reason,
-  detected,
   returnTo,
 }: {
   configured: boolean;
@@ -51,34 +49,17 @@ export function AdminLogin({
         <span className="bo-badge">
           <Lock size={13} /> Back office
         </span>
-        <h1>Banque de produits.</h1>
+        <h1>Le catalogue LiliDeco.</h1>
         <p>
-          Espace réservé à l’équipe. Les identifiants proviennent des variables
-          d’environnement du serveur.
+          Connectez-vous pour gérer les produits, leurs photos et leur publication.
         </p>
 
         {!configured && (
           <div className="bo-alert bo-alert-warning" role="alert">
             <ShieldAlert size={18} />
             <div>
-              <strong>Back office verrouillé</strong>
-              <p>{reason}</p>
-              {detected && (
-                <ul className="bo-detected">
-                  {Object.entries(detected).map(([name, present]) => (
-                    <li key={name} className={present ? "present" : "missing"}>
-                      {present ? <Check size={13} /> : <X size={13} />}
-                      <code>{name}</code>
-                      <span>{present ? "reçue" : "absente"}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <pre className="bo-code">
-                {`ADMIN_USERNAME=votre-identifiant
-ADMIN_PASSWORD=un-mot-de-passe-long
-APP_SESSION_SECRET=32-caracteres-aleatoires-minimum`}
-              </pre>
+              <strong>Connexion temporairement indisponible</strong>
+              <p>La configuration de cet espace doit être terminée par son administrateur.</p>
             </div>
           </div>
         )}
