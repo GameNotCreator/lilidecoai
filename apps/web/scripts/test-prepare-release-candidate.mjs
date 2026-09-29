@@ -211,6 +211,121 @@ test("verification can bind an external expected identity and recheck the source
   await assert.rejects(verifyReleaseCandidate({ ...input, againstSource: true }), /Source checkout differs/);
 });
 
+test("Vercel-injected metadata is accepted only during the bound hosted production build", async (t) => {
+  const input = await fixture(t);
+  const release = await prepareReleaseCandidate(input);
+  const manifest = await readFile(join(input.output, MANIFEST));
+  await mkdir(join(input.output, ".vercel/cache/corepack"), { recursive: true });
+  await mkdir(join(input.output, ".vercel/output"));
+  await writeFile(join(input.output, ".vercel/project.json"), JSON.stringify({ projectId: "prj_test", orgId: "team_test" }));
+  await writeFile(join(input.output, ".vercel/README.txt"), "Generated Vercel project metadata.\n");
+  await writeFile(join(input.output, ".vercel/cache/corepack/generated.js"), "package-manager-cache");
+  await writeFile(join(input.output, ".vercel/output/config.json"), '{"version":3}');
+  const options = { ...input, allowBuildOutput: true, expectedRevision: release.workerRevision,
+    env: { VERCEL: "1", VERCEL_ENV: "production" } };
+  for (const override of [
+    { env: {} }, { env: { VERCEL_ENV: "production" } },
+    { env: { VERCEL: "1", VERCEL_ENV: "preview" } },
+    { env: { VERCEL: "1", VERCEL_ENV: "development" } },
+    { allowBuildOutput: false }, { againstSource: true }, { expectedRevision: undefined },
+  ]) await assert.rejects(verifyReleaseCandidate({ ...options, ...override }), /Unexpected release directory/);
+  const checked = await verifyReleaseCandidate(options);
+  assert.deepEqual(checked.ignoredBuildOutputs,
+    [".vercel/README.txt", ".vercel/cache", ".vercel/output", ".vercel/project.json"]);
+  assert.deepEqual(await readFile(join(input.output, MANIFEST)), manifest);
+  await writeFile(join(input.output, "apps/web/lib/example.ts"), "export const changed = true;\n");
+  await assert.rejects(verifyReleaseCandidate(options), /fingerprint differs/);
+});
+
+test("Vercel metadata does not admit extra files, secrets, nested roots or symlinks", async (t) => {
+  for (const variant of ["unknown", "secret", "literal", "nested", "root-link", "cache-link"]) {
+    const input = await fixture(t);
+    const release = await prepareReleaseCandidate(input);
+    const options = { ...input, allowBuildOutput: true, expectedRevision: release.workerRevision,
+      env: { VERCEL: "1", VERCEL_ENV: "production" } };
+    const metadata = join(input.output, variant === "nested" ? "apps/web/.vercel" : ".vercel");
+    if (variant === "root-link" || variant === "cache-link") {
+      const external = join(input.directory, "outside");
+      await mkdir(external);
+      if (variant === "cache-link") await mkdir(metadata);
+      await symlink(external, variant === "root-link" ? metadata : join(metadata, "cache"),
+        process.platform === "win32" ? "junction" : "dir");
+      await assert.rejects(verifyReleaseCandidate(options), /link/i);
+    } else {
+      await mkdir(metadata);
+      if (variant === "unknown") await writeFile(join(metadata, "private-photo.jpg"), "not-generated");
+      if (variant === "secret") await writeFile(join(metadata, ".env.production"), "SECRET_SENTINEL");
+      if (variant === "literal") await writeFile(join(metadata, "project.json"),
+        JSON.stringify({ apiKey: "sk-" + "a".repeat(40) }));
+      await assert.rejects(verifyReleaseCandidate(options), /Unexpected Vercel build metadata path|Unexpected release directory|Possible credential/);
+    }
+  }
+});
+
+test("root Vercel configuration must match the verified app configuration in the bound hosted build", async (t) => {
+  const input = await fixture(t);
+  const configuration = { framework: "nextjs", buildCommand: "node scripts/vercel-build.mjs",
+    crons: [{ path: "/api/cron/purge", schedule: "0 3 * * *" }] };
+  await input.put("apps/web/vercel.json", configuration);
+  const release = await prepareReleaseCandidate(input);
+  const manifest = await readFile(join(input.output, MANIFEST));
+  // Formatting and property order may change when Vercel relocates the configuration.
+  await writeFile(join(input.output, "vercel.json"), JSON.stringify({
+    crons: [{ schedule: "0 3 * * *", path: "/api/cron/purge" }],
+    buildCommand: configuration.buildCommand, framework: configuration.framework,
+  }, null, 2));
+  const options = { ...input, allowBuildOutput: true, expectedRevision: release.workerRevision,
+    env: { VERCEL: "1", VERCEL_ENV: "production" } };
+  for (const override of [
+    { env: {} }, { env: { VERCEL_ENV: "production" } },
+    { env: { VERCEL: "1", VERCEL_ENV: "preview" } },
+    { allowBuildOutput: false }, { againstSource: true }, { expectedRevision: undefined },
+  ]) await assert.rejects(verifyReleaseCandidate({ ...options, ...override }), /Unexpected release file/);
+  const checked = await verifyReleaseCandidate(options);
+  assert.deepEqual(checked.ignoredBuildOutputs, ["vercel.json"]);
+  assert.deepEqual(await readFile(join(input.output, MANIFEST)), manifest);
+  for (const name of ["lilidecoai", "lilidecoai-web"]) {
+    await writeFile(join(input.output, "vercel.json"), JSON.stringify({ ...configuration, name, version: 2 }));
+    assert.equal((await verifyReleaseCandidate(options)).status, "verified");
+  }
+  const modified = JSON.stringify({ ...configuration, crons: [] });
+  await writeFile(join(input.output, "apps/web/vercel.json"), modified);
+  await writeFile(join(input.output, "vercel.json"), modified);
+  await assert.rejects(verifyReleaseCandidate(options), /Release file fingerprint differs: apps\/web\/vercel.json/);
+});
+
+test("root Vercel configuration rejects differences, invalid JSON, secrets, directories and links without exposing values", async (t) => {
+  for (const variant of ["changed", "added", "version", "name", "invalid", "secret", "directory", "link"]) {
+    const input = await fixture(t);
+    const release = await prepareReleaseCandidate(input);
+    const path = join(input.output, "vercel.json");
+    const options = { ...input, allowBuildOutput: true, expectedRevision: release.workerRevision,
+      env: { VERCEL: "1", VERCEL_ENV: "production" } };
+    const sentinel = "PRIVATE_VALUE_MUST_NOT_APPEAR";
+    if (variant === "directory") await mkdir(path);
+    else if (variant === "link") {
+      const outside = join(input.directory, "outside");
+      await mkdir(outside);
+      await symlink(outside, path, process.platform === "win32" ? "junction" : "dir");
+    } else if (variant === "invalid") await writeFile(path, `{${sentinel}`);
+    else {
+      const configuration = JSON.parse(await readFile(join(input.output, "apps/web/vercel.json"), "utf8"));
+      if (variant === "changed") configuration.buildCommand = sentinel;
+      if (variant === "version") configuration.version = 3;
+      if (variant === "name") configuration.name = sentinel;
+      if (variant === "added") configuration.crons = [{ path: sentinel, schedule: "* * * * *" }];
+      if (variant === "secret") configuration.token = "sk-" + "a".repeat(40);
+      await writeFile(path, JSON.stringify(configuration));
+    }
+    await assert.rejects(verifyReleaseCandidate(options), (error) => {
+      assert.match(error.message, /differs from verified app configuration|Invalid root Vercel configuration JSON|Possible credential|Unexpected release directory|cannot be a link/);
+      assert.equal(error.message.includes(sentinel), false);
+      assert.equal(error.message.includes("sk-" + "a".repeat(40)), false);
+      return true;
+    });
+  }
+});
+
 test("a forged manifest cannot admit a forbidden bootstrap path even with recomputed identity", async (t) => {
   const input = await fixture(t);
   await prepareReleaseCandidate(input);

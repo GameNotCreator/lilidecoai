@@ -262,7 +262,7 @@ function permittedBuildOutput(path, isDirectory) {
 }
 
 export async function verifyReleaseCandidate({ output, sourceRoot = sourceDefault,
-  againstSource = false, allowBuildOutput = false, expectedRevision } = {}) {
+  againstSource = false, allowBuildOutput = false, expectedRevision, env = process.env } = {}) {
   const root = await noLinks(output);
   await noLinks(join(root, MANIFEST));
   if ((await lstat(join(root, MANIFEST))).size > MAX_FILE_BYTES) throw new Error("Oversized release manifest");
@@ -286,10 +286,47 @@ export async function verifyReleaseCandidate({ output, sourceRoot = sourceDefaul
   const expected = new Set([...names, MANIFEST]);
   const found = new Set();
   const ignoredBuildOutputs = [];
+  let rootVercelConfiguration;
+  // Vercel injects metadata after the clean package has been uploaded.
+  // It is never source, and local/against-source verification stays strict.
+  const allowVercelMetadata = allowBuildOutput && !againstSource && Boolean(expectedRevision)
+    && env.VERCEL === "1" && env.VERCEL_ENV === "production";
+  async function verifyVercelMetadata() {
+    for (const name of sorted(await readdir(join(root, ".vercel")))) {
+      const child = `.vercel/${name}`;
+      const info = await lstat(join(root, child));
+      if (info.isSymbolicLink()) throw new Error(`Build root cannot be a link: ${child}`);
+      // Framework outputs and package-manager caches have the same opaque
+      // treatment as .next/node_modules; only their exact roots are admitted.
+      if (info.isDirectory() && ["cache", "output"].includes(name)) {
+        ignoredBuildOutputs.push(child);
+      } else if (info.isFile() && ["project.json", "README.txt", "README.md"].includes(name)) {
+        if (info.size > MAX_FILE_BYTES) throw new Error(`Oversized Vercel metadata: ${child}`);
+        inspectText(child, await readFile(join(root, child)));
+        ignoredBuildOutputs.push(child);
+      } else {
+        // Report only a bounded path, never provider metadata or environment values.
+        throw new Error(`Unexpected Vercel build metadata path: ${child.slice(0, 200)}`);
+      }
+    }
+  }
   async function walk(path = "") {
     for (const name of sorted(await readdir(join(root, path)))) {
       const child = path ? `${path}/${name}` : name;
       const info = await lstat(join(root, child));
+      if (child === "vercel.json" && allowVercelMetadata) {
+        if (info.isSymbolicLink()) throw new Error(`Build root cannot be a link: ${child}`);
+        if (!info.isFile()) throw new Error(`Unexpected release directory: ${child}`);
+        if (info.size > MAX_FILE_BYTES) throw new Error(`Oversized Vercel metadata: ${child}`);
+        rootVercelConfiguration = inspectText(child, await readFile(join(root, child)));
+        continue;
+      }
+      if (child === ".vercel" && allowVercelMetadata) {
+        if (info.isSymbolicLink()) throw new Error(`Build root cannot be a link: ${child}`);
+        if (!info.isDirectory()) throw new Error(`Unexpected release file: ${child}`);
+        await verifyVercelMetadata();
+        continue;
+      }
       if (allowBuildOutput && permittedBuildOutput(child, info.isDirectory())) {
         if (info.isSymbolicLink()) throw new Error(`Build root cannot be a link: ${child}`);
         ignoredBuildOutputs.push(child);
@@ -318,6 +355,19 @@ export async function verifyReleaseCandidate({ output, sourceRoot = sourceDefaul
   }
   const dependencies = dependencyChecks(contents);
   if (!same(dependencies, manifest.dependencies)) throw new Error("Release dependency evidence differs");
+  if (rootVercelConfiguration !== undefined) {
+    let configuration;
+    try { configuration = JSON.parse(rootVercelConfiguration); }
+    catch { throw new Error("Invalid root Vercel configuration JSON"); }
+    // The hosted CLI adds the deployment name and config version. They do not
+    // alter application behavior; accept only this project's observed names.
+    if (configuration?.version === 2) delete configuration.version;
+    if (["lilidecoai", "lilidecoai-web"].includes(configuration?.name)) delete configuration.name;
+    // Compare only after the app configuration passed its manifest fingerprint.
+    if (!same(configuration, JSON.parse(contents.get("apps/web/vercel.json").toString("utf8"))))
+      throw new Error("Root Vercel configuration differs from verified app configuration");
+    ignoredBuildOutputs.push("vercel.json");
+  }
   if (againstSource) {
     const current = await snapshot(sourceRoot);
     if (current.workerRevision !== manifest.workerRevision) throw new Error("Source checkout differs from release snapshot");
