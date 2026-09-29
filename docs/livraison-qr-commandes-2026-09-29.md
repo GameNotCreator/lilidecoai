@@ -29,10 +29,22 @@ Use case: photorealistic-natural. Asset type: premium home decor concept store w
 
 ## Validation et publication
 
-Validation locale du 29 septembre : 1 205 tests unitaires, 32 intégrations Mongo, 62 contrôles de livraison et 6 tests d’import réussis. 56 scénarios navigateur ont été validés, dont des relances ciblées après correction du QR et des sélecteurs du test checkout. Les contrôles dédiés à 320, 375 et 430 px ont ensuite été rejoués après l’ajustement du logo mobile. Types, lint et compilation de production réussis ; audit npm production sans vulnérabilité signalée.
+Validation locale du 29 septembre : 1 205 tests unitaires, 32 intégrations Mongo, 66 contrôles de livraison et 6 tests d’import réussis. 56 scénarios navigateur ont été validés, dont des relances ciblées après correction du QR et des sélecteurs du test checkout. Les contrôles dédiés à 320, 375 et 430 px ont ensuite été rejoués après l’ajustement du logo mobile. Types, lint et compilation de production réussis ; audit npm production sans vulnérabilité signalée.
 
 Sur mobile : champs à 16 px pour éviter le zoom iOS, commandes tactiles de 44 px minimum, textes longs contenus et récapitulatif empilé. Le contrôle navigateur vérifie les débordements du document et des modales. Il ne remplace pas un essai sur un téléphone physique. Le visuel public est optimisé par Next selon l’écran : réponse WebP de 37 526 octets à 640 px, contre 2 110 078 octets pour le PNG original. L’optimiseur refuse les chemins autres que `/brand/**` (400 vérifié).
 
-Candidat v11 : 240 fichiers, `sha256:a1cfaad2f0a9f20f6de9d0298de66087d68e59dc7604d0ca5839bdbbbb55a715`. Installation et build du candidat, publication et contrôle distant à consigner après exécution.
+Version publiée : candidat v15, 240 fichiers, `sha256:3ed5fc0c99923f4f19258144c212c4671f4eb57852334064d5e37e1d1839d389`. Le candidat v11 a été installé et compilé localement ; les ajustements ultérieurs concernent uniquement la vérification des métadonnées ajoutées par Vercel. v15 a passé le contrôle intégral des sources, le preflight distant et la compilation Vercel.
 
 La configuration de production Resend est enregistrée dans Vercel. `RESEND_API_KEY` est sensible et exclue de Git ; les valeurs d’expéditeur et de destinataire sont côté serveur. Le domaine de l’expéditeur a été vérifié auprès de Resend par une requête de lecture, sans email de test.
+
+### Mise en ligne vérifiée
+
+Le 29 septembre 2026, le déploiement `dpl_8PJ1HcqoNexgbFohNJtZAyethREy` a été promu sur https://lilidecoai-web.vercel.app. Les pages publiques et le nouveau visuel répondent en HTTP 200 ; les anciennes mentions du partenaire et de l’adresse ont été contrôlées absentes. MongoDB et Cloudinary sont opérationnels, les simulations désactivées, le mode durable actif. Les contrôles anonymes indépendants refusent l’administration et l’accès spatial.
+
+La mise à niveau des index a été une opération séparée, limitée à `expiresAt_1` dans les deux collections de cache spatial, toutes deux vérifiées vides. Aucun document ni index existant n’a été supprimé. La compilation de publication reste une opération sans migration et son preflight a validé les 32 index requis ainsi que zéro rendu actif.
+
+Quatre articles réels ont été importés par l’API administrateur avec sauvegarde et vérification des photos. Les références `BLD-375567`, `BLD-375856` et `BLD-250760` sont publiques ; `BLD-310257` reste en brouillon. Les sept anciennes fiches de démonstration identifiées exactement dans le code de seed ont été remises en brouillon, sans suppression ni modification de leurs images ou dimensions. Les quatre vetos de visualisation sont conservés. Aucune génération IA ni notification réelle n’a été lancée pour ces opérations.
+
+Le navigateur a également parcouru la boutique publique, ajouté puis retiré un article de contrôle, et ouvert le formulaire de demande sans le soumettre. À 320, 375 et 430 px, aucun débordement horizontal ; les champs visibles mesurent 44 px et utilisent une police de 16 px, le bouton d’envoi mesure 48 px. Le formulaire de production est disponible. La réception effective d’un email et le scan sur téléphone physique restent non testés.
+
+Le code est poussé sur `codex/bylilideco-storefront` (implémentation `223f084`, adaptation du paquet `df5aae2`). La branche `main` n’a pas été fusionnée : la publication utilise le paquet vérifié. Les rapports détaillés privés sont exclus de Git.
