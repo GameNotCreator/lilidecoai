@@ -694,20 +694,41 @@ describe("bounded Responses API transport", () => {
     timeout.mockRestore();
   });
 
-  it("allows final inspection 90s but never extends the render deadline or retries", async () => {
+  it("allows final inspection 150s but never extends the render deadline or retries", async () => {
     const timeout = vi.spyOn(AbortSignal, "timeout");
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify(envelope(renderPayload()))),
     );
     vi.stubGlobal("fetch", fetchMock);
-    await reviewVisualRender({ ...input(), generated: image, deadlineMs: Date.now() + 120_000 });
-    expect(timeout.mock.calls[0]?.[0]).toBe(90_000);
+    await reviewVisualRender({ ...input(), generated: image, deadlineMs: Date.now() + 180_000 });
+    expect(timeout.mock.calls[0]?.[0]).toBe(150_000);
     expect(fetchMock).toHaveBeenCalledOnce();
     fetchMock.mockResolvedValue(new Response(JSON.stringify(envelope(renderPayload()))));
     await reviewVisualRender({ ...input(), generated: image, deadlineMs: Date.now() + 10_000 });
     expect(timeout.mock.calls[1]?.[0]).toBeLessThanOrEqual(9_000);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     timeout.mockRestore();
+  });
+
+  it("accepts a final response after 120s without retrying or changing acceptance gates", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException("Timed out", "TimeoutError")), ms);
+      return controller.signal;
+    });
+    const fetchMock = vi.fn((_url: string, init: RequestInit) => new Promise<Response>((resolve, reject) => {
+      init.signal!.addEventListener("abort", () => reject(init.signal!.reason));
+      setTimeout(() => resolve(new Response(JSON.stringify(envelope(renderPayload())))), 120_000);
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = expect(reviewVisualRender({
+      ...input(), generated: image, deadlineMs: Date.now() + 180_000,
+    })).resolves.toMatchObject({ accepted: true });
+    await vi.advanceTimersByTimeAsync(120_000);
+    await result;
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(AbortSignal.timeout).toHaveBeenCalledWith(150_000);
   });
 
   it("reports provider failure without leaking response bodies or retrying", async () => {

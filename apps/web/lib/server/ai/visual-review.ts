@@ -20,7 +20,7 @@ export const VISUAL_REVIEW_VERSION = "visual-review-v2";
 export const VISUAL_REVIEW_TIMEOUT_MS = 45_000;
 // Comparing the final image adds an image and ten checks per product. Give
 // that inspection time to finish without extending the render's deadline.
-export const FINAL_VISUAL_REVIEW_TIMEOUT_MS = 90_000;
+export const FINAL_VISUAL_REVIEW_TIMEOUT_MS = 150_000;
 export const MIN_VISUAL_CONFIDENCE = 0.8;
 export const MIN_VISUAL_CHECK_SCORE = 0.8;
 
