@@ -133,7 +133,7 @@ export interface PaddedComposition {
  */
 export const SIMPLE_COMPOSITE_VERSION = "composite-v2";
 /** Opt-in source-faithful insertion; legacy/spatial paste-back is unchanged. */
-export const CONTACT_LIGHT_COMPOSITE_VERSION = "composite-v3/contact-light-v5";
+export const CONTACT_LIGHT_COMPOSITE_VERSION = "composite-v3/contact-light-v6";
 
 export const SILHOUETTE_DILATION_PX = 3;
 /** Identity stamp inset, in pixels: the model keeps this much of the edge. */
@@ -901,10 +901,11 @@ async function relightProductPixels(
     if (weight < 32 && direction === 0) continue;
     const modelDelta =
       weight >= 32
-        ? ((smoothGains[i] ?? 0) / weight * 2 - 1) * MAX_RELIGHT_GAIN
+        ? (((smoothGains[i] ?? 0) / weight) * 2 - 1) * MAX_RELIGHT_GAIN
         : 0;
     const lateral = width > 1 ? (2 * (i % width)) / (width - 1) - 1 : 0;
-    const sceneDelta = direction * Math.sin(lateral * Math.PI / 2) * MAX_RELIGHT_GAIN;
+    const sceneDelta =
+      direction * Math.sin((lateral * Math.PI) / 2) * MAX_RELIGHT_GAIN;
     const proposedGain =
       1 +
       clampNumber(
@@ -931,6 +932,42 @@ async function relightProductPixels(
   return sharp(source, { raw: { width, height, channels: 4 } })
     .png()
     .toBuffer();
+}
+
+/** Broad resting bases receive contact along their visible lower rim.
+ * Rounded narrow-foot forms keep the existing central contact unchanged. */
+function broadFootProfile(
+  alpha: Buffer,
+  width: number,
+  height: number,
+  baseRow: number,
+): Array<number | null> | null {
+  const footBand = clampNumber(Math.round(height * 0.04), 2, 8);
+  let bodyLeft = width,
+    bodyRight = -1;
+  const footColumns = new Set<number>();
+  const profile: Array<number | null> = Array(width).fill(null);
+  for (
+    let y = Math.max(0, baseRow - Math.ceil(height * 0.25));
+    y <= baseRow;
+    y++
+  ) {
+    for (let x = 0; x < width; x++) {
+      if ((alpha[y * width + x] ?? 0) < 128) continue;
+      bodyLeft = Math.min(bodyLeft, x);
+      bodyRight = Math.max(bodyRight, x);
+      if (y >= baseRow - footBand + 1) footColumns.add(x);
+      if (y >= baseRow - Math.ceil(height * 0.12)) profile[x] = y;
+    }
+  }
+  // Count occupied columns rather than their bounding span: two separated
+  // feet are not a broad resting base even when they span the full body.
+  if (
+    bodyRight < bodyLeft ||
+    footColumns.size / (bodyRight - bodyLeft + 1) < 0.6
+  )
+    return null;
+  return profile;
 }
 
 /**
@@ -966,6 +1003,19 @@ async function sourceShadowField(
     }
     // A cropped or transparent foot is not evidence of a support contact.
     if (footRight < footLeft) continue;
+    const profile = broadFootProfile(alpha, ow, oh, baseRow);
+    const profileRows = profile?.filter((y): y is number => y !== null) ?? [];
+    const supportTop = profileRows.length
+      ? placed.top + Math.min(...profileRows)
+      : placed.baseY - SHADOW_WINDOW_ABOVE_BASE_PX;
+    const profileColumns =
+      profile?.flatMap((y, x) => (y === null ? [] : [x])) ?? [];
+    const profileCenter = profileColumns.length
+      ? placed.left + (profileColumns[0]! + profileColumns.at(-1)!) / 2
+      : 0;
+    const profileRadius = profileColumns.length
+      ? (profileColumns.at(-1)! - profileColumns[0]!) / 2 + 1
+      : 1;
     const cast = Buffer.alloc(width * height);
     const direction =
       lighting.shadowDirection === "left"
@@ -990,7 +1040,9 @@ async function sourceShadowField(
           if (!a) continue;
           const fraction = (baseRow - y) / Math.max(1, placed.heightPx - 1);
           const px = placed.left + x + direction * fraction * length;
-          const py = placed.baseY + fraction * placed.heightPx * 0.075;
+          const py =
+            placed.baseY +
+            fraction * placed.heightPx * (profile ? 0.04 : 0.075);
           const x0 = Math.floor(px),
             y0 = Math.floor(py);
           for (let yy = y0; yy <= y0 + 1; yy += 1) {
@@ -1014,8 +1066,22 @@ async function sourceShadowField(
     const cx = placed.left + (footLeft + footRight) / 2;
     const rx = Math.max(1, (footRight - footLeft) / 2);
     const ry = clampNumber(placed.heightPx * 0.014, 0.7, 3);
+    // A wide resting base has a visible depth; its diffuse contact must not
+    // collapse to the same narrow line as a point-like or rounded foot.
+    const rimPenumbra = profileRows.length
+      ? Math.max(
+          ry,
+          Math.min(
+            (Math.max(...profileRows) - Math.min(...profileRows)) * 0.35,
+            placed.heightPx * 0.04,
+          ),
+        )
+      : ry;
     for (
-      let y = Math.max(0, placed.baseY - SHADOW_WINDOW_ABOVE_BASE_PX);
+      let y = Math.max(
+        0,
+        Math.min(placed.baseY - SHADOW_WINDOW_ABOVE_BASE_PX, supportTop),
+      );
       y <=
       Math.min(
         height - 1,
@@ -1033,10 +1099,23 @@ async function sourceShadowField(
         if (composition.maskRaw[i * 4 + 3] !== 0) continue;
         const dx = (x - cx) / rx;
         const dy = (y - placed.baseY - 0.15) / ry;
-        const contact = Math.exp(-2 * (dx * dx + dy * dy)) * 0.34;
+        const oldContact = Math.exp(-2 * (dx * dx + dy * dy)) * 0.34;
+        const rimY = profile?.[x - placed.left];
+        const rimDy =
+          rimY === undefined || rimY === null
+            ? Infinity
+            : (y - placed.top - rimY - 0.8) / rimPenumbra;
+        const rimDx = (x - profileCenter) / profileRadius;
+        const rimContact =
+          Math.abs(rimDx) >= 1
+            ? 0
+            : Math.exp(-2 * rimDy * rimDy) *
+              0.34 *
+              Math.sqrt(1 - Math.pow(rimDx, 8));
+        const contact = Math.max(oldContact, rimContact);
         const attenuation = Math.min(
           MAX_SOURCE_SHADOW_DARKENING,
-          contact + ((softened[i] ?? 0) / 255) * 0.18,
+          contact + ((softened[i] ?? 0) / 255) * (profile ? 0.34 : 0.18),
         );
         // Use the strongest local shadow, not additive layers that can turn
         // overlapping supports into an unbounded black patch.
@@ -1184,8 +1263,23 @@ async function transferContactLight(
       placed.kind === "standing"
         ? placed.baseX + margin
         : placed.left + info.width + margin;
-    const top =
+    const profile =
       placed.kind === "standing"
+        ? broadFootProfile(
+            Buffer.from(data.filter((_, i) => i % 4 === 3)),
+            info.width,
+            info.height,
+            clampNumber(
+              Math.round(placed.baseY - placed.top) - 1,
+              0,
+              info.height - 1,
+            ),
+          )
+        : null;
+    const profileRows = profile?.filter((y): y is number => y !== null) ?? [];
+    const top = profileRows.length
+      ? placed.top + Math.min(...profileRows)
+      : placed.kind === "standing"
         ? placed.baseY - SHADOW_WINDOW_ABOVE_BASE_PX
         : placed.top - margin;
     const bottom =
@@ -1203,6 +1297,15 @@ async function transferContactLight(
         x += 1
       ) {
         const i = y * width + x;
+        const rimY = profile?.[x - placed.left];
+        const floorStart =
+          rimY === undefined || rimY === null
+            ? placed.baseY - SHADOW_WINDOW_ABOVE_BASE_PX
+            : Math.min(
+                placed.baseY - SHADOW_WINDOW_ABOVE_BASE_PX,
+                placed.top + rimY,
+              );
+        if (placed.kind === "standing" && y < floorStart) continue;
         if (composition.maskRaw[i * 4 + 3] === 0) support[i] = 1;
       }
     }
@@ -1264,7 +1367,12 @@ async function transferContactLight(
       ordered.map(async (placed) => {
         const lit =
           strength > 0
-            ? await relightProductPixels(placed, alignedModel, strength, composition.lighting)
+            ? await relightProductPixels(
+                placed,
+                alignedModel,
+                strength,
+                composition.lighting,
+              )
             : placed.png;
         // Decide the fringe from the unmodified catalogue pixels, not from
         // a generated light field. Only alpha comes from this cleanup.
@@ -1321,7 +1429,12 @@ async function transferContactLight(
     const lit =
       strength > 0
         ? await sharp(
-            await relightProductPixels(placed, alignedModel, strength, composition.lighting),
+            await relightProductPixels(
+              placed,
+              alignedModel,
+              strength,
+              composition.lighting,
+            ),
           )
             .ensureAlpha()
             .raw()

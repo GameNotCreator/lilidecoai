@@ -120,6 +120,77 @@ describe("contact-light insertion", () => {
     shadowDirection: "left" as const,
   };
 
+  async function broadBaseScene(kind: "standing" | "wall" | "flat" = "standing", separatedFeet = false) {
+    const width = 100, height = 120;
+    const rgba = Buffer.alloc(width * height * 4);
+    // A cylinder has a broad elliptical lower rim, unlike a sphere or point foot.
+    for (let x = 2; x < 98; x++) {
+      const lower = 109 + Math.floor(10 * Math.sqrt(1 - ((x - 49.5) / 48) ** 2));
+      for (let y = 3; y <= lower; y++) {
+        if (separatedFeet && y >= 96 && x >= 12 && x < 88) continue;
+        rgba.set([35, 65, 110, 255], (y * width + x) * 4);
+      }
+    }
+    const cutout = await sharp(rgba, { raw: { width, height, channels: 4 } }).png().toBuffer();
+    const scene = await solidImage(320, 280, { r: 220, g: 210, b: 200 });
+    const composition = await compositeObjectsOnScene(scene, 320, 280, [{
+      cutout, point: { x: 0.5, y: 0.75 }, kind,
+      dimensions: { mode: "height_length", heightCm: height, lengthCm: width }, pixelsPerCm: 1,
+    }], { lighting: rightLighting });
+    const padded = await padCompositionForAspect(composition, "320x280");
+    return { composition, padded };
+  }
+
+  it("anchors a broad curved rim above the bottom center while protecting texture, source pixels and mask", async () => {
+    const { composition, padded } = await broadBaseScene();
+    const before = await rgbRaw(composition.baseWebp);
+    const after = await rgbRaw(await pasteBackOutsideMask(composition, padded, composition.baseWebp, { transferMode: "contact-light", relightStrength: 0 }));
+    const placed = composition.overlays[0]!;
+    const alpha = await sharp(placed.png).ensureAlpha().raw().toBuffer();
+    let curvedContact = 0, protectedChanges = 0, attenuationViolations = 0;
+    for (let y = 0; y < 280; y++) for (let x = 0; x < 320; x++) {
+      const index = y * 320 + x;
+      const ox = x - placed.left, oy = y - placed.top;
+      const a = ox >= 0 && oy >= 0 && ox < placed.widthPx && oy < placed.heightPx ? alpha[(oy * placed.widthPx + ox) * 4 + 3]! : 0;
+      if ((a === 255 || composition.maskRaw[index * 4 + 3] !== 0) &&
+          !after.data.subarray(index * 3, index * 3 + 3).equals(before.data.subarray(index * 3, index * 3 + 3))) protectedChanges++;
+      if (a === 0) {
+        for (let c = 0; c < 3; c++) if (after.data[index * 3 + c]! < Math.floor(before.data[index * 3 + c]! * (1 - MAX_SOURCE_SHADOW_DARKENING))) attenuationViolations++;
+        if (y < placed.baseY - 2 && after.data[index * 3]! < before.data[index * 3]! - 8) curvedContact++;
+      }
+    }
+    expect(curvedContact).toBeGreaterThan(15);
+    expect(protectedChanges).toBe(0);
+    expect(attenuationViolations).toBe(0);
+  });
+
+  it("does not accumulate broad-base shadows when support windows overlap", async () => {
+    const { composition, padded } = await broadBaseScene();
+    const first = await pasteBackOutsideMask(composition, padded, composition.baseWebp, { transferMode: "contact-light", relightStrength: 0 });
+    const overlapping = { ...composition, overlays: [...composition.overlays, { ...composition.overlays[0]!, objectIndex: 1 }] };
+    const second = await pasteBackOutsideMask(overlapping, padded, composition.baseWebp, { transferMode: "contact-light", relightStrength: 0 });
+    expect((await rgbRaw(second)).data).toEqual((await rgbRaw(first)).data);
+  });
+
+  it("does not infer a broad support from two separated feet", async () => {
+    const { composition, padded } = await broadBaseScene("standing", true);
+    const before = await rgbRaw(composition.baseWebp);
+    const after = await rgbRaw(await pasteBackOutsideMask(composition, padded, composition.baseWebp, { transferMode: "contact-light", relightStrength: 0 }));
+    const placed = composition.overlays[0]!;
+    // The separated feet span the same wide body, but cannot justify the
+    // raised, curved-rim support region used by a continuous resting base.
+    for (let y = 0; y < placed.baseY - 2; y++) {
+      const start = y * before.width * 3;
+      expect(after.data.subarray(start, start + before.width * 3)).toEqual(before.data.subarray(start, start + before.width * 3));
+    }
+  });
+
+  it.each(["wall", "flat"] as const)("does not treat a broad %s silhouette as a standing base", async kind => {
+    const { composition, padded } = await broadBaseScene(kind);
+    const result = await pasteBackOutsideMask(composition, padded, composition.baseWebp, { transferMode: "contact-light", relightStrength: 0 });
+    expect((await rgbRaw(result)).data).toEqual((await rgbRaw(composition.baseWebp)).data);
+  });
+
   it("uses scene direction after rejecting a displaced model without repainting details", async () => {
     const pixels = Buffer.alloc(80 * 80 * 4);
     for (let y = 0; y < 80; y++) for (let x = 0; x < 80; x++) {
