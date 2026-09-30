@@ -46,11 +46,12 @@ describe("render tracking", () => {
     },
   );
 
-  it("suspends malformed responses without claiming generation failed", async () => {
+  it("recovers from a malformed update without accepting it or restarting generation", async () => {
     vi.useFakeTimers();
     const fetchRender = vi
       .fn()
-      .mockRejectedValue(new InvalidApiResponseError());
+      .mockRejectedValueOnce(new InvalidApiResponseError())
+      .mockResolvedValueOnce(snapshot("succeeded"));
     const onInterrupted = vi.fn();
     const onRender = vi.fn();
     const tracking = startRenderTracking({
@@ -59,15 +60,21 @@ describe("render tracking", () => {
       onRender,
       onInterrupted,
     });
-    await vi.advanceTimersByTimeAsync(120_000);
+    await vi.advanceTimersByTimeAsync(0);
     expect(fetchRender).toHaveBeenCalledOnce();
     expect(onRender).not.toHaveBeenCalled();
     expect(onInterrupted).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        automaticRetry: false,
+        automaticRetry: true,
         kind: "invalid_response",
       }),
     );
+    await vi.advanceTimersByTimeAsync(3200);
+    expect(fetchRender).toHaveBeenCalledTimes(2);
+    expect(onInterrupted).toHaveBeenLastCalledWith(null);
+    expect(onRender).toHaveBeenLastCalledWith(snapshot("succeeded"));
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(fetchRender).toHaveBeenCalledTimes(2);
     tracking.stop();
   });
 

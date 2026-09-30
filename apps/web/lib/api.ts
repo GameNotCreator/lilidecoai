@@ -120,7 +120,10 @@ export async function getRender(
   signal?: AbortSignal,
   request = api,
 ): Promise<Render> {
-  const payload = await request(`/v1/renders/${renderId}`, { signal });
+  const payload = await request(`/v1/renders/${renderId}`, {
+    signal,
+    cache: "no-store",
+  });
   const parsed = renderSchema.safeParse(payload);
   if (!parsed.success) throw new InvalidApiResponseError();
   return parsed.data;

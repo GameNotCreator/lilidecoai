@@ -113,7 +113,9 @@ export function renderResponse(render: RenderDocument) {
       retrying: render.status === "queued" && render.execution.attempts > 0,
       errorCode: render.execution.errorCode,
     } : undefined,
-    surfaceType: render.surfaceType,
+    // MongoDB stores an explicitly undefined support as null; the public
+    // contract represents an unspecified support by omitting this field.
+    surfaceType: render.surfaceType ?? undefined,
     placementPoint: render.placementPoint,
     targetPoint: render.targetPoint,
     targetMaskUrl: assetUrl(render.targetMaskAssetId),

@@ -11,9 +11,9 @@ function trackingIssue(reason: unknown): RenderTrackingIssue {
   if (reason instanceof InvalidApiResponseError) {
     return {
       kind: "invalid_response",
-      automaticRetry: false,
+      automaticRetry: true,
       message:
-        "Le suivi ne peut pas être affiché pour le moment. Vous pouvez réessayer de consulter l’état du rendu.",
+        "La dernière mise à jour n’a pas pu être lue. Nous récupérons automatiquement l’état de votre demande.",
     };
   }
   if (reason instanceof ApiError) {
