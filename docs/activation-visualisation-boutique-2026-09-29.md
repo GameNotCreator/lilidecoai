@@ -2,6 +2,14 @@
 
 La boutique utilisait uniquement le détourage par couleur du fond. Les photos de la grenade et du panier perdaient des parties claires du produit : leur désactivation était donc justifiée. Le chemin boutique reste `legacy/simple_point` ; le moteur spatial expérimental reste fermé.
 
+## État vérifié le 30 septembre 2026
+
+La grenade BLD-375567 est activée en production après acceptation du sixième contrôle réel à 0,85 et revue indépendante du candidat V5. Le rendu initial reste échoué ; l'acceptation porte sur un candidat retraité distinct, obtenu sans seconde génération d'image. Les 22 fichiers de preuve concordent avec leurs empreintes. Le détourage publié a été recréé depuis la source et le masque : fichier identique, aucun pixel RGB source modifié et aucun écart d'alpha.
+
+L'activation ne modifie que cette fiche. Les 12 fiches administrateur et les 3 articles publics sont conservés. Le QR code ouvre la grenade dans le parcours de visualisation, et le panier autorise jusqu'à trois articles, quantités comprises. Ces contrôles navigateur ne constituent pas un essai de caméra sur téléphone physique ni un rendu payant exécuté sur Vercel.
+
+La révision `ba4bb08829d06959e7aa460c43c61499b13ab616` est déployée en production et sa chaîne CI complète a réussi. Le panier attend encore sa qualification finale : sa seconde tentative a conservé trois analyses réussies, puis le garde local a refusé l'entrée verticale 1500 × 2250 avant tout appel image. Le total conservateur de la campagne est alors de 5,667418 USD, réservations inconnues comprises. Le cache-pot reste désactivé, faute de photo du pot seul correspondant à ses dimensions.
+
 ## Correction
 
 Le backoffice accepte désormais un masque PNG en niveaux de gris lié à l'identifiant et à l'empreinte de la photo enregistrée. Le serveur applique uniquement sa couverture aux couleurs de cette photo. Il refuse les formats et dimensions incompatibles, les masques vides ou opaques, les silhouettes abîmées et les sujets multiples. L'import authentifié conserve les contrôles d'origine et les protections contre les modifications concurrentes.

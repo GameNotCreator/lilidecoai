@@ -44,6 +44,38 @@ test.beforeAll(async ({ request }, info) => {
 });
 
 for (const width of [320, 375, 430]) {
+  test(`mobile ${width}px: visualizer keeps all three steps and upload controls inside the screen`, async ({ page }) => {
+    test.skip(test.info().project.name !== "mobile", "Dedicated mobile viewport checks.");
+    await page.setViewportSize({ width, height: 844 });
+    await page.route("**/api/storefront/products", (route) => route.fulfill({
+      json: {
+        store: { name: "ByLiliDeco" },
+        products: products.map((product) => ({ ...product, visualizationAvailable: true })),
+        visualization: { available: true },
+      },
+    }));
+    await page.route("**/mobile-layout-fixture/*", async (route) => {
+      const buffer = await readFile(path.join(process.cwd(), "apps/web/tests/fixtures/catalogue/grenade-noire-blanche.jpg"));
+      await route.fulfill({ contentType: "image/jpeg", body: buffer });
+    });
+    await page.goto(`/visualiser?products=${demoProductId}`);
+    const steps = page.getByRole("list", { name: "Étapes de visualisation" });
+    await expect(steps.getByRole("listitem")).toHaveCount(3);
+    await expect(steps).toContainText("Votre photo");
+    await expect(steps).toContainText("Les emplacements");
+    await expect(steps).toContainText("Votre visualisation");
+    await noHorizontalOverflow(page);
+    for (const step of await steps.getByRole("listitem").all()) {
+      await expect(step).toBeVisible();
+      const bounds = await step.boundingBox();
+      expect(bounds!.x).toBeGreaterThanOrEqual(0);
+      expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
+      expect(await step.evaluate((node) => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
+    }
+    await expect(page.getByText("Choisir une photo", { exact: true })).toBeVisible();
+    await page.screenshot({ path: `artifacts/mobile-layout-2026-09-30/visualizer-${width}.png`, fullPage: true });
+  });
+
   test(`mobile ${width}px: hero, catalogue dialog, product page, basket and checkout fit and retain usable controls`, async ({ page }) => {
     test.skip(test.info().project.name !== "mobile", "Dedicated mobile viewport checks.");
     test.setTimeout(90_000);

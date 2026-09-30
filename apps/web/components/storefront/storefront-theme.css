@@ -661,6 +661,19 @@
     padding: 10px 14px;
   }
 }
+@media (max-width: 480px) {
+  .store-steps li {
+    min-width: 0;
+    flex-direction: column;
+    padding: 13px 4px;
+    font-size: 12px;
+    text-align: center;
+    overflow-wrap: anywhere;
+  }
+  .store-steps li > span {
+    flex-shrink: 0;
+  }
+}
 @media (max-width: 360px) {
   .store-logo-window {
     width: 124px;
