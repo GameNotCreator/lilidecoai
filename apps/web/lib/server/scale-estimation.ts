@@ -11,6 +11,7 @@ import { readAsset } from "./assets";
 import { serverConfig } from "./config";
 import { collections } from "./mongodb";
 import type { SceneDocument } from "./types";
+import { durableAbortSignal } from "./durable-context";
 
 /**
  * Metric scale and lighting estimation for the simple multi-point workflow.
@@ -63,6 +64,9 @@ export interface SceneScaleEstimate {
   lighting: SceneLightingEstimate | null;
   call?: SceneScaleResult["call"];
 }
+
+/** Server-only opt-in; historical scale estimates retain their original key. */
+export const STOREFRONT_SCALE_PROFILE = "storefront-placement-v1";
 
 export interface MarkedPoint {
   x: number;
@@ -686,6 +690,7 @@ export const SCALE_ESTIMATION_TIMEOUT_MS = 90_000;
 export interface ScaleEstimationOptions {
   /** Absolute remaining render deadline, including any downstream reserve. */
   deadlineMs?: number;
+  profile?: typeof STOREFRONT_SCALE_PROFILE;
 }
 
 /**
@@ -706,7 +711,7 @@ export async function estimateSceneScale(
   }
   const startedAt = Date.now();
   const deadline = Math.min(
-    startedAt + SCALE_ESTIMATION_TIMEOUT_MS,
+    startedAt + (options.profile === STOREFRONT_SCALE_PROFILE ? 70_000 : SCALE_ESTIMATION_TIMEOUT_MS),
     options.deadlineMs ?? Infinity,
   );
   if (deadline <= startedAt) return fallbackEstimate(points.length);
@@ -727,7 +732,7 @@ export async function estimateSceneScale(
         model: serverConfig.openaiVisionModel,
         store: false,
         service_tier: serverConfig.openaiServiceTier,
-        reasoning: { effort: serverConfig.openaiVisionReasoning ?? "high" },
+        reasoning: { effort: options.profile === STOREFRONT_SCALE_PROFILE ? "medium" : serverConfig.openaiVisionReasoning ?? "high" },
         max_output_tokens: 8_000,
         input: [
           {
@@ -808,9 +813,11 @@ export const SCALE_ESTIMATION_VERSION = "scale-v3";
 export function sceneScaleCacheKey(
   points: ReadonlyArray<{ x: number; y: number }>,
   kinds: readonly SimplePlacementKind[],
+  profile?: typeof STOREFRONT_SCALE_PROFILE,
 ): string {
   const payload = JSON.stringify({
-    reasoning: serverConfig.openaiVisionReasoning ?? "high",
+    ...(profile ? { profile } : {}),
+    reasoning: profile === STOREFRONT_SCALE_PROFILE ? "medium" : serverConfig.openaiVisionReasoning ?? "high",
     version: SCALE_ESTIMATION_VERSION,
     model: serverConfig.openaiVisionModel,
     points: points.map((point) => [
@@ -858,7 +865,7 @@ export async function getOrEstimateSceneScale(
   if (serverConfig.aiMockMode || !serverConfig.openaiApiKey) {
     return { ...fallbackEstimate(points.length), cached: false };
   }
-  const key = sceneScaleCacheKey(points, normalizedKinds);
+  const key = sceneScaleCacheKey(points, normalizedKinds, options.profile);
   const cached = cachedEstimate(scene, key, points.length);
   if (cached) return { ...cached, cached: true };
 
@@ -990,7 +997,7 @@ export async function fetchOpenAIResponse(
       },
       body: JSON.stringify(body),
       // The optional service-tier fallback shares the same total budget.
-      signal: AbortSignal.timeout(remaining),
+      signal: durableAbortSignal(AbortSignal.timeout(remaining)),
     });
   };
 

@@ -7,6 +7,19 @@ export const RENDER_PROGRESS_STEPS = [
   "Vérification du résultat",
 ] as const;
 
+export const STOREFRONT_PLACEMENT_PROGRESS_STEPS = [
+  "Lecture de l’intérieur",
+  "Placement des objets",
+  "Vérification du placement",
+] as const;
+
+/** This is the server-resolved quality contract, never a client preference. */
+export function isStorefrontPlacementRender(
+  render: Pick<Render, "engineVersions">,
+): boolean {
+  return render.engineVersions?.quality === "storefront-placement-review-v1";
+}
+
 export function renderTerminalAnnouncement(
   status: Render["status"] | undefined,
 ): string {
@@ -26,7 +39,12 @@ export function renderTerminalAnnouncement(
 
 type ProgressInput = Pick<
   Render,
-  "status" | "pipelineState" | "placement" | "execution" | "compositeUrl"
+  | "status"
+  | "pipelineState"
+  | "placement"
+  | "execution"
+  | "compositeUrl"
+  | "engineVersions"
 >;
 type StageCopy = { title: string; detail: string; phase: number | null };
 
@@ -161,8 +179,48 @@ const stageCopy: Record<string, StageCopy> = {
   },
 };
 
+const placementStageCopy: Record<string, StageCopy> = {
+  uploaded: stageCopy.uploaded!,
+  analyzing_scene: {
+    title: "Lecture de votre intérieur",
+    detail: "Les surfaces et la perspective de votre photo sont repérées.",
+    phase: 0,
+  },
+  estimating_scale: stageCopy.estimating_scale!,
+  inspecting_targets: stageCopy.inspecting_targets!,
+  computing_geometry: stageCopy.computing_geometry!,
+  validating_fit: stageCopy.validating_fit!,
+  compositing: {
+    title: "Placement de vos objets",
+    detail:
+      "Les photos des produits sont placées dans votre intérieur à l’échelle estimée.",
+    phase: 1,
+  },
+  composing_preview: {
+    title: "Préparation de l’aperçu du placement",
+    detail: "L’image de votre sélection dans la pièce est assemblée.",
+    phase: 1,
+  },
+  checking_placement: {
+    title: "Vérification du placement",
+    detail:
+      "La fidélité des produits, leurs positions et leurs dimensions estimées sont contrôlées.",
+    phase: 2,
+  },
+  quality_check: {
+    title: "Vérification du placement",
+    detail:
+      "La fidélité des produits, leurs positions et leurs dimensions estimées sont contrôlées.",
+    phase: 2,
+  },
+  completed: { ...stageCopy.completed!, phase: 3 },
+  complete: { ...stageCopy.complete!, phase: 3 },
+};
+
 /** Progress comes exclusively from server evidence, never elapsed time. */
 export function renderProgress(render: ProgressInput) {
+  const sourcePixelPlacement = isStorefrontPlacementRender(render);
+  const copies = sourcePixelPlacement ? placementStageCopy : stageCopy;
   const placementStage =
     typeof render.placement?.pipelineStage === "string"
       ? render.placement.pipelineStage
@@ -177,8 +235,8 @@ export function renderProgress(render: ProgressInput) {
         : render.pipelineState
       : placementStage || render.pipelineState || "";
   const copy = stage.startsWith("removing_object_")
-    ? stageCopy.removing_target
-    : (stageCopy[stage] ?? stageCopy[render.pipelineState ?? ""]);
+    ? copies.removing_target
+    : (copies[stage] ?? copies[render.pipelineState ?? ""]);
   const queued = render.status === "queued";
   const retrying = queued && render.execution?.retrying === true;
   const phase = queued && !retrying ? null : (copy?.phase ?? null);
@@ -198,7 +256,11 @@ export function renderProgress(render: ProgressInput) {
     detail,
     queued,
     retrying,
-    steps: RENDER_PROGRESS_STEPS.map((label, index) => ({
+    sourcePixelPlacement,
+    steps: (sourcePixelPlacement
+      ? STOREFRONT_PLACEMENT_PROGRESS_STEPS
+      : RENDER_PROGRESS_STEPS
+    ).map((label, index) => ({
       label,
       state:
         phase !== null && index < phase

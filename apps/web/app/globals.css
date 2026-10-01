@@ -1,7 +1,7 @@
 @import "tailwindcss";
 @plugin "daisyui" {
   themes: false;
-  include: button, input, join, link, fieldset, label, file-input;
+  include: button, input, join, link, fieldset, label, file-input, skeleton, loading;
   logs: false;
 }
 @plugin "daisyui/theme" {
@@ -4944,8 +4944,13 @@ button {
 .render-progress-panel {
   display: grid;
   grid-template-columns: minmax(0, 1.3fr) minmax(270px, 1fr);
-  gap: 28px;
+  gap: 18px 28px;
   align-items: start;
+}
+
+.render-progress-heading {
+  grid-column: 2;
+  grid-row: 1;
 }
 
 .render-completion-announcement {
@@ -4959,6 +4964,8 @@ button {
 }
 
 .render-progress-preview {
+  grid-column: 1;
+  grid-row: 1 / span 2;
   min-width: 0;
   margin: 0;
   overflow: hidden;
@@ -4967,11 +4974,66 @@ button {
   background: #f8f8f8;
 }
 
-.render-progress-preview > img {
+.render-progress-image {
+  position: relative;
+  height: clamp(250px, 44vh, 440px);
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.render-progress-image > img {
   display: block;
   width: 100%;
-  height: clamp(250px, 44vh, 440px);
+  height: 100%;
   object-fit: contain;
+}
+
+.render-progress-image-skeleton {
+  position: absolute;
+  inset: 0;
+  border-radius: 0;
+  pointer-events: none;
+  opacity: 0.22;
+}
+
+.render-progress-image[data-loaded="false"] .render-progress-image-skeleton {
+  opacity: 1;
+}
+
+.render-progress-image[data-paused="true"] .skeleton,
+.render-progress-image[data-failed="true"] .skeleton {
+  animation: none;
+}
+
+.render-progress-image[data-failed="true"] > img {
+  visibility: hidden;
+}
+
+.render-progress-image-label {
+  position: absolute;
+  bottom: 14px;
+  left: 14px;
+  right: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  width: fit-content;
+  max-width: calc(100% - 28px);
+  margin-inline: auto;
+  padding: 10px 14px;
+  border: 1px solid var(--color-base-300);
+  border-radius: var(--radius-box);
+  background: var(--color-base-100);
+  color: var(--color-base-content);
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1.45;
+  text-align: center;
+}
+
+.render-progress-image-label .loading {
+  flex-shrink: 0;
 }
 
 .render-progress-preview figcaption {
@@ -5000,7 +5062,7 @@ button {
 .render-progress-compare button,
 .render-progress-connection button {
   display: inline-flex;
-  min-height: 38px;
+  min-height: 44px;
   align-items: center;
   justify-content: center;
   gap: 7px;
@@ -5027,6 +5089,8 @@ button {
 }
 
 .render-progress-information {
+  grid-column: 2;
+  grid-row: 2;
   min-width: 0;
   padding: 6px 0;
 }
@@ -5041,6 +5105,13 @@ button {
   margin: 0 0 9px;
   font-size: 1.2rem;
   line-height: 1.3;
+}
+
+.render-progress-last-confirmed {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--color-base-content);
+  font-size: 0.75rem;
 }
 
 .render-progress-heading p,
@@ -5061,6 +5132,28 @@ button {
   color: #626262;
   font-size: 0.77rem;
   font-variant-numeric: tabular-nums;
+}
+
+.render-progress-request-details {
+  margin-top: 18px;
+  color: var(--color-base-content);
+  font-size: 0.77rem;
+  line-height: 1.55;
+}
+
+.render-progress-request-details summary {
+  min-height: 44px;
+  padding-block: 11px;
+  cursor: pointer;
+}
+
+.render-progress-request-details summary:focus-visible {
+  outline: 3px solid var(--color-base-content);
+  outline-offset: 3px;
+}
+
+.render-progress-request-details p {
+  margin: 0 0 9px;
 }
 
 .render-progress-steps {
@@ -5135,11 +5228,21 @@ button {
     gap: 22px;
   }
 
-  .render-progress-information {
+  .render-progress-heading {
+    grid-column: 1;
     grid-row: 1;
   }
 
-  .render-progress-preview > img {
+  .render-progress-preview {
+    grid-row: 2;
+  }
+
+  .render-progress-information {
+    grid-column: 1;
+    grid-row: 3;
+  }
+
+  .render-progress-image {
     height: clamp(220px, 42vh, 360px);
   }
 
@@ -5151,8 +5254,19 @@ button {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .render-progress-panel .spin {
+  .render-progress-panel .spin,
+  .render-progress-panel .skeleton,
+  .render-progress-panel .loading {
     animation: none;
+  }
+
+  .render-progress-panel .loading {
+    mask-image: none;
+    width: 16px;
+    height: 16px;
+    border: 2px solid currentColor;
+    border-radius: 50%;
+    background: transparent;
   }
 }
 

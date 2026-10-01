@@ -696,6 +696,9 @@ test("simple demo explains real progress, previews placement and recovers tracki
   page,
 }, testInfo) => {
   test.setTimeout(120_000);
+  if (testInfo.project.name === "mobile") {
+    await page.setViewportSize({ width: 320, height: 844 });
+  }
   await page.goto("/demo");
   await page.getByLabel("Image de l’objet 1").setInputFiles({
     name: "vase-waiting.png",
@@ -789,7 +792,20 @@ test("simple demo explains real progress, previews placement and recovers tracki
     ),
   ).toBeVisible();
   await expect(page.getByText(/Image provisoire :/)).toBeVisible();
+  const skeleton = page.locator(".render-progress-image-skeleton");
+  await expect(skeleton).toBeVisible();
+  await expect(skeleton).toHaveAttribute("aria-hidden", "true");
+  await expect(page.locator(".render-progress-preview")).toHaveAttribute("aria-busy", "true");
+  await expect(page.getByText(/Temps écoulé/)).not.toBeVisible();
+  await page.getByText("Détails de la demande", { exact: true }).click();
   await expect(page.getByText(/Temps écoulé/)).toBeVisible();
+  await page.getByText("Détails de la demande", { exact: true }).click();
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  expect(await skeleton.evaluate((node) => getComputedStyle(node).animationName)).toBe("none");
+  // daisyUI loading masks contain SVG animation; disabling CSS animation alone
+  // cannot stop those, so reduced-motion uses a static indicator instead.
+  expect(await page.locator(".render-progress-heading .loading").evaluate((node) => getComputedStyle(node).maskImage)).toBe("none");
+  await page.emulateMedia({ reducedMotion: "no-preference" });
   await page
     .getByRole("button", { name: "Photo d’origine", exact: true })
     .click();
@@ -816,6 +832,11 @@ test("simple demo explains real progress, previews placement and recovers tracki
   await expect(
     page.getByText(/Le suivi est momentanément interrompu/),
   ).toBeVisible();
+  await expect(page.getByText("Dernière étape confirmée", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Création du rendu réaliste" })).toBeVisible();
+  expect(await skeleton.evaluate((node) => getComputedStyle(node).animationName)).toBe("none");
+  await expect(page.locator(".render-progress-image-label")).toHaveText("Reconnexion au suivi");
+  expect(admissions).toBe(1);
   phase = "quality_check";
   await page.getByRole("button", { name: "Vérifier maintenant" }).click();
   await expect(

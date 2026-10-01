@@ -140,6 +140,27 @@ beforeEach(() => {
   mocks.render.mockResolvedValue({ id: "render" });
 });
 describe("public concept store boundary", () => {
+  it("cannot read or expire another visitor's overdue render", async () => {
+    const renderId = "00000000-0000-4000-8000-000000000030";
+    const otherRender = {
+      id: renderId,
+      organizationId: tenant.organizationId,
+      publicSessionId: "storefront:other",
+      engine: "legacy",
+      status: "processing",
+      createdAt: new Date(Date.now() - 180_000),
+      requestSnapshot: { version: 1, input: { workflow: "simple_point" } },
+    };
+    renders.rows.push(otherRender);
+    const response = await dispatchApi(
+      new Request(`http://test/v1/renders/${renderId}`),
+      ["renders", renderId],
+    );
+    expect(response.status).toBe(404);
+    expect(renders.rows[0]).toEqual(otherRender);
+    expect(renders.rows[0]).not.toHaveProperty("error");
+    expect(renders.rows[0]).not.toHaveProperty("execution");
+  });
   it("cannot replenish a production store through the old demo endpoints", async () => {
     expect((await dispatchApi(new Request("http://test/v1/auth/signup", { method: "POST", body: JSON.stringify({ email: "new@example.com", password: "test-password-value" }) }), ["auth", "signup"])).status).toBe(403);
     expect(

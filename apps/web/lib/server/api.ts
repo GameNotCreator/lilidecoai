@@ -60,6 +60,7 @@ import { enforceRateLimit } from "./rate-limit";
 import { getOrEstimateSceneScale } from "./scale-estimation";
 import { createRender, RenderError, type DeferRenderTask } from "./rendering";
 import { stopRender } from "./render-lifecycle";
+import { expireStorefrontRender } from "./durable-queue";
 import { checkpointAssetIds } from "./checkpoint-assets";
 import { buildRetryInput } from "./render-request";
 import { spatialRetryBodySchema } from "../spatial-retry";
@@ -1200,7 +1201,10 @@ async function handleRenders(
   if (!render) return error("Rendu introuvable", 404);
   if (render.engine === "spatial" && !canReadSpatialRenders(tenant)) throw new AuthError("Rendu spatial interne non accessible.", 403);
   if (path.length === 1 && request.method === "GET") {
-    return Response.json(renderResponse(render));
+    const current = await expireStorefrontRender(db, render);
+    return Response.json(renderResponse(current), {
+      headers: { "Cache-Control": "private, no-store" },
+    });
   }
   if (path.length === 1 && request.method === "DELETE") {
     const stopped = await stopRender(db, render, "delete");

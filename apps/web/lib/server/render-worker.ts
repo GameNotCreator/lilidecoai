@@ -12,6 +12,12 @@ import {
 import { executeDurableRender } from "./rendering";
 import { RenderQualityError } from "./render-quality";
 import { collections } from "./mongodb";
+import {
+  effectiveRenderDeadline,
+  isTimedStorefrontRender,
+  storefrontRenderDeadlineExpired,
+  STOREFRONT_RENDER_DEADLINE_MESSAGE,
+} from "./storefront-render-deadline";
 
 export async function runWorkerOnce(
   db: Db,
@@ -21,6 +27,22 @@ export async function runWorkerOnce(
   const render = await claimRender(db, workerId);
   if (!render?.execution?.token) return false;
   const token = render.execution.token;
+  const deadlineController = isTimedStorefrontRender(render)
+    ? new AbortController()
+    : null;
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  const deadlineFailure = deadlineController
+    ? new Promise<never>((_resolve, reject) => {
+        deadlineTimer = setTimeout(() => {
+          const reason = new DurableExecutionError(
+            STOREFRONT_RENDER_DEADLINE_MESSAGE,
+            "deadline",
+          );
+          deadlineController.abort(reason);
+          reject(reason);
+        }, Math.max(0, effectiveRenderDeadline(render) - Date.now()));
+      })
+    : null;
   // Single flight renewal; no detached timer error can kill a healthy worker.
   let renewing = false;
   const timer = setInterval(() => {
@@ -41,15 +63,20 @@ export async function runWorkerOnce(
       {
         render,
         token,
+        ...(deadlineController ? { signal: deadlineController.signal } : {}),
         ...(options.yieldAfterMs !== undefined
           ? { yieldAt: Date.now() + options.yieldAfterMs }
           : {}),
       },
       async () => {
         try {
-          await validateExecutionSources(db, render);
-          await reserveDurableCredit(db, render);
-          await executeDurableRender(db, render);
+          const execute = async () => {
+            await validateExecutionSources(db, render);
+            await reserveDurableCredit(db, render);
+            await executeDurableRender(db, render);
+          };
+          if (deadlineFailure) await Promise.race([execute(), deadlineFailure]);
+          else await execute();
         } catch (reason) {
           const current = await collections(db).renders.findOne({
             id: render.id,
@@ -58,6 +85,15 @@ export async function runWorkerOnce(
           // Includes an ambiguous transaction commit which actually succeeded.
           if (!current || !["queued", "processing"].includes(current.status))
             return;
+          if (
+            storefrontRenderDeadlineExpired(current) ||
+            (reason instanceof DurableExecutionError && reason.code === "deadline")
+          ) {
+            await endDurableRender(
+              db, current, "failed", STOREFRONT_RENDER_DEADLINE_MESSAGE, "deadline",
+            );
+            return;
+          }
           if (
             reason instanceof DurableExecutionError &&
             reason.code === "yield"
@@ -121,6 +157,7 @@ export async function runWorkerOnce(
     );
   } finally {
     clearInterval(timer);
+    clearTimeout(deadlineTimer);
   }
   return true;
 }

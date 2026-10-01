@@ -568,7 +568,7 @@ function envelopeGeometryChecks(
   ];
 }
 
-function geometryChecks(
+export function geometryChecks(
   id: string,
   expected: VisualBox,
   observed: VisualBox,

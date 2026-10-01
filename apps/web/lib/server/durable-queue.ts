@@ -12,6 +12,13 @@ import {
 } from "./durable-context";
 import { requireAcceptedQuality } from "./render-quality";
 import { renderWorkerRevision } from "../render-worker-revision.mjs";
+import {
+  effectiveRenderDeadline,
+  isTimedStorefrontRender,
+  storefrontRenderDeadlineExpired,
+  STOREFRONT_RENDER_MAX_MS,
+  STOREFRONT_RENDER_DEADLINE_MESSAGE,
+} from "./storefront-render-deadline";
 
 export const LEASE_MS = 90_000;
 export const MAX_JOB_ATTEMPTS = 12;
@@ -60,6 +67,7 @@ export function workerFingerprint(): string {
 export function prepareExecution(
   scene: SceneDocument,
   products: ProductDocument[],
+  render?: RenderDocument,
 ): DurableExecution {
   const now = new Date();
   const deadlineAt = new Date(
@@ -77,6 +85,13 @@ export function prepareExecution(
       "Les sources arrivent à expiration. Réimportez-les.",
       "permanent",
     );
+  if (render && isTimedStorefrontRender(render)) {
+    deadlineAt.setTime(
+      Math.min(deadlineAt.getTime(), render.createdAt.getTime() + STOREFRONT_RENDER_MAX_MS),
+    );
+    if (deadlineAt.getTime() <= now.getTime())
+      throw new DurableExecutionError(STOREFRONT_RENDER_DEADLINE_MESSAGE, "deadline");
+  }
   return {
     version: DURABLE_ENGINE_VERSION,
     configFingerprint: workerFingerprint(),
@@ -174,6 +189,7 @@ export async function claimRender(
       .limit(100)
       .toArray();
     for (const candidate of candidates) {
+      if (storefrontRenderDeadlineExpired(candidate, now.getTime())) continue;
       if (
         (await c.renders.countDocuments(
           { ...active, organizationId: candidate.organizationId },
@@ -186,6 +202,9 @@ export async function claimRender(
           id: candidate.id,
           organizationId: candidate.organizationId,
           status: candidate.status,
+          ...(isTimedStorefrontRender(candidate)
+            ? { createdAt: { $gt: new Date(Date.now() - STOREFRONT_RENDER_MAX_MS) } }
+            : {}),
         },
         {
           $set: {
@@ -218,6 +237,9 @@ export async function heartbeat(
       "execution.token": token,
       "execution.leaseUntil": { $gt: now },
       "execution.deadlineAt": { $gt: now },
+      ...(isTimedStorefrontRender(render)
+        ? { createdAt: { $gt: new Date(now.getTime() - STOREFRONT_RENDER_MAX_MS) } }
+        : {}),
     },
     {
       $set: {
@@ -446,7 +468,9 @@ export async function endDurableRender(
               }),
           updatedAt: new Date(),
           ...(error ? { error } : {}),
-          ...(errorCode ? { "execution.errorCode": errorCode } : {}),
+          // Historical inline shop jobs have no durable execution envelope.
+          // Creating a partial one would make their polling response unreadable.
+          ...(errorCode && render.execution ? { "execution.errorCode": errorCode } : {}),
           ...(status === "cancelled" ? { cancelledAt: new Date() } : {}),
         },
         $unset: { "execution.token": "", "execution.leaseUntil": "" },
@@ -498,12 +522,19 @@ export async function retryDurableRender(
     120_000,
     5_000 * 2 ** Math.min(render.execution!.attempts - 1, 5),
   );
+  const availableAt = new Date(Date.now() + (yielded ? 0 : delayMs));
+  if (isTimedStorefrontRender(render) && availableAt.getTime() >= effectiveRenderDeadline(render)) {
+    await endDurableRender(
+      db, render, "failed", STOREFRONT_RENDER_DEADLINE_MESSAGE, "deadline",
+    );
+    return;
+  }
   await collections(db).renders.updateOne(
     { id: render.id, status: "processing", ...executionFence(render.id) },
     {
       $set: {
         status: "queued",
-        "execution.availableAt": new Date(Date.now() + (yielded ? 0 : delayMs)),
+        "execution.availableAt": availableAt,
         "execution.lastError": error.slice(0, 500),
         updatedAt: new Date(),
       },
@@ -513,6 +544,23 @@ export async function retryDurableRender(
   );
 }
 
+/** A poll expires this visitor's job even when every worker is unavailable. */
+export async function expireStorefrontRender(
+  db: Db,
+  render: RenderDocument,
+): Promise<RenderDocument> {
+  if (
+    !["queued", "processing"].includes(render.status) ||
+    !storefrontRenderDeadlineExpired(render)
+  ) return render;
+  const ended = await endDurableRender(
+    db, render, "failed", STOREFRONT_RENDER_DEADLINE_MESSAGE, "deadline",
+  );
+  return ended ?? (await collections(db).renders.findOne({
+    id: render.id, organizationId: render.organizationId,
+  })) ?? render;
+}
+
 export async function expireDurableRenders(db: Db): Promise<number> {
   const expired = await collections(db)
     .renders.find({
@@ -520,6 +568,12 @@ export async function expireDurableRenders(db: Db): Promise<number> {
       execution: { $exists: true },
       $or: [
         { "execution.deadlineAt": { $lte: new Date() } },
+        {
+          engine: { $ne: "spatial" },
+          publicSessionId: { $regex: "^storefront:" },
+          "requestSnapshot.input.workflow": "simple_point",
+          createdAt: { $lte: new Date(Date.now() - STOREFRONT_RENDER_MAX_MS) },
+        },
         {
           "execution.attempts": { $gte: MAX_JOB_ATTEMPTS },
           "execution.leaseUntil": { $lte: new Date() },
@@ -536,7 +590,9 @@ export async function expireDurableRenders(db: Db): Promise<number> {
         db,
         render,
         "failed",
-        "Le délai ou le nombre de reprises est dépassé. Aucun crédit n’est débité.",
+        isTimedStorefrontRender(render)
+          ? STOREFRONT_RENDER_DEADLINE_MESSAGE
+          : "Le délai ou le nombre de reprises est dépassé. Aucun crédit n’est débité.",
         "deadline",
       )
     )

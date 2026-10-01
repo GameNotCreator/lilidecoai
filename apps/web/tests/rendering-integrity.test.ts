@@ -52,6 +52,7 @@ vi.mock("../lib/server/scale-estimation", () => ({
     })),
     lighting: null,
   })),
+  STOREFRONT_SCALE_PROFILE: "storefront-placement-v1",
 }));
 vi.mock("../lib/server/ai", () => ({
   selectEditingProvider: () => ({
@@ -313,6 +314,19 @@ beforeEach(async () => {
           ],
         });
       }
+      if (payload.text?.format?.name === "storefront_placement_review") {
+        reviewRequest = payload;
+        reviewCalls++;
+        if (qualityUnavailable) return new Response("offline", { status: 503 });
+        const text = payload.input[1].content[0].text as string;
+        const placementData = JSON.parse(text.split("Placement contracts: ")[1]!.split(". Placement contracts in")[0]!) as Array<{ id: string; expectedBox: Record<string, number> }>;
+        const checks = ["present", "identity", "position", "scale", "perspective", "contact", "edges", "occlusion", "noDuplicate"];
+        return Response.json({ status: "completed", output: [{ type: "message", status: "completed", content: [{ type: "output_text", text: JSON.stringify({
+          accepted: true, score: 0.95, confidence: 0.95, photoUsable: passed(), backgroundPreserved: passed(), noUnrequestedProducts: passed(), feedback: "Placement conforme.",
+          products: placementData.map(({ id, expectedBox }) => ({ id, confidence: 0.95, observedBox: expectedBox, foregroundOccluded: false,
+            checks: Object.fromEntries(checks.map(name => [name, name === "identity" && reviewPayload.identityFailure ? { ...passed(), passed: false } : passed()])) })),
+        }) }] }] });
+      }
       const stage =
         payload.text?.format?.name === "placement_preflight"
           ? "preflight"
@@ -386,6 +400,39 @@ describe("restricted spatial admission", () => {
 });
 
 describe("simple render orchestration with offline providers", () => {
+  it("qualifies a new storefront placement once without image generation or a lighting claim", async () => {
+    await scenes.updateOne({ id: "scene" }, { $set: { publicSessionId: "storefront:visitor-1" } });
+    const result = await createRender(db, "org", request, "storefront:visitor-1");
+    expect(result).toMatchObject({ status: "succeeded", provider: "deterministic", attemptCount: 0,
+      qualityDecision: { status: "accepted", version: "storefront-placement-review-v1" },
+      engineVersions: { quality: "storefront-placement-review-v1", editModel: "deterministic-source-composite", imageQuality: "n/a" } });
+    expect(mocks.edit).not.toHaveBeenCalled();
+    expect(reviewCalls).toBe(1);
+    expect(preflightRequest).toBeNull();
+    expect(attempts.rows.filter(row => row.stage === "storefront_placement_review")).toHaveLength(1);
+    expect(vi.mocked(getOrEstimateSceneScale).mock.calls[0]![4]).toMatchObject({ profile: "storefront-placement-v1" });
+    expect(result.qualityChecks.every(check => !check.name.includes("lighting"))).toBe(true);
+    expect(reviewRequest!.input[1]!.content.filter(entry => entry.type === "input_image")).toHaveLength(5);
+  });
+  it.each(["identity", "unavailable"])("does not deliver or retry a fast storefront %s defect", async failure => {
+    await scenes.updateOne({ id: "scene" }, { $set: { publicSessionId: "storefront:visitor-1" } });
+    reviewPayload.identityFailure = failure === "identity";
+    qualityUnavailable = failure === "unavailable";
+    await expect(createRender(db, "org", request, "storefront:visitor-1")).rejects.toThrow();
+    expect(mocks.edit).not.toHaveBeenCalled();
+    expect(reviewCalls).toBe(1);
+    expect(mocks.capture).not.toHaveBeenCalled();
+    expect(renders.rows[0]!.status).toBe("failed");
+    expect(renders.rows[0]!.resultAssetId).toBeUndefined();
+  });
+  it("still refuses an occupied storefront point before qualification or delivery", async () => {
+    await scenes.updateOne({ id: "scene" }, { $set: { publicSessionId: "storefront:visitor-1" } });
+    obstacle = true;
+    await expect(createRender(db, "org", request, "storefront:visitor-1")).rejects.toThrow(/occupé/);
+    expect(mocks.edit).not.toHaveBeenCalled();
+    expect(reviewCalls).toBe(0);
+    expect(mocks.capture).not.toHaveBeenCalled();
+  });
   it("loads the room and product inputs concurrently and reads a repeated asset once", async () => {
     request.simplePlacements = request.simplePlacements!.map((item) => ({
       ...item,

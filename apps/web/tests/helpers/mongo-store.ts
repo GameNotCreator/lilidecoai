@@ -68,6 +68,8 @@ function matchesOperator(
       return values.some((item) => (expected as unknown[]).includes(item));
     case "$exists":
       return (actual !== undefined) === expected;
+    case "$regex":
+      return typeof actual === "string" && new RegExp(String(expected)).test(actual);
     default:
       throw new Error(`Unsupported test operator ${op}`);
   }

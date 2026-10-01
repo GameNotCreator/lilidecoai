@@ -89,6 +89,13 @@ describe("render response contract after MongoDB storage", () => {
     expect(renderSchema.parse(payload).surfaceType).toBe("rug_zone");
   });
 
+  it("gives storefront visitors an available action after an occupied placement", () => {
+    const error = "Cet emplacement est occupé. Déplacez le point sur une zone libre, ou utilisez le parcours Remplacer pour confirmer la zone à supprimer.";
+    const render = { ...admittedRender("failed"), error };
+    expect(renderResponse(render).error).toBe("Cet emplacement semble occupé. Déplacez le point sur une zone libre, puis lancez une nouvelle visualisation.");
+    expect(renderResponse({ ...render, publicSessionId: undefined }).error).toBe(error);
+  });
+
   it.each([
     { mode: "invented-mode" },
     { status: "invented-status" },

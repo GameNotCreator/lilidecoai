@@ -17,6 +17,7 @@ import {
   resolveSpans,
   SCALE_ESTIMATION_VERSION,
   sceneScaleCacheKey,
+  STOREFRONT_SCALE_PROFILE,
   type RawScaleSpan,
   type SceneScaleSpan,
 } from "../lib/server/scale-estimation";
@@ -646,6 +647,12 @@ describe("resolveSpans — confidence tracks the chosen source", () => {
 });
 
 describe("sceneScaleCacheKey", () => {
+  it("keeps fast storefront medium estimates separate from legacy estimates", () => {
+    const points = [{ x: 0.62, y: 0.9 }];
+    const kinds = ["standing"] as const;
+    expect(sceneScaleCacheKey(points, kinds, STOREFRONT_SCALE_PROFILE)).not.toBe(sceneScaleCacheKey(points, kinds));
+    expect(sceneScaleCacheKey(points, kinds, STOREFRONT_SCALE_PROFILE)).toBe(sceneScaleCacheKey(points, kinds, STOREFRONT_SCALE_PROFILE));
+  });
   const POINT = [{ x: 0.5, y: 0.7 }] as const;
 
   it("separates nearby taps that could straddle a shelf edge", () => {

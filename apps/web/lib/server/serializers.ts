@@ -1,5 +1,6 @@
 import { assetUrl } from "./assets";
 import type { ProductDocument, RenderDocument, SceneDocument } from "./types";
+import { effectiveRenderDeadline } from "./storefront-render-deadline";
 
 export function productResponse(product: ProductDocument) {
   return {
@@ -71,6 +72,9 @@ export function sceneResponse(scene: SceneDocument) {
 
 function renderErrorResponse(render: RenderDocument) {
   const error = render.error ?? null;
+  if (render.publicSessionId?.startsWith("storefront:") && error?.startsWith("Cet emplacement est occupé.")) {
+    return "Cet emplacement semble occupé. Déplacez le point sur une zone libre, puis lancez une nouvelle visualisation.";
+  }
   const prefix = "Le placement ne permet pas une intégration fiable : ";
   if (render.engine !== "spatial" || !error?.startsWith(prefix)) return error;
 
@@ -108,7 +112,7 @@ export function renderResponse(render: RenderDocument) {
     pipelineState: render.pipelineState,
     execution: render.execution ? {
       version: render.execution.version,
-      deadlineAt: render.execution.deadlineAt.toISOString(),
+      deadlineAt: new Date(effectiveRenderDeadline(render)).toISOString(),
       attempts: render.execution.attempts,
       retrying: render.status === "queued" && render.execution.attempts > 0,
       errorCode: render.execution.errorCode,

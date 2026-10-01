@@ -36,6 +36,7 @@ import {
   VISUAL_REVIEW_VERSION,
   type VisualReviewInput,
 } from "./ai/visual-review";
+import { reviewStorefrontPlacement, storefrontPlacementReviewAllowance, STOREFRONT_PLACEMENT_REVIEW_VERSION } from "./ai/storefront-placement-review";
 import { captureStage } from "./render-capture";
 import { cutoutTrust } from "./cutout-identity";
 import { privateVisibility, readAsset, storeAsset } from "./assets";
@@ -54,6 +55,7 @@ import {
   getOrEstimateSceneScale,
   markPoints,
   SCALE_ESTIMATION_VERSION,
+  STOREFRONT_SCALE_PROFILE,
   type SceneScaleSpan,
 } from "./scale-estimation";
 import { paidImageProviderConfigured, serverConfig } from "./config";
@@ -110,6 +112,7 @@ import { validateSpatialVolumeMatteOptions } from "./spatial-volume-matte";
 import { dispatchRenderWorker } from "./render-worker-dispatch";
 import {
   durableContext,
+  durableAbortSignal,
   DurableExecutionError,
   propagateDurableError,
   renderDeadline,
@@ -305,6 +308,7 @@ export async function createRender(
   }
 
   const simplePointWorkflow = input.workflow === "simple_point";
+  const fastStorefront = simplePointWorkflow && !spatial && input.mode !== "replace" && publicSessionId?.startsWith("storefront:") === true;
   let simpleObjects: SimpleRenderObject[] = [];
   if (simplePointWorkflow) {
     if (input.mode === "replace")
@@ -492,34 +496,34 @@ export async function createRender(
     modelChain: [
       {
         provider: selectedProvider.route.provider,
-        model: selectedProvider.provider.model,
-        role: outputQuality,
+        model: fastStorefront ? serverConfig.openaiVisionModel : selectedProvider.provider.model,
+        role: fastStorefront ? "placement_review" : outputQuality,
       },
     ],
     attemptCount: 0,
     estimatedCostUsd: 0,
-    promptVersion: simplePointWorkflow
+    promptVersion: fastStorefront ? STOREFRONT_PLACEMENT_REVIEW_VERSION : simplePointWorkflow
       ? SIMPLE_POINT_PROMPT_VERSION
       : PROMPT_VERSION,
     engineVersions: {
       placementGeometry: SIMPLE_PLACEMENT_VERSION,
       composite: simplePointWorkflow ? CONTACT_LIGHT_COMPOSITE_VERSION : SIMPLE_COMPOSITE_VERSION,
-      scaleEstimation: SCALE_ESTIMATION_VERSION,
-      quality: simplePointWorkflow ? VISUAL_REVIEW_VERSION : QUALITY_VERSION,
+      scaleEstimation: fastStorefront ? `${SCALE_ESTIMATION_VERSION}/${STOREFRONT_SCALE_PROFILE}` : SCALE_ESTIMATION_VERSION,
+      quality: fastStorefront ? STOREFRONT_PLACEMENT_REVIEW_VERSION : simplePointWorkflow ? VISUAL_REVIEW_VERSION : QUALITY_VERSION,
       // The prompt the model actually receives. simple_point sends the
       // harmonize prompt (SIMPLE_COMPOSITE_PROMPT_VERSION); the "simple point"
       // version is the render's own contract, already on `promptVersion`.
-      prompt: simplePointWorkflow
+      prompt: fastStorefront ? STOREFRONT_PLACEMENT_REVIEW_VERSION : simplePointWorkflow
         ? SIMPLE_COMPOSITE_PROMPT_VERSION
         : PROMPT_VERSION,
       // Resolved, never assumed: a missing key turns a run synthetic in
       // silence, and a corpus must never read such a run as a measurement.
       mockMode: serverConfig.aiMockMode,
-      editModel: selectedProvider.provider.model,
+      editModel: fastStorefront ? "deterministic-source-composite" : selectedProvider.provider.model,
       // OpenAI settings only when OpenAI is the route: on a Google-routed
       // render they would describe a model that never ran.
       imageQuality:
-        selectedProvider.route.provider === "openai"
+        fastStorefront ? "n/a" : selectedProvider.route.provider === "openai"
           ? imageQualityForModel(
               selectedProvider.provider.model,
               serverConfig.openaiQuality,
@@ -574,6 +578,7 @@ export async function createRender(
       simplePointWorkflow
         ? simpleObjects.map((item) => item.product)
         : [product],
+      render,
     );
     if (mode === "replace") {
       const segmentation = await confirmedSegmentation(db, render, input);
@@ -1009,7 +1014,9 @@ async function runSimplePointRender(
   requestedSize: RenderDocument["requestedSize"],
   startedAt: number,
 ) {
-  const renderDeadlineMs = renderDeadline(startedAt);
+  const fastStorefront = render.publicSessionId?.startsWith("storefront:") === true &&
+    render.engineVersions?.quality === STOREFRONT_PLACEMENT_REVIEW_VERSION && input.mode !== "replace";
+  const renderDeadlineMs = Math.min(renderDeadline(startedAt), fastStorefront ? render.createdAt.getTime() + 180_000 : Infinity);
   // These inputs are independent. Keep their original bytes and order, but
   // overlap storage reads and reuse assets repeated within this render only.
   const assets = new Map<string, ReturnType<typeof readAsset>>();
@@ -1021,7 +1028,7 @@ async function runSimplePointRender(
     }
     return pending;
   };
-  const [orientedScene, productReferences, cutouts] = await Promise.all([
+  const [orientedScene, productReferences, preparedCutouts] = await Promise.all([
     (async () => {
       const sourceAsset = await readOnce(db, scene.assetId);
       if (!sourceAsset) {
@@ -1052,7 +1059,15 @@ async function runSimplePointRender(
             404,
           );
         }
-        return cutout.buffer;
+        // Measurement is local and independent of the room and reference
+        // downloads. Finish it before any paid analysis, using the exact bytes
+        // already loaded for this render.
+        const metadata = await sharp(cutout.buffer).metadata();
+        return {
+          buffer: cutout.buffer,
+          widthPx: Math.max(1, metadata.width ?? 1),
+          heightPx: Math.max(1, metadata.height ?? 1),
+        };
       }),
     ),
   ]);
@@ -1071,8 +1086,8 @@ async function runSimplePointRender(
       $set: {
         status: "processing",
         pipelineState,
-        provider: route.provider,
-        model: provider.model,
+        provider: fastStorefront ? "deterministic" : route.provider,
+        model: fastStorefront ? "deterministic-source-composite" : provider.model,
         placement: {
           ...input.placement,
           operation: "place",
@@ -1088,17 +1103,10 @@ async function runSimplePointRender(
   const sceneHeight = orientedScene.info.height;
   const sceneImage = orientedScene.data;
 
-  // Every cutout is measured before anything is decided: its aspect and its
-  // measured base row drive the placement, so they must exist first.
-  const cutoutSizes = await Promise.all(
-    cutouts.map(async (buffer) => {
-      const metadata = await sharp(buffer).metadata();
-      return {
-        widthPx: Math.max(1, metadata.width ?? 1),
-        heightPx: Math.max(1, metadata.height ?? 1),
-      };
-    }),
-  );
+  // Every cutout has already been measured: aspect and base geometry remain
+  // prerequisites for placement and provider admission.
+  const cutouts = preparedCutouts.map((cutout) => cutout.buffer);
+  const cutoutSizes = preparedCutouts;
 
   // Metric scale and room lighting come from one cached vision pass, shared
   // with the free pre-flight the client already ran: the customer sees the
@@ -1116,7 +1124,7 @@ async function runSimplePointRender(
         scene,
         points,
         kinds,
-        { deadlineMs: renderDeadlineMs - 100_000 },
+        { deadlineMs: renderDeadlineMs - (fastStorefront ? 60_000 : 100_000), ...(fastStorefront ? { profile: STOREFRONT_SCALE_PROFILE } : {}) },
       );
       // The scale pass is a paid vision call and was the last one in this pipeline
       // reaching no journal (A13). It reports what it actually did: nothing on a
@@ -1142,10 +1150,10 @@ async function runSimplePointRender(
     scaleResult.call.outcome !== "succeeded" &&
     simpleObjects.some((item) => item.pixelsPerCm === null)
   ) {
-    throw new RenderError(
-      "L’analyse de la pièce est momentanément indisponible. Votre photo n’est pas en cause : réessayez dans quelques instants.",
-      503,
-    );
+    const message =
+      "L’analyse de la pièce est momentanément indisponible. Votre photo n’est pas en cause : réessayez dans quelques instants.";
+    if (fastStorefront) throw new DurableExecutionError(message, "permanent");
+    throw new RenderError(message, 503);
   }
   const scales = simpleObjects.map((item, index) => {
     if (item.pixelsPerCm !== null) {
@@ -1221,8 +1229,9 @@ async function runSimplePointRender(
               "image/webp",
               item.placementPoint,
               inspectionSurfaceType(item.placementKind, spans[index]),
-              { markerNumber: 1, deadlineMs: renderDeadlineMs - 100_000 },
+              { markerNumber: 1, deadlineMs: renderDeadlineMs - (fastStorefront ? 55_000 : 100_000) },
             ),
+          fastStorefront ? { maxAttempts: 1, respectRetryable: true } : undefined,
         ).catch((reason) => {
           propagateDurableError(reason);
           if (reason instanceof RenderBudgetError) throw reason;
@@ -1348,22 +1357,24 @@ async function runSimplePointRender(
   // What the model is handed, and the region it is allowed to touch. Between
   // the composite and the delivered image these are the only evidence of
   // whether a failure came from the request or from the answer.
-  await captureStage(
-    db,
-    render,
-    "model_input",
-    padded.imageWebp,
-    "image/webp",
-    scene.expiresAt,
-  );
-  await captureStage(
-    db,
-    render,
-    "model_mask",
-    padded.maskPng,
-    "image/png",
-    scene.expiresAt,
-  );
+  await Promise.all([
+    captureStage(
+      db,
+      render,
+      "model_input",
+      padded.imageWebp,
+      "image/webp",
+      scene.expiresAt,
+    ),
+    captureStage(
+      db,
+      render,
+      "model_mask",
+      padded.maskPng,
+      "image/png",
+      scene.expiresAt,
+    ),
+  ]);
   // Nearest object first: the prompt's front-to-back list and the reference
   // images must agree with the depth order the composite already used.
   const frontToBack = composition.placements
@@ -1432,6 +1443,66 @@ async function runSimplePointRender(
     deadlineMs: renderDeadlineMs,
     instructions: `Placement contracts in a ${sceneWidth} by ${sceneHeight} frame: ${JSON.stringify(composition.placements)}. Requested dimensions: ${JSON.stringify(simpleObjects.map((item) => item.dimensionPair))}. Scale sources: ${JSON.stringify(scales)}. Estimated dimensions are not metric measurements. Removed targets: ${JSON.stringify(replacedTargets)}. Foreground room furniture must remain in front where appropriate.`,
   };
+  if (fastStorefront) {
+    // The catalogue pixels and geometry are authoritative. A local source-alpha
+    // contact field replaces the slow image harmonization; there is no generated
+    // product, image repair attempt or claim that lighting realism was verified.
+    const finalBuffer = await pasteBackOutsideMask(composition, padded, padded.imageWebp, {
+      transferMode: "contact-light",
+      relightStrength: 0,
+    });
+    await setStage("quality_check", "checking_placement");
+    const decision = serverConfig.aiMockMode
+      ? simulatedQualityDecision()
+      : await measureProviderCall(
+          db,
+          render,
+          {
+            step: "storefront_placement_review",
+            provider: "openai",
+            model: serverConfig.openaiVisionModel,
+            ...storefrontPlacementReviewAllowance(),
+            promptVersion: STOREFRONT_PLACEMENT_REVIEW_VERSION,
+          },
+          () => reviewStorefrontPlacement({ ...visualInput, generated: { data: finalBuffer, mimeType: "image/webp" } }),
+          { maxAttempts: 1, respectRetryable: true },
+        );
+    await advanceRender(db, render.id, { $set: { qualityDecision: decision, qualityScore: decision.score, updatedAt: new Date() } });
+    if (decision.status !== "accepted" && !(serverConfig.aiMockMode && decision.status === "simulated"))
+      await captureStage(db, render, "final_rejected", finalBuffer, "image/webp", scene.expiresAt);
+    requireAcceptedQuality(decision, serverConfig.aiMockMode);
+    const resultAsset = await storeAsset(db, {
+      organizationId, kind: "render", visibility: privateVisibility(render.publicSessionId),
+      buffer: finalBuffer, contentType: "image/webp", expiresAt: scene.expiresAt,
+    });
+    const usageTotals = await renderUsageTotals(db, render.id);
+    const update = {
+      status: "succeeded" as const, pipelineState: "completed" as const,
+      provider: "deterministic", model: "deterministic-source-composite",
+      resultAssetId: resultAsset.id, compositeAssetId: compositeAsset.id,
+      qualityScore: decision.score, qualityChecks: decision.checks, qualityDecision: decision,
+      estimatedCostUsd: usageTotals.estimatedCostUsd, attemptCount: 0,
+      latencyMs: Date.now() - startedAt, promptVersion: STOREFRONT_PLACEMENT_REVIEW_VERSION,
+      modelChain: [{ provider: "openai", model: serverConfig.openaiVisionModel, role: "scale_and_placement_review" }],
+      audit: {
+        scaleSources: scales.map(scale => scale.scaleSource),
+        scaleFallbackFired: scales.some(scale => scale.scaleSource === "assumed_room_width"),
+        cutoutSources: simpleObjects.map(item => item.product.cutout?.source ?? "heuristic"),
+        cutoutWarnings: simpleObjects.flatMap(item => item.product.cutout?.warnings ?? []),
+        obstaclesRemoved: replacedTargets.length, obstaclesSkipped: skippedObstacles.length,
+      },
+      placement: { ...input.placement, operation: "place", objectCount: simpleObjects.length,
+        pipelineStage: "complete", compositePlacements: composition.placements,
+        sceneWidth: composition.sceneWidth, sceneHeight: composition.sceneHeight,
+        lighting, scaleSpans: spans, replacedTargets, skippedObstacles,
+      },
+      updatedAt: new Date(),
+    };
+    if (Date.now() >= renderDeadlineMs)
+      throw new DurableExecutionError("Le délai maximal de trois minutes est dépassé. Réessayez avec un emplacement dégagé.", "deadline");
+    const creditCharged = await completeRender(db, render, update);
+    return renderResponse({ ...render, ...update, creditCharged });
+  }
   if (!serverConfig.aiMockMode) {
     await setStage("analyzing_scene", "checking_composition");
     remainingStepTimeout(renderDeadlineMs - 60_000, 45_000);
@@ -4926,7 +4997,7 @@ async function fetchOpenAIResponse(
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(remainingStepTimeout(deadlineMs, timeoutMs)),
+      signal: durableAbortSignal(AbortSignal.timeout(remainingStepTimeout(deadlineMs, timeoutMs))),
     });
 
   const response = await send(requestBody);

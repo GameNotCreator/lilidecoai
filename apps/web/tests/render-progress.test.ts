@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   elapsedRenderTime,
+  isStorefrontPlacementRender,
   renderProgress,
   renderTerminalAnnouncement,
 } from "../lib/render-progress";
@@ -122,5 +123,80 @@ describe("elapsed time", () => {
     expect(elapsedRenderTime(start, null)).toBeNull();
     expect(elapsedRenderTime("bad-date", epoch)).toBeNull();
     expect(elapsedRenderTime(start, epoch - 1000)).toBeNull();
+  });
+});
+
+describe("storefront source-photo placement progress", () => {
+  const engineVersions = {
+    placementGeometry: "simple-placement-v1",
+    composite: "composite-v3/contact-light-v6",
+    scaleEstimation: "scale-v3/storefront-placement-v1",
+    quality: "storefront-placement-review-v1",
+    prompt: "storefront-placement-review-v1",
+    mockMode: false,
+    imageQuality: "n/a",
+    editModel: "deterministic-source-composite",
+    visionModel: "vision-test",
+  };
+
+  it("uses the server's resolved contract, leaving legacy progress unchanged", () => {
+    expect(isStorefrontPlacementRender({ engineVersions })).toBe(true);
+    expect(isStorefrontPlacementRender({})).toBe(false);
+    expect(
+      isStorefrontPlacementRender({
+        engineVersions: { ...engineVersions, quality: "visual-review-v2" },
+      }),
+    ).toBe(false);
+    expect(renderProgress(input()).steps).toHaveLength(4);
+  });
+
+  it.each([
+    ["estimating_scale", ["active", "pending", "pending"]],
+    ["compositing", ["complete", "active", "pending"]],
+    ["checking_placement", ["complete", "complete", "active"]],
+    ["complete", ["complete", "complete", "complete"]],
+  ] as const)(
+    "shows the three real stages for %s without fictitious image generation",
+    (stage, states) => {
+      const result = renderProgress(
+        input({ engineVersions, placement: { pipelineStage: stage } }),
+      );
+      expect(result.steps.map((step) => step.state)).toEqual(states);
+      expect(result.steps.map((step) => step.label)).toEqual([
+        "Lecture de l’intérieur",
+        "Placement des objets",
+        "Vérification du placement",
+      ]);
+      expect(`${result.title} ${result.detail}`).not.toMatch(
+        /lumière|ombres|réaliste/,
+      );
+    },
+  );
+
+  it("uses a new quality-check event over an older composition field", () => {
+    const result = renderProgress(
+      input({
+        engineVersions,
+        pipelineState: "quality_check",
+        placement: { pipelineStage: "compositing" },
+      }),
+    );
+    expect(result.title).toBe("Vérification du placement");
+    expect(result.steps.map((step) => step.state)).toEqual([
+      "complete",
+      "complete",
+      "active",
+    ]);
+  });
+
+  it("does not reinterpret a generation stage as completed fast-profile work", () => {
+    const result = renderProgress(
+      input({
+        engineVersions,
+        placement: { pipelineStage: "generating_final" },
+      }),
+    );
+    expect(result.steps.every((step) => step.state === "pending")).toBe(true);
+    expect(result.sourcePixelPlacement).toBe(true);
   });
 });
