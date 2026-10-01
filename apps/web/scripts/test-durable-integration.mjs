@@ -14,6 +14,7 @@ try {
       ),
       "run",
       "tests/durable-integration.test.ts",
+      "tests/admin-visualization-budget-integration.test.ts",
     ],
     {
       cwd: new URL("../", import.meta.url),

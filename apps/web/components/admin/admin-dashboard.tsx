@@ -19,6 +19,7 @@ import {
   statusLabels,
   type AdminOverview,
 } from "@/lib/admin-client";
+import { AdminVisualizationBudget } from "./admin-visualization-budget";
 
 export function AdminDashboard() {
   const [data, setData] = useState<AdminOverview | null>(null);
@@ -100,6 +101,8 @@ export function AdminDashboard() {
           hint="25 dernières tentatives"
         />
       </div>
+
+      <AdminVisualizationBudget />
 
       <section className="bo-panel">
         <div className="bo-panel-head">

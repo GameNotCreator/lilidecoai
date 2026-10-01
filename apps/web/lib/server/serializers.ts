@@ -2,6 +2,9 @@ import { assetUrl } from "./assets";
 import type { ProductDocument, RenderDocument, SceneDocument } from "./types";
 import { effectiveRenderDeadline } from "./storefront-render-deadline";
 
+export const STOREFRONT_BUDGET_UNAVAILABLE_MESSAGE =
+  "La visualisation est momentanément indisponible dans la boutique. Réessayez un peu plus tard.";
+
 export function productResponse(product: ProductDocument) {
   return {
     spatialMetadata: product.spatialMetadata ?? undefined,
@@ -72,6 +75,10 @@ export function sceneResponse(scene: SceneDocument) {
 
 function renderErrorResponse(render: RenderDocument) {
   const error = render.error ?? null;
+  if (
+    render.publicSessionId?.startsWith("storefront:") &&
+    (error === "Crédits insuffisants." || error === "Crédits insuffisants")
+  ) return STOREFRONT_BUDGET_UNAVAILABLE_MESSAGE;
   if (render.publicSessionId?.startsWith("storefront:") && error?.startsWith("Cet emplacement est occupé.")) {
     return "Cet emplacement semble occupé. Déplacez le point sur une zone libre, puis lancez une nouvelle visualisation.";
   }

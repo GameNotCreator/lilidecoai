@@ -7,7 +7,7 @@ vi.mock("../lib/server/assets", () => ({
 }));
 
 import { getRender, InvalidApiResponseError } from "../lib/api";
-import { renderResponse } from "../lib/server/serializers";
+import { renderResponse, STOREFRONT_BUDGET_UNAVAILABLE_MESSAGE } from "../lib/server/serializers";
 import type { RenderDocument } from "../lib/server/types";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -94,6 +94,23 @@ describe("render response contract after MongoDB storage", () => {
     const render = { ...admittedRender("failed"), error };
     expect(renderResponse(render).error).toBe("Cet emplacement semble occupé. Déplacez le point sur une zone libre, puis lancez une nouvelle visualisation.");
     expect(renderResponse({ ...render, publicSessionId: undefined }).error).toBe(error);
+  });
+
+  it.each(["Crédits insuffisants.", "Crédits insuffisants"])(
+    "translates shop funding errors without changing the stored cause or merchant diagnostics: %s",
+    async (error) => {
+      const render = persistedRender({ ...admittedRender("failed"), error });
+      const payload = await Response.json(renderResponse(render)).json();
+      expect(renderSchema.parse(payload).error).toBe(STOREFRONT_BUDGET_UNAVAILABLE_MESSAGE);
+      expect(render.error).toBe(error);
+      expect(renderResponse({ ...render, publicSessionId: undefined }).error).toBe(error);
+      expect(renderResponse({ ...render, publicSessionId: "guest:visitor" }).error).toBe(error);
+      expect(renderResponse({ ...render, publicSessionId: "public-widget-session" }).error).toBe(error);
+    },
+  );
+  it("preserves unrelated storefront failures verbatim", () => {
+    const error = "Le contrôle du placement est indisponible.";
+    expect(renderResponse({ ...admittedRender("failed"), error }).error).toBe(error);
   });
 
   it.each([

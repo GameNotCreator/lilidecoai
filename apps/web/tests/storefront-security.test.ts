@@ -36,6 +36,8 @@ vi.mock("../lib/server/rendering", async (original) => ({
   createRender: mocks.render,
 }));
 import { dispatchApi } from "../lib/server/api";
+import { serverConfig } from "../lib/server/config";
+import { STOREFRONT_BUDGET_UNAVAILABLE_MESSAGE } from "../lib/server/serializers";
 import {
   getStorefrontCatalog,
   normalizeStorefrontRender,
@@ -61,6 +63,7 @@ let products: ReturnType<typeof mongoStore>;
 let organizations: ReturnType<typeof mongoStore>;
 let scenes: ReturnType<typeof mongoStore>;
 let renders: ReturnType<typeof mongoStore>;
+let wallets: ReturnType<typeof mongoStore>;
 function product(overrides: Partial<ProductDocument> = {}): ProductDocument {
   return {
     id: productId,
@@ -118,10 +121,13 @@ function input(count = 1): RenderInput {
 }
 beforeEach(() => {
   vi.clearAllMocks();
+  serverConfig.aiMockMode = true;
+  serverConfig.openaiApiKey = undefined;
   products = mongoStore();
   organizations = mongoStore();
   scenes = mongoStore();
   renders = mongoStore();
+  wallets = mongoStore();
   products.rows.push(product() as unknown as Record<string, unknown>);
   organizations.rows.push({ id: "org", slug: "lili", name: "LiliDeco" });
   scenes.rows.push({
@@ -134,6 +140,7 @@ beforeEach(() => {
     organizations,
     scenes,
     renders,
+    wallets,
     rateLimits: mongoStore(),
   });
   mocks.tenant.mockResolvedValue(tenant);
@@ -352,6 +359,92 @@ describe("public concept store boundary", () => {
         .heightCm,
     ).toBe(30);
     expect(mocks.render.mock.calls[0]?.[3]).toBe("storefront:a");
+  });
+  it.each([
+    null,
+    { organizationId: "org", balance: 0 },
+    { organizationId: "org", balance: -1 },
+    { organizationId: "org", balance: 0, reserved: 1, holds: [{ key: "render:in-flight" }] },
+    { organizationId: "other", balance: 100 },
+  ])("refuses an unfunded real shop request before admission without spending or replenishing: %j", async (wallet) => {
+    serverConfig.aiMockMode = false;
+    serverConfig.openaiApiKey = "test-configuration-only";
+    if (wallet) wallets.rows.push(wallet);
+    const walletBefore = structuredClone(wallets.rows);
+    const lookup = vi.spyOn(wallets, "findOne");
+    const response = await dispatchApi(
+      new Request("http://test/v1/renders/final", {
+        method: "POST",
+        body: JSON.stringify(input()),
+      }),
+      ["renders", "final"],
+    );
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ detail: STOREFRONT_BUDGET_UNAVAILABLE_MESSAGE });
+    expect(lookup).toHaveBeenCalledWith({ organizationId: "org", balance: { $gte: 1 } });
+    expect(mocks.render).not.toHaveBeenCalled();
+    expect(renders.rows).toEqual([]);
+    expect(wallets.rows).toEqual(walletBefore);
+    expect(mocks.seed).not.toHaveBeenCalled();
+    expect(mocks.refill).not.toHaveBeenCalled();
+  });
+  it("admits a funded real shop request without consuming the worker's reservation", async () => {
+    serverConfig.aiMockMode = false;
+    serverConfig.openaiApiKey = "test-configuration-only";
+    wallets.rows.push({ organizationId: "org", balance: 1, reserved: 0, holds: [] });
+    const response = await dispatchApi(
+      new Request("http://test/v1/renders/final", {
+        method: "POST", body: JSON.stringify(input()),
+      }),
+      ["renders", "final"],
+    );
+    expect(response.status).toBe(201);
+    expect(mocks.render).toHaveBeenCalledOnce();
+    expect(wallets.rows).toEqual([{ organizationId: "org", balance: 1, reserved: 0, holds: [] }]);
+  });
+  it("recovers an admitted real shop request even after the wallet is empty and its product archived", async () => {
+    serverConfig.aiMockMode = false;
+    serverConfig.openaiApiKey = "test-configuration-only";
+    wallets.rows.push({ organizationId: "org", balance: 0 });
+    const lookup = vi.spyOn(wallets, "findOne");
+    const renderId = "00000000-0000-4000-8000-000000000030";
+    renders.rows.push({
+      id: renderId, organizationId: "org", publicSessionId: "storefront:a",
+      engine: "legacy", idempotencyKey: "shop-1", status: "queued",
+      createdAt: new Date(), placement: { sceneId, productId },
+    });
+    products.rows[0]!.status = "archived";
+    const response = await dispatchApi(
+      new Request("http://test/v1/renders/final", {
+        method: "POST", body: JSON.stringify(input()),
+      }),
+      ["renders", "final"],
+    );
+    expect(response.status).toBe(200);
+    expect((await response.json()).id).toBe(renderId);
+    expect(lookup).not.toHaveBeenCalled();
+    expect(mocks.render).not.toHaveBeenCalled();
+    expect(wallets.rows).toEqual([{ organizationId: "org", balance: 0 }]);
+  });
+  it("refuses a new paid retry before admission when the shop wallet is empty", async () => {
+    serverConfig.aiMockMode = false;
+    serverConfig.openaiApiKey = "test-configuration-only";
+    wallets.rows.push({ organizationId: "org", balance: 0 });
+    renders.rows.push({
+      id: "old", organizationId: "org", publicSessionId: "storefront:a",
+      engine: "legacy", status: "failed",
+      requestSnapshot: { version: 1, input: input() },
+    });
+    const rendersBefore = structuredClone(renders.rows);
+    const response = await dispatchApi(
+      new Request("http://test/v1/renders/old/retry", { method: "POST" }),
+      ["renders", "old", "retry"],
+    );
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ detail: STOREFRONT_BUDGET_UNAVAILABLE_MESSAGE });
+    expect(mocks.render).not.toHaveBeenCalled();
+    expect(renders.rows).toEqual(rendersBefore);
+    expect(wallets.rows).toEqual([{ organizationId: "org", balance: 0 }]);
   });
   it("rechecks publication when retrying an old render", async () => {
     renders.rows.push({

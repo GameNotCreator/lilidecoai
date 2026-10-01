@@ -13,7 +13,7 @@ import { serverConfig } from "./config";
 import { cutoutTrust } from "./cutout-identity";
 import { productPreparationStatus } from "./product-preparation";
 import { collections } from "./mongodb";
-import { productResponse } from "./serializers";
+import { productResponse, STOREFRONT_BUDGET_UNAVAILABLE_MESSAGE } from "./serializers";
 import { DEMO_CATALOG_USER_ID, type ProductDocument } from "./types";
 import type { RenderInput } from "./render-request";
 import { isSameOriginRequest } from "./request-origin";
@@ -191,6 +191,16 @@ export async function normalizeStorefrontRender(
       placementKind: productPlacementKind(dto),
     };
   });
+  if (!serverConfig.aiMockMode) {
+    // Refuse before admission when the shop cannot reserve a render. The
+    // worker still reserves transactionally to cover concurrent requests;
+    // this read neither replenishes nor consumes the merchant's wallet.
+    const funded = await collections(db).wallets.findOne({
+      organizationId: tenant.organizationId,
+      balance: { $gte: 1 },
+    });
+    if (!funded) throw new AuthError(STOREFRONT_BUDGET_UNAVAILABLE_MESSAGE, 503);
+  }
   const first = simplePlacements[0]!;
   return {
     engine: "legacy",
