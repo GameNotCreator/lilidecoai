@@ -14,9 +14,14 @@ import {
   storefrontPlacementReviewAllowance,
   STOREFRONT_PLACEMENT_REVIEW_VERSION,
   STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION,
+  STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION,
+  storefrontRealisticPlacementReviewSchema,
   type StorefrontScaleReference,
 } from "../lib/server/ai/storefront-placement-review";
 import type { VisualReviewInput } from "../lib/server/ai/visual-review";
+import { durableContext, DurableExecutionError, type DurableContext } from "../lib/server/durable-context";
+import { isProviderRefusal } from "../lib/server/provider-usage";
+import { visionObservation } from "../lib/server/ai/openai-vision-cost";
 
 const bounds = { xMin: 0.4, yMin: 0.3, xMax: 0.6, yMax: 0.6 };
 const image = {
@@ -84,6 +89,7 @@ const envelope = (value: unknown, status = "completed") => ({
   ],
 });
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   config.openaiApiKey = "test-only";
@@ -368,6 +374,7 @@ describe("storefront photographic placement qualification", () => {
     const request = JSON.parse(fetcher.mock.calls[0]![1]!.body as string);
     expect(request.text.format.name).toBe("storefront_realistic_placement_review");
     expect(request.max_output_tokens).toBe(6000);
+    expect(request.reasoning).toEqual({ effort: "medium" });
     expect(request.input[0].content[0].text).toContain("camera elevation, pitch, yaw");
     expect(request.input[0].content[0].text).toContain("printed text and distinctive motif");
     expect(request.input[0].content[0].text).not.toContain("Do not assess");
@@ -444,5 +451,220 @@ describe("storefront photographic placement qualification", () => {
     vi.stubGlobal("fetch", fetcher);
     await expect(reviewStorefrontPlacement(realisticInput())).rejects.toThrow(/configuré/);
     expect(fetcher).not.toHaveBeenCalled();
+  });
+});
+
+describe("storefront fast photographic placement qualification", () => {
+  const options = { realism: true, fastReview: true };
+  const fastInput = () => ({ ...realisticInput(), fastReview: true });
+  const checkNames = [
+    "present", "identity", "position", "scale", "perspective", "contact",
+    "edges", "occlusion", "noDuplicate", "gravity", "silhouetteComplete",
+    "photographicCoherence", "referenceScale",
+  ] as const;
+
+  function useReviewClock() {
+    vi.useFakeTimers();
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException("Timed out", "TimeoutError")), ms);
+      return controller.signal;
+    });
+  }
+
+  it("versions a completed fast review separately while preserving the measured-reference contract", () => {
+    expect(parseStorefrontPlacementReview(realisticAccepted(), [realisticProduct], options)).toMatchObject({
+      status: "accepted", version: STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION,
+    });
+    expect(parseStorefrontPlacementReview(realisticAccepted(), [realisticProduct], options).feedback).toContain("sans référence mesurée");
+    expect(parseStorefrontPlacementReview(realisticAccepted(true), [realisticProduct], {
+      ...options, scaleReference: measuredReference,
+    }).feedback).toContain("pas une mesure garantie");
+    expect(parseStorefrontPlacementReview(realisticAccepted(), [realisticProduct], {
+      ...options, scaleReference: measuredReference,
+    }).status).toBe("rejected");
+    expect(parseStorefrontPlacementReview(realisticAccepted(true), [realisticProduct], options).status).toBe("rejected");
+  });
+
+  it.each(checkNames)("keeps the strict %s acceptance gate", (name) => {
+    const data = realisticAccepted(true);
+    data.products[0]!.checks[name] = { passed: false, score: 0.95, reason: "Défaut observé." };
+    const decision = parseStorefrontPlacementReview(data, [realisticProduct], {
+      ...options, scaleReference: measuredReference,
+    });
+    expect(decision.status).toBe("rejected");
+    expect(decision.checks.find((check) => check.name === `${product.id}.${name}`)?.score).toBeLessThan(0.8);
+  });
+
+  it.each(checkNames)("requires the %s field in the unchanged photographic schema", (name) => {
+    const data = realisticAccepted(true);
+    delete (data.products[0]!.checks as Partial<typeof data.products[0]["checks"]>)[name];
+    expect(() => parseStorefrontPlacementReview(data, [realisticProduct], {
+      ...options, scaleReference: measuredReference,
+    })).toThrow();
+  });
+
+  it.each(["photoUsable", "backgroundPreserved", "noUnrequestedProducts"] as const)(
+    "keeps the %s scene gate", (name) => {
+      const data = realisticAccepted();
+      data[name].score = 0.7;
+      expect(parseStorefrontPlacementReview(data, [realisticProduct], options).status).toBe("rejected");
+    },
+  );
+
+  it("requires every selected ID once and refuses incomplete identity evidence", () => {
+    const data = realisticAccepted();
+    data.products[0]!.id = "invented-id";
+    expect(() => parseStorefrontPlacementReview(data, [realisticProduct], options)).toThrow(/exactement/);
+    const duplicates = realisticAccepted();
+    duplicates.products.push({ ...duplicates.products[0]! });
+    expect(() => parseStorefrontPlacementReview(duplicates, [realisticProduct, {
+      ...realisticProduct, id: "p1:1",
+    }], options)).toThrow(/exactement/);
+    expect(() => parseStorefrontPlacementReview(accepted(), [realisticProduct], options)).toThrow();
+  });
+
+  it("keeps the anchor and confidence gates when camera pose changes the box", () => {
+    const data = realisticAccepted();
+    data.products[0]!.observedBox = { xMin: 0.34, yMin: 0.14, xMax: 0.66, yMax: 0.6 };
+    expect(parseStorefrontPlacementReview(data, [realisticProduct], options).status).toBe("accepted");
+    data.products[0]!.observedContact.x = 0.6;
+    expect(parseStorefrontPlacementReview(data, [realisticProduct], options).status).toBe("rejected");
+    data.products[0]!.observedContact.x = 0.5;
+    data.products[0]!.foregroundOccluded = true;
+    data.products[0]!.confidence = 0.85;
+    expect(parseStorefrontPlacementReview(data, [realisticProduct], options).status).toBe("rejected");
+  });
+
+  it("has no separate fine-lighting gate and still requires photographic coherence", () => {
+    const decision = parseStorefrontPlacementReview(realisticAccepted(), [realisticProduct], options);
+    expect(decision.checks.some((check) => /lighting|shadow/i.test(check.name))).toBe(false);
+    expect(decision.checks.some((check) => check.name.endsWith("photographicCoherence"))).toBe(true);
+    const lighting = realisticAccepted();
+    Object.assign(lighting.products[0]!.checks, { lightingAndShadows: pass() });
+    expect(() => parseStorefrontPlacementReview(lighting, [realisticProduct], options)).toThrow();
+  });
+
+  it.each([undefined, false])("rejects fast mode without photographic mode (%s) before spending", async (realism) => {
+    const fetcher = vi.fn<typeof globalThis.fetch>();
+    vi.stubGlobal("fetch", fetcher);
+    await expect(reviewStorefrontPlacement({ ...fastInput(), realism })).rejects.toMatchObject({
+      code: "invalid_input", providerCalled: false,
+    });
+    expect(() => parseStorefrontPlacementReview(realisticAccepted(), [realisticProduct], {
+      fastReview: true, realism,
+    })).toThrow(/photographique/);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("uses one LOW review for 45 seconds with the same schema, tokens and conservative allowance", async () => {
+    useReviewClock();
+    const fetcher = vi.fn<typeof globalThis.fetch>(async () => Response.json(envelope(realisticAccepted())));
+    vi.stubGlobal("fetch", fetcher);
+    await reviewStorefrontPlacement(realisticInput());
+    const historical = JSON.parse(fetcher.mock.calls[0]![1]!.body as string);
+    expect((await reviewStorefrontPlacement(fastInput())).version).toBe(STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION);
+    const request = JSON.parse(fetcher.mock.calls[1]![1]!.body as string);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(AbortSignal.timeout).mock.calls.map(([ms]) => ms)).toEqual([30_000, 45_000]);
+    expect(request).toMatchObject({
+      reasoning: { effort: "low" }, max_output_tokens: 6000,
+      text: { format: { strict: true, name: "storefront_realistic_placement_review" } },
+    });
+    expect(request.text.format.schema).toEqual(historical.text.format.schema);
+    expect(Object.keys(storefrontRealisticPlacementReviewSchema.shape.products.element.shape.checks.shape)).toEqual(checkNames);
+    expect(storefrontPlacementReviewAllowance().estimatedCostUsd).toBe(0.55);
+    expect(request.input[0].content[0].text).toContain("at most 70 characters");
+    expect(request.input[0].content[0].text).toContain("Do not examine fine lighting or cast-shadow aesthetics");
+    expect(request.input[0].content[0].text).toContain("printed text and distinctive motif");
+    expect(request.input[0].content[0].text).toContain("camera elevation, pitch, yaw");
+    expect(request.input[1].content.filter((entry: { type: string }) => entry.type === "input_image")).toHaveLength(3);
+  });
+
+  it("keeps five seconds before the hard deadline and refuses insufficient time before spending", async () => {
+    useReviewClock();
+    const fetcher = vi.fn<typeof globalThis.fetch>(async () => Response.json(envelope(realisticAccepted())));
+    vi.stubGlobal("fetch", fetcher);
+    await reviewStorefrontPlacement({ ...fastInput(), deadlineMs: Date.now() + 10_000 });
+    expect(AbortSignal.timeout).toHaveBeenCalledWith(5_000);
+    await expect(reviewStorefrontPlacement({ ...fastInput(), deadlineMs: Date.now() + 6_999 })).rejects.toMatchObject({
+      code: "deadline", providerCalled: false,
+    });
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("does not send a billable review when image encoding consumes its available window", async () => {
+    useReviewClock();
+    const stringify = JSON.stringify;
+    vi.spyOn(JSON, "stringify").mockImplementationOnce((value) => {
+      vi.setSystemTime(Date.now() + 44_000);
+      return stringify(value);
+    });
+    const fetcher = vi.fn<typeof globalThis.fetch>();
+    vi.stubGlobal("fetch", fetcher);
+    await expect(reviewStorefrontPlacement(fastInput())).rejects.toMatchObject({
+      code: "deadline", providerCalled: false,
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it.each(["headers", "body"])("aborts an unresponsive %s phase after 45 seconds without retry or free-cost marking", async (phase) => {
+    useReviewClock();
+    const fetcher = vi.fn<typeof globalThis.fetch>(async (_url, init) => {
+      const waitForAbort = () => new Promise<never>((_resolve, reject) => {
+        init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason));
+      });
+      if (phase === "headers") return waitForAbort();
+      const response = Response.json(envelope(realisticAccepted()));
+      vi.spyOn(response, "json").mockImplementation(waitForAbort);
+      return response;
+    });
+    vi.stubGlobal("fetch", fetcher);
+    let error: unknown;
+    const result = reviewStorefrontPlacement(fastInput()).catch((reason: unknown) => { error = reason; });
+    await vi.advanceTimersByTimeAsync(45_000);
+    await result;
+    expect(error).toMatchObject({
+      code: "timeout", providerCalled: true, retryable: false,
+      message: "Le contrôle du placement a dépassé le délai autorisé.",
+    });
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(isProviderRefusal(error)).toBe(false);
+    expect(visionObservation(error)).toBeUndefined();
+  });
+
+  it.each(["headers", "body"])("refuses a late successful %s phase even when abort is ignored and preserves answered usage", async (phase) => {
+    vi.useFakeTimers();
+    const payload = { ...envelope(realisticAccepted()), usage: { input_tokens: 100, output_tokens: 50 } };
+    const fetcher = vi.fn<typeof globalThis.fetch>(async () => {
+      if (phase === "headers") vi.setSystemTime(Date.now() + 45_000);
+      const response = Response.json(payload);
+      if (phase === "body") vi.spyOn(response, "json").mockImplementation(async () => {
+        vi.setSystemTime(Date.now() + 45_000);
+        return payload;
+      });
+      return response;
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const error = await reviewStorefrontPlacement(fastInput()).catch((reason: unknown) => reason);
+    expect(error).toMatchObject({ code: "timeout", providerCalled: true, retryable: false });
+    expect(visionObservation(error)?.usage).toEqual(payload.usage);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("preserves durable execution errors from the request and the shared abort signal", async () => {
+    const error = new DurableExecutionError("Bail du rendu perdu.", "lease_lost");
+    const fetcher = vi.fn<typeof globalThis.fetch>(async () => { throw error; });
+    vi.stubGlobal("fetch", fetcher);
+    await expect(reviewStorefrontPlacement(fastInput())).rejects.toBe(error);
+    const controller = new AbortController();
+    fetcher.mockImplementation(async () => {
+      controller.abort(error);
+      throw new DOMException("Aborted", "AbortError");
+    });
+    await expect(durableContext.run({
+      render: {} as DurableContext["render"], token: "test-token", signal: controller.signal,
+    }, () => reviewStorefrontPlacement(fastInput()))).rejects.toBe(error);
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
 });

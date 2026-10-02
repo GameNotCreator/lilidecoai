@@ -232,4 +232,14 @@ describe("storefront source-photo placement progress", () => {
     expect(result.title).toBe("Vérification du placement");
     expect(result.steps.map((step) => step.state)).toEqual(["complete", "complete", "complete", "active"]);
   });
+  it("shows the v3 provisional perspective image while its final check is pending", () => {
+    const result = renderProgress(input({
+      engineVersions: { ...engineVersions, quality: "storefront-realistic-placement-v3" },
+      pipelineState: "quality_check", placement: { pipelineStage: "checking_placement" },
+      compositeUrl: "/api/assets/private-provisional",
+    }));
+    expect(result.title).toBe("Vérification du placement");
+    expect(result.sourcePixelPlacement).toBe(false);
+    expect(result.steps.map(step => step.state)).toEqual(["complete", "complete", "complete", "active"]);
+  });
 });

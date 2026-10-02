@@ -35,7 +35,7 @@ import {
   reviewVisualRender,
   VISUAL_REVIEW_VERSION,
 } from "./ai/visual-review";
-import { reviewStorefrontPlacement, storefrontPlacementReviewAllowance, STOREFRONT_PLACEMENT_REVIEW_VERSION, STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION, type StorefrontPlacementReviewInput } from "./ai/storefront-placement-review";
+import { reviewStorefrontPlacement, storefrontPlacementReviewAllowance, STOREFRONT_PLACEMENT_REVIEW_VERSION, STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION, type StorefrontPlacementReviewInput } from "./ai/storefront-placement-review";
 import { perspectiveEditComposition, restorePerspectiveBackground, STOREFRONT_REALISTIC_COMPOSITE_VERSION } from "./storefront-realistic-composite";
 import { inspectStorefrontScene, storefrontScenePreflightAllowance, STOREFRONT_SCENE_PREFLIGHT_VERSION } from "./ai/storefront-scene-preflight";
 import { captureStage } from "./render-capture";
@@ -504,18 +504,18 @@ export async function createRender(
     ],
     attemptCount: 0,
     estimatedCostUsd: 0,
-    promptVersion: fastStorefront ? STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION : simplePointWorkflow
+    promptVersion: fastStorefront ? STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION : simplePointWorkflow
       ? SIMPLE_POINT_PROMPT_VERSION
       : PROMPT_VERSION,
     engineVersions: {
       placementGeometry: SIMPLE_PLACEMENT_VERSION,
       composite: fastStorefront ? STOREFRONT_REALISTIC_COMPOSITE_VERSION : simplePointWorkflow ? CONTACT_LIGHT_COMPOSITE_VERSION : SIMPLE_COMPOSITE_VERSION,
       scaleEstimation: fastStorefront ? input.scaleReference ? "storefront-manual-reference-v1" : STOREFRONT_SCENE_PREFLIGHT_VERSION : SCALE_ESTIMATION_VERSION,
-      quality: fastStorefront ? STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION : simplePointWorkflow ? VISUAL_REVIEW_VERSION : QUALITY_VERSION,
+      quality: fastStorefront ? STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION : simplePointWorkflow ? VISUAL_REVIEW_VERSION : QUALITY_VERSION,
       // The prompt the model actually receives. simple_point sends the
       // harmonize prompt (SIMPLE_COMPOSITE_PROMPT_VERSION); the "simple point"
       // version is the render's own contract, already on `promptVersion`.
-      prompt: fastStorefront ? STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION : simplePointWorkflow
+      prompt: fastStorefront ? STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION : simplePointWorkflow
         ? SIMPLE_COMPOSITE_PROMPT_VERSION
         : PROMPT_VERSION,
       // Resolved, never assumed: a missing key turns a run synthetic in
@@ -1018,8 +1018,10 @@ async function runSimplePointRender(
 ) {
   const fastStorefront = render.publicSessionId?.startsWith("storefront:") === true &&
     render.engineVersions?.quality === STOREFRONT_PLACEMENT_REVIEW_VERSION && input.mode !== "replace";
+  const fastRealisticReview = render.engineVersions?.quality === STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION;
   const realisticStorefront = render.publicSessionId?.startsWith("storefront:") === true &&
-    render.engineVersions?.quality === STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION && input.mode !== "replace";
+    [STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION].includes(render.engineVersions?.quality ?? "") && input.mode !== "replace";
+  const realisticReviewVersion = fastRealisticReview ? STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION : STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION;
   const boundedStorefront = fastStorefront || realisticStorefront;
   const renderDeadlineMs = Math.min(renderDeadline(startedAt), boundedStorefront ? render.createdAt.getTime() + 180_000 : Infinity);
   if (realisticStorefront && input.scaleReference && simpleObjects.some(item => item.pixelsPerCm === null))
@@ -1508,7 +1510,7 @@ async function runSimplePointRender(
         ],
         mode, outputQuality: "final", preserveBackground: true,
       });
-      await recordProviderAttempt(db, render, result, "generating_final", STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION, route.degradedMode, 1);
+      await recordProviderAttempt(db, render, result, "generating_final", realisticReviewVersion, route.degradedMode, 1);
       if (durableContext.getStore() && result.status === "failed") {
         const code = result.error?.code ?? "";
         if (result.estimatedCostUsd > 0 || ["timeout", "network_error", "empty_image_response"].includes(code))
@@ -1524,26 +1526,32 @@ async function runSimplePointRender(
     const generated = Buffer.from(result.images[0].data);
     await captureStage(db, render, "model_output", generated, "image/webp", scene.expiresAt);
     const finalBuffer = await restorePerspectiveBackground(editComposition, padded, generated);
+    // An owner-only provisional image survives an unavailable review. It is
+    // never a delivered result until completeRender accepts the quality gate.
+    const candidateAsset = await durableStep(db, "storefront-perspective-preview", "analysis", () => storeAsset(db, {
+      organizationId, kind: "render", visibility: privateVisibility(render.publicSessionId),
+      buffer: finalBuffer, contentType: "image/webp", expiresAt: scene.expiresAt,
+    }));
+    await advanceRender(db, render.id, { $set: { compositeAssetId: candidateAsset.id, updatedAt: new Date() } });
     await setStage("quality_check", "checking_placement");
     const decision = serverConfig.aiMockMode ? simulatedQualityDecision() : await measureProviderCall(db, render, {
       step: "storefront_placement_review", provider: "openai", model: serverConfig.openaiVisionModel,
-      ...storefrontPlacementReviewAllowance(), promptVersion: STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION,
-    }, () => reviewStorefrontPlacement({ ...visualInput, realism: true, scaleReference: reference,
+      ...storefrontPlacementReviewAllowance(), promptVersion: realisticReviewVersion,
+    }, () => reviewStorefrontPlacement({ ...visualInput, realism: true, fastReview: fastRealisticReview, scaleReference: reference,
       generated: { data: finalBuffer, mimeType: "image/webp" },
     }), { maxAttempts: 1, respectRetryable: true });
     await advanceRender(db, render.id, { $set: { qualityDecision: decision, qualityScore: decision.score, updatedAt: new Date() } });
     if (decision.status !== "accepted" && !(serverConfig.aiMockMode && decision.status === "simulated"))
       await captureStage(db, render, "final_rejected", finalBuffer, "image/webp", scene.expiresAt);
     requireAcceptedQuality(decision, serverConfig.aiMockMode);
-    const resultAsset = await storeAsset(db, { organizationId, kind: "render",
-      visibility: privateVisibility(render.publicSessionId), buffer: finalBuffer, contentType: "image/webp", expiresAt: scene.expiresAt });
+    const resultAsset = candidateAsset;
     const usageTotals = await renderUsageTotals(db, render.id);
     const update = {
       status: "succeeded" as const, pipelineState: "completed" as const,
-      provider: route.provider, model: provider.model, resultAssetId: resultAsset.id, compositeAssetId: compositeAsset.id,
+      provider: route.provider, model: provider.model, resultAssetId: resultAsset.id, compositeAssetId: candidateAsset.id,
       qualityScore: decision.score, qualityChecks: decision.checks, qualityDecision: decision,
       estimatedCostUsd: usageTotals.estimatedCostUsd, attemptCount: result.attemptCount,
-      latencyMs: Date.now() - startedAt, promptVersion: STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION,
+      latencyMs: Date.now() - startedAt, promptVersion: realisticReviewVersion,
       modelChain: [{ provider: route.provider, model: provider.model, role: "perspective_edit" },
         { provider: "openai", model: serverConfig.openaiVisionModel, role: "reference_scale_and_realism_review" }],
       audit: { scaleSources: scales.map(scale => scale.scaleSource), scaleFallbackFired: scales.some(scale => scale.scaleSource === "assumed_room_width"),

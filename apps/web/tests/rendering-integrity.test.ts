@@ -418,8 +418,8 @@ describe("simple render orchestration with offline providers", () => {
     await scenes.updateOne({ id: "scene" }, { $set: { publicSessionId: "storefront:visitor-1" } });
     const result = await createRender(db, "org", request, "storefront:visitor-1");
     expect(result).toMatchObject({ status: "succeeded", provider: "openai", attemptCount: 1,
-      qualityDecision: { status: "accepted", version: "storefront-realistic-placement-v2" },
-      engineVersions: { quality: "storefront-realistic-placement-v2", editModel: "test-image", imageQuality: "medium", scaleEstimation: "storefront-scene-preflight-v1" } });
+      qualityDecision: { status: "accepted", version: "storefront-realistic-placement-v3" },
+      engineVersions: { quality: "storefront-realistic-placement-v3", editModel: "test-image", imageQuality: "medium", scaleEstimation: "storefront-scene-preflight-v1" } });
     expect(mocks.edit).toHaveBeenCalledTimes(1);
     const imageRequest = mocks.edit.mock.calls[0]![0];
     expect(imageRequest).toMatchObject({ quality: "medium", preserveBackground: true });
@@ -430,6 +430,7 @@ describe("simple render orchestration with offline providers", () => {
     expect(attempts.rows.filter(row => row.stage === "storefront_placement_review")).toHaveLength(1);
     expect(getOrEstimateSceneScale).not.toHaveBeenCalled();
     expect(result.qualityChecks.every(check => !check.name.includes("lighting"))).toBe(true);
+    expect(result.resultUrl).toBe(result.compositeUrl);
     expect(reviewRequest!.input[1]!.content.filter(entry => entry.type === "input_image")).toHaveLength(5);
   });
   it.each(["identity", "unavailable", "photographic"])("does not deliver or retry a storefront %s defect", async failure => {
@@ -443,6 +444,9 @@ describe("simple render orchestration with offline providers", () => {
     expect(mocks.capture).not.toHaveBeenCalled();
     expect(renders.rows[0]!.status).toBe("failed");
     expect(renders.rows[0]!.resultAssetId).toBeUndefined();
+    expect(typeof renders.rows[0]!.compositeAssetId).toBe("string");
+    const candidate = mocks.store.mock.calls.at(-1)![1];
+    expect(candidate.visibility).toEqual({ ownerSessionId: "storefront:visitor-1" });
   });
   it("still refuses an occupied storefront point before qualification or delivery", async () => {
     await scenes.updateOne({ id: "scene" }, { $set: { publicSessionId: "storefront:visitor-1" } });
