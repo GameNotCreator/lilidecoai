@@ -114,6 +114,8 @@ export interface ImageEditingRequest extends ImageGenerationRequest {
   mode: RenderMode;
   targetMask?: ImageReference;
   preserveBackground: boolean;
+  /** Internal product-only output: catalog references first, transparent background. */
+  productIsolation?: boolean;
 }
 
 /** @deprecated Prefer ProviderAttemptResult for all new provider code. */

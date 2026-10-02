@@ -95,6 +95,10 @@ export const serverConfig = {
     (explicitMockMode !== "false" && !googleApiKey && !openAIEnabled),
   openaiApiKey: clean(process.env.OPENAI_API_KEY),
   openaiModel: clean(process.env.OPENAI_MODEL) ?? "gpt-image-2.5-sunburst",
+  // Isolated storefront products require native alpha. Keep older/private
+  // photo workflows on their configured model and replay contract.
+  storefrontImageModel:
+    clean(process.env.STOREFRONT_IMAGE_MODEL) ?? "gpt-image-2.5-sunburst",
   openaiVisionModel: clean(process.env.OPENAI_VISION_MODEL) ?? "gpt-6-astra",
   openaiVisionReasoning:
     clean(process.env.OPENAI_VISION_REASONING) === "medium"

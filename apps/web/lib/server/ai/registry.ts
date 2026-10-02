@@ -35,6 +35,7 @@ export function selectEditingProvider(
   mode: RenderMode,
   outputQuality: OutputQuality,
   preferredProvider?: "openai" | "google",
+  imageModelOverride?: string,
 ): SelectedEditingProvider {
   if (serverConfig.aiMockMode) {
     return {
@@ -61,7 +62,7 @@ export function selectEditingProvider(
         reason:
           "The simple point workflow uses the configured OpenAI image model",
       },
-      provider: new OpenAIImageProvider(),
+      provider: new OpenAIImageProvider(imageModelOverride),
     };
   }
   if (preferredProvider === "google" && serverConfig.googleApiKey) {

@@ -61,61 +61,95 @@ export class OpenAIImageProvider
     const body = new FormData();
     body.append("model", this.model);
     const references = request.references ?? [];
-    const editable =
-      references.find((reference) => reference.role === "composition") ??
-      references.find((reference) => reference.role === "room_original");
+    const productIsolation =
+      "productIsolation" in request && request.productIsolation === true;
     const productReferences = references.filter((reference) =>
       reference.role.startsWith("product_"),
     );
-    const mask =
-      "targetMask" in request && request.targetMask
-        ? request.targetMask
-        : references.find((reference) => reference.role === "target_mask");
-    const base = editable ?? {
-      data: request.composition,
-      mimeType: "image/webp" as const,
-      role: "composition" as const,
-    };
-    body.append(
-      "image[]",
-      new Blob([toArrayBuffer(base.data)], { type: base.mimeType }),
-      `composition.${extension(base.mimeType)}`,
-    );
-    const identities =
-      productReferences.length > 0
-        ? productReferences
-        : [
-            {
-              data: request.productCutout,
-              mimeType: "image/webp" as const,
-              role: "product_front" as const,
-            },
-          ];
-    const orderedReferences = [
-      identities[0]!,
-      ...references.filter((reference) => reference.role === "spatial_guide"),
-      ...identities.slice(1),
-    ];
-    for (const [index, reference] of orderedReferences.entries()) {
+    if (productIsolation) {
+      if (productReferences.length === 0)
+        return failure(
+          this.model,
+          crypto.randomUUID(),
+          Date.now() - startedAt,
+          "invalid_input",
+          "Une photographie catalogue est requise pour isoler le produit.",
+          false,
+        );
+      const orderedReferences = [
+        ...productReferences,
+        ...references.filter((reference) => reference.role === "room_original"),
+        ...references.filter((reference) => reference.role === "spatial_guide"),
+      ];
+      for (const [index, reference] of orderedReferences.entries()) {
+        const name =
+          reference.role === "room_original"
+            ? "room-original"
+            : reference.role === "spatial_guide"
+              ? "spatial-guide"
+              : `product-${index + 1}`;
+        body.append(
+          "image[]",
+          new Blob([toArrayBuffer(reference.data)], {
+            type: reference.mimeType,
+          }),
+          `${name}.${extension(reference.mimeType)}`,
+        );
+      }
+    } else {
+      const editable =
+        references.find((reference) => reference.role === "composition") ??
+        references.find((reference) => reference.role === "room_original");
+      const mask =
+        "targetMask" in request && request.targetMask
+          ? request.targetMask
+          : references.find((reference) => reference.role === "target_mask");
+      const base = editable ?? {
+        data: request.composition,
+        mimeType: "image/webp" as const,
+        role: "composition" as const,
+      };
       body.append(
         "image[]",
-        new Blob([toArrayBuffer(reference.data)], {
-          type: reference.mimeType,
-        }),
-        `${reference.role === "spatial_guide" ? "spatial-guide" : `product-${index + 1}`}.${extension(reference.mimeType)}`,
+        new Blob([toArrayBuffer(base.data)], { type: base.mimeType }),
+        `composition.${extension(base.mimeType)}`,
       );
-    }
-    if (mask) {
-      body.append(
-        "mask",
-        new Blob([toArrayBuffer(mask.data)], { type: mask.mimeType }),
-        "mask.png",
-      );
+      const identities =
+        productReferences.length > 0
+          ? productReferences
+          : [
+              {
+                data: request.productCutout,
+                mimeType: "image/webp" as const,
+                role: "product_front" as const,
+              },
+            ];
+      const orderedReferences = [
+        identities[0]!,
+        ...references.filter((reference) => reference.role === "spatial_guide"),
+        ...identities.slice(1),
+      ];
+      for (const [index, reference] of orderedReferences.entries()) {
+        body.append(
+          "image[]",
+          new Blob([toArrayBuffer(reference.data)], {
+            type: reference.mimeType,
+          }),
+          `${reference.role === "spatial_guide" ? "spatial-guide" : `product-${index + 1}`}.${extension(reference.mimeType)}`,
+        );
+      }
+      if (mask) {
+        body.append(
+          "mask",
+          new Blob([toArrayBuffer(mask.data)], { type: mask.mimeType }),
+          "mask.png",
+        );
+      }
     }
     body.append("prompt", request.prompt);
     body.append("quality", imageQualityForModel(this.model, request.quality));
     body.append("size", request.size);
-    body.append("background", "opaque");
+    body.append("background", productIsolation ? "transparent" : "opaque");
     body.append("output_format", "webp");
     body.append("output_compression", "100");
 

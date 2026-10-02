@@ -74,11 +74,38 @@ celui que le serveur composite.
    Une reprise ciblée est possible si le temps restant le permet ; deux
    éditions maximum. Aucun final n’est livré si le contrôle est indisponible.
 
+## Boutique publique : produits isolés
+
+Le profil `storefront-isolated-product-v4` utilise une analyse de scène unique
+(échelle estimée, support et angle de caméra), une génération d’image et une
+revue finale indépendante. Le délai total est de 180 secondes depuis la création,
+file d’attente comprise. Il ne relance pas automatiquement une image refusée.
+
+`STOREFRONT_IMAGE_MODEL` utilise `gpt-image-2.5-sunburst` par défaut, à qualité
+`medium`, pour produire une vraie transparence WebP sans masque. Les photos
+catalogue sont transmises en premier, une par objet, puis la pièce et le guide
+de géométrie. Un panier de trois objets utilise trois colonnes dans la même
+génération. Les répétitions d’un produit conservent leur colonne.
+
+Le site extrait les nouvelles silhouettes, les redimensionne uniformément et
+ancre leur base visible au point choisi. Il conserve les pixels de la pièce
+hors de leur alpha, y compris les espaces entre les poignées. La perspective
+provient du nouvel objet généré ; le détourage catalogue n’est pas recollé dans
+le résultat final. Fonds opaques, silhouettes coupées et débordements sont
+refusés. L’échelle sans référence mesurée reste une estimation visuelle.
+
+Le contrôle final de l’identité, du placement, de l’échelle et de la cohérence
+photographique reste obligatoire. Un candidat refusé est privé et ne devient
+ni un résultat livré ni un crédit de visualisation débité. Le budget utilise
+le modèle effectivement admis ; la production actuelle limite chaque rendu
+à 2 USD d’estimation. Les anciens rendus gardent leur contrat et `OPENAI_MODEL`.
+
 ## Variables serveur
 
 ```text
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-image-2.5-sunburst
+STOREFRONT_IMAGE_MODEL=gpt-image-2.5-sunburst
 OPENAI_VISION_MODEL=gpt-6-astra
 OPENAI_QUALITY=max
 OPENAI_SERVICE_TIER=default

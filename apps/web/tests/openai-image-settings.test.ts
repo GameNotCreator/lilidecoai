@@ -26,6 +26,12 @@ describe("image model capability and accounting", () => {
       selectEditingProvider("insert", "final", "openai").provider.model,
     ).toBe("gpt-image-2.5-sunburst");
   });
+  it("isolates an explicit storefront model without changing the legacy default", () => {
+    expect(selectEditingProvider("insert", "final", "openai", "gpt-image-2.5-sunburst-2026-09-08").provider.model)
+      .toBe("gpt-image-2.5-sunburst-2026-09-08");
+    expect(selectEditingProvider("insert", "final", "openai").provider.model).toBe("gpt-image-2.5-sunburst");
+    expect(imageCostAllowance("gpt-image-2.5-sunburst-2026-09-08", "medium", "1024x1024")).toBe(0.5);
+  });
   it("uses max on 2.5 and a supported setting on earlier deployments", () => {
     expect(
       imageQualityForModel("gpt-image-2.5-sunburst-2026-09-08", "max"),

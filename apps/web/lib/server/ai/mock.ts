@@ -39,8 +39,32 @@ export class MockImageProvider
   }
 
   private async result(
-    request: ImageGenerationRequest,
+    request: ImageGenerationRequest | ImageEditingRequest,
   ): Promise<ProviderAttemptResult> {
+    let data = request.composition;
+    if ("productIsolation" in request && request.productIsolation === true) {
+      try {
+        data = new Uint8Array(await mockIsolatedProducts(request));
+      } catch {
+        return {
+          provider: "mock",
+          model: this.model,
+          requestId: `mock-${request.idempotencyKey}`,
+          status: "failed",
+          durationMs: 1,
+          estimatedCostUsd: 0,
+          images: [],
+          error: {
+            code: "invalid_input",
+            message:
+              "La simulation d’isolation nécessite une à trois photographies catalogue lisibles.",
+            retryable: false,
+          },
+          safety: { blocked: false },
+          attemptCount: 1,
+        };
+      }
+    }
     return {
       provider: "mock",
       model: this.model,
@@ -50,7 +74,7 @@ export class MockImageProvider
       estimatedCostUsd: 0,
       images: [
         {
-          data: request.composition,
+          data,
           mimeType: "image/webp",
         },
       ],
@@ -58,6 +82,61 @@ export class MockImageProvider
       attemptCount: 1,
     };
   }
+}
+
+/** Mock-only catalogue contact sheet; no generated pose or AI matting is claimed. */
+async function mockIsolatedProducts(
+  request: ImageGenerationRequest,
+): Promise<Buffer> {
+  const products = (request.references ?? []).filter((reference) =>
+    reference.role.startsWith("product_"),
+  );
+  if (products.length < 1 || products.length > 3)
+    throw new Error("Invalid mock product count");
+  const sizes = {
+    "1024x1024": [1024, 1024],
+    "1536x1024": [1536, 1024],
+    "1024x1536": [1024, 1536],
+  } as const;
+  const [width, height] = sizes[request.size];
+  const overlays = await Promise.all(
+    products.map(async (reference, index) => {
+      const start = Math.round(index * width / products.length);
+      const end = Math.round((index + 1) * width / products.length);
+      const columnWidth = end - start;
+      const marginX = Math.ceil(columnWidth * 0.1);
+      const marginY = Math.ceil(height * 0.1);
+      // The whole original photograph is an opaque connected mock tile,
+      // rather than a claim that its real product silhouette was inferred.
+      const tile = await sharp(Buffer.from(reference.data))
+        .rotate()
+        .removeAlpha()
+        .toColourspace("srgb")
+        .resize({
+          width: columnWidth - marginX * 2,
+          height: height - marginY * 2,
+          fit: "inside",
+        })
+        .png()
+        .toBuffer({ resolveWithObject: true });
+      return {
+        input: tile.data,
+        left: start + Math.floor((columnWidth - tile.info.width) / 2),
+        top: Math.floor((height - tile.info.height) / 2),
+      };
+    }),
+  );
+  return sharp({
+    create: {
+      width,
+      height,
+      channels: 4,
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    },
+  })
+    .composite(overlays)
+    .webp({ lossless: true })
+    .toBuffer();
 }
 
 export class MockSceneAnalysisProvider implements SceneAnalysisProvider {
