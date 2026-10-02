@@ -67,8 +67,10 @@ describe("render response contract after MongoDB storage", () => {
             secret: "must-not-leak", unrelatedAsset: "must-not-leak" } } },
       } as unknown as RenderDocument["execution"] };
   }
-  it("references only the existing isolated product checkpoint without delivering a failed render", () => {
-    const payload = renderResponse(persistedRender(isolatedRender()));
+  it.each(["storefront-isolated-product-v4", "storefront-room-integration-v5"])("references only the existing %s checkpoint without delivering a failed render", composite => {
+    const render = isolatedRender();
+    render.engineVersions!.composite = composite;
+    const payload = renderResponse(persistedRender(render));
     expect(payload.stages).toEqual({ model_output: imageId });
     expect(payload.status).toBe("failed");
     expect(payload.resultUrl).toBeNull();

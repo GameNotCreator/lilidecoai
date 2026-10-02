@@ -76,18 +76,37 @@ celui que le serveur composite.
 
 ## Boutique publique : produits isolés
 
-Le profil `storefront-isolated-product-v4` utilise une analyse de scène unique
+Les nouvelles admissions `storefront-room-integration-v5`, avec le prompt
+`storefront-room-integration-v9`, génèrent une photographie complète à partir de
+la pièce originale, d’un masque local de volume/contact, du guide et des photos
+catalogue. Le produit et son interaction avec le support sont générés ensemble.
+Le site ne découpe ni ne redimensionne un sprite produit après la génération.
+Les pixels hors de la zone autorisée sont restaurés depuis la pièce ; le raster
+généré est aligné par une mise à l’échelle uniforme, jamais déformé. Les guides
+utilisent séparément largeur projetée et hauteur verticale. Une image transparente
+ou un aspect incohérent est refusé.
+
+Le contrôle `storefront-room-integration-review-v5` ajoute une preuve obligatoire
+`supportIntegration` à tous les critères précédents. Une belle texture, une base
+au bon pixel et une vue native isolée ne prouvent pas l’attachement au sol, le
+volume ou l’ordre des occlusions. Le contrôle doit refuser un effet de collage,
+sans ajouter de vérifications esthétiques détaillées de lumière. L’échelle reste
+estimée sans mesure connue. Le profil conserve trois appels au maximum : analyse
+25 secondes, génération `high` 90 secondes, revue `low` 45 secondes ; le délai
+global est de 180 secondes, file d’attente comprise, sans relance automatique.
+
+Le profil historique `storefront-isolated-product-v4` utilise une analyse de scène unique
 (échelle estimée, support et angle de caméra), une génération d’image et une
 revue finale indépendante. Le délai total est de 180 secondes depuis la création,
 file d’attente comprise. Il ne relance pas automatiquement une image refusée.
 
 `STOREFRONT_IMAGE_MODEL` utilise `gpt-image-2.5-sunburst` par défaut, à qualité
-`high` pour les nouvelles admissions `storefront-isolated-camera-detail-v8`,
+`high` pour les admissions historiques `storefront-isolated-camera-detail-v8`,
 pour produire une vraie transparence WebP sans masque. La génération reste
 bornée à 90 secondes et ne reçoit aucune relance automatique. Les anciens
 profils v4 à v6 conservent leur qualité `medium`. Les photos
 catalogue restent les références d’identité, une par objet. Les nouvelles
-admissions v6 à v8 transmettent d’abord une
+admissions historiques v6 à v8 transmettent d’abord une
 fenêtre agrandie du guide autour de tous les emplacements, puis la pièce,
 puis ces photos catalogue. Le recadrage conserve la perspective et décrit
 explicitement ses coordonnées dans la photo originale ; il ne change ni les
@@ -115,7 +134,7 @@ ni un résultat livré ni un crédit de visualisation débité. Le budget utilis
 le modèle effectivement admis ; la production actuelle limite chaque rendu
 à 2 USD d’estimation. Les anciens rendus gardent leur contrat et leur modèle admis.
 
-Le contrôle `storefront-realistic-detail-v4` des nouvelles admissions reçoit
+Le contrôle historique `storefront-realistic-detail-v4` reçoit
 également l’image des produits générés avant leur réduction, avec les identifiants
 de colonnes exacts. Il inspecte ainsi les petits détails de perspective, tout en
 gardant la photo finale comme autorité pour la position, l’échelle et l’occlusion.

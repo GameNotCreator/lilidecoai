@@ -34,6 +34,34 @@ const isGreenGuide = (pixel: number[]) =>
   pixel[0]! < 70 && pixel[1]! > 110 && pixel[2]! < 120;
 
 describe("storefront geometry guide", () => {
+  it("keeps historical guide bytes when horizontal scale is absent, undefined or identical", async () => {
+    const input = await fixture();
+    const historical = await buildStorefrontPerspectiveGuide(input);
+    expect(await buildStorefrontPerspectiveGuide({ ...input, objects: [{ ...object(), widthPixelsPerCm: undefined }] })).toEqual(historical);
+    expect(await buildStorefrontPerspectiveGuide({ ...input, objects: [{ ...object(), widthPixelsPerCm: object().pixelsPerCm }] })).toEqual(historical);
+  });
+
+  it("uses horizontal scale for width/top-depth and keeps physical upright height on its own axis", async () => {
+    const input = await poseFixture();
+    const pixels = await sharp(await buildStorefrontPerspectiveGuide({
+      ...input, objects: [{ ...object(), dimensionsCm: { width: 20, height: 20, depth: 20 },
+        widthPixelsPerCm: 4, pose: { cameraElevationDegrees: 30, cameraRollDegrees: 0 } }],
+    })).removeAlpha().raw().toBuffer();
+    // Width=80, upright height=40, projected top-depth=40, contact=(120,192).
+    expect(isBlueGuide(at(pixels, 240, 80, 170))).toBe(true);
+    expect(isBlueGuide(at(pixels, 240, 160, 170))).toBe(true);
+    expect(isBlueGuide(at(pixels, 240, 120, 112))).toBe(true);
+    expect(isBlueGuide(at(pixels, 240, 120, 152))).toBe(true);
+    expect(isGreenGuide(at(pixels, 240, 169, 170))).toBe(true);
+    expect(at(pixels, 240, 169, 130)).toEqual([82, 101, 120]);
+    expect(at(pixels, 240, 120, 192)).toEqual([229, 35, 43]);
+  });
+
+  it.each([0, -1, NaN, Infinity, null, 1e308])("rejects invalid optional horizontal scale (%s)", async widthPixelsPerCm => {
+    const input = await poseFixture();
+    await expect(buildStorefrontPerspectiveGuide({ ...input, objects: [{ ...input.objects[0]!, widthPixelsPerCm }] } as unknown as StorefrontPerspectiveGuideInput)).rejects.toThrow();
+  });
+
   it("marks the exact standing contact without moving it to a silhouette corner", async () => {
     const input = await fixture();
     const before = Buffer.from(input.room);

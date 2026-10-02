@@ -11,6 +11,8 @@ export interface StorefrontPerspectiveGuideObject {
   kind: "standing" | "wall" | "flat";
   dimensionsCm: { width: number; height: number; depth: number };
   pixelsPerCm: number;
+  /** Optional projected horizontal scale. Omission preserves the historical guide. */
+  widthPixelsPerCm?: number;
   pose?: {
     /** Unknown elevation draws no inferred top face. */
     cameraElevationDegrees: number | null;
@@ -55,8 +57,11 @@ function validate(input: StorefrontPerspectiveGuideInput): void {
       indices.has(object.index) || !validPoint(object.point) ||
       !["standing", "wall", "flat"].includes(object.kind) ||
       !positive(object.pixelsPerCm) || !object.dimensionsCm ||
+      (object.widthPixelsPerCm !== undefined && !positive(object.widthPixelsPerCm)) ||
       ![object.dimensionsCm.width, object.dimensionsCm.height, object.dimensionsCm.depth]
-        .every((value) => positive(value) && positive(value * object.pixelsPerCm))
+        .every((value) => positive(value) && positive(value * object.pixelsPerCm)) ||
+      ![object.dimensionsCm.width, object.dimensionsCm.depth]
+        .every((value) => positive(value * (object.widthPixelsPerCm ?? object.pixelsPerCm)))
     ) throw new Error("Mesures ou ancrage du guide de perspective invalides.");
     if (object.pose !== undefined && (
       !object.pose ||
@@ -108,11 +113,12 @@ export async function buildStorefrontPerspectiveGuide(
   };
   for (const object of objects) {
     const anchor = pixel(object.point);
-    const projectedWidth = object.dimensionsCm.width * object.pixelsPerCm;
+    const horizontalScale = object.widthPixelsPerCm ?? object.pixelsPerCm;
+    const projectedWidth = object.dimensionsCm.width * horizontalScale;
     // Physical upright height excludes the extra projection of the top face.
     const projectedHeight = object.dimensionsCm.height * object.pixelsPerCm;
     const boxHeight = object.kind === "flat"
-      ? object.dimensionsCm.depth * object.pixelsPerCm
+      ? object.dimensionsCm.depth * horizontalScale
       : projectedHeight;
     const left = anchor.x - projectedWidth / 2;
     const top = anchor.y - (object.kind === "standing" ? boxHeight : boxHeight / 2);
@@ -126,7 +132,7 @@ export async function buildStorefrontPerspectiveGuide(
     if (object.kind === "standing" && object.pose) {
       const { cameraElevationDegrees, cameraRollDegrees } = object.pose;
       const projectedDepth = cameraElevationDegrees === null ? null
-        : object.dimensionsCm.depth * object.pixelsPerCm *
+        : object.dimensionsCm.depth * horizontalScale *
           Math.sin(cameraElevationDegrees * Math.PI / 180);
       // Contact and top are the visible front edges. The projected top face
       // extends above the physical body height, never into that measurement.

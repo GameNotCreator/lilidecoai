@@ -48,6 +48,14 @@ function visibleBox(data: Buffer, width: number, height: number, start: number, 
 }
 
 describe("mock catalogue product isolation", () => {
+  it("returns valid lossless WebP for a PNG room-edit input matching its mask", async () => {
+    const room = await catalogue(colors[0]!, 80, 120);
+    const result = await new MockImageProvider().edit({ ...request(), composition: new Uint8Array(room) });
+    expect(result).toMatchObject({ status: "succeeded", estimatedCostUsd: 0, images: [{ mimeType: "image/webp" }] });
+    const output = Buffer.from(result.images[0]!.data);
+    expect(await sharp(output).metadata()).toMatchObject({ format: "webp", width: 80, height: 120 });
+    expect(await sharp(output).removeAlpha().raw().toBuffer()).toEqual(await sharp(room).removeAlpha().raw().toBuffer());
+  });
   it.each([
     ["edit", false], ["edit", undefined], ["generate", false], ["generate", undefined],
   ] as const)("preserves the normal %s composition bytes and mock metadata when isolation is %s", async (method, productIsolation) => {

@@ -35,11 +35,12 @@ import {
   reviewVisualRender,
   VISUAL_REVIEW_VERSION,
 } from "./ai/visual-review";
-import { reviewStorefrontPlacement, storefrontPlacementReviewAllowance, STOREFRONT_PLACEMENT_REVIEW_VERSION, STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION, type StorefrontPlacementReviewInput } from "./ai/storefront-placement-review";
+import { reviewStorefrontPlacement, storefrontPlacementReviewAllowance, STOREFRONT_PLACEMENT_REVIEW_VERSION, STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_ROOM_INTEGRATION_REVIEW_VERSION, type StorefrontPlacementReviewInput } from "./ai/storefront-placement-review";
 import { perspectiveEditComposition, restorePerspectiveBackground } from "./storefront-realistic-composite";
 import { buildStorefrontPerspectiveGuide, type StorefrontPerspectiveGuideObject } from "./storefront-perspective-guide";
 import { localiseStorefrontPerspectiveGuide } from "./storefront-perspective-guide-window";
 import { composeStorefrontIsolatedProducts, STOREFRONT_ISOLATED_COMPOSITE_VERSION } from "./storefront-isolated-composite";
+import { roomIntegrationEditComposition, restoreRoomIntegrationBackground, STOREFRONT_ROOM_INTEGRATION_COMPOSITE_VERSION } from "./storefront-room-integration";
 import { inspectStorefrontScene, storefrontScenePreflightAllowance, STOREFRONT_SCENE_PREFLIGHT_VERSION, STOREFRONT_POSE_PREFLIGHT_VERSION, STOREFRONT_WIDTH_POSE_PREFLIGHT_VERSION, type StorefrontScenePose } from "./ai/storefront-scene-preflight";
 import { captureStage } from "./render-capture";
 import { cutoutTrust } from "./cutout-identity";
@@ -133,6 +134,7 @@ const STOREFRONT_CAMERA_FIRST_ISOLATION_PROMPT_VERSION = "storefront-isolated-ca
 const STOREFRONT_CAMERA_WINDOW_ISOLATION_PROMPT_VERSION = "storefront-isolated-camera-window-v6";
 const STOREFRONT_HIGH_QUALITY_ISOLATION_PROMPT_VERSION = "storefront-isolated-camera-window-high-v7";
 const STOREFRONT_DETAIL_ISOLATION_PROMPT_VERSION = "storefront-isolated-camera-detail-v8";
+const STOREFRONT_ROOM_INTEGRATION_PROMPT_VERSION = "storefront-room-integration-v9";
 
 interface NormalizedBox {
   xMin: number;
@@ -513,18 +515,18 @@ export async function createRender(
     ],
     attemptCount: 0,
     estimatedCostUsd: 0,
-    promptVersion: fastStorefront ? STOREFRONT_DETAIL_ISOLATION_PROMPT_VERSION : simplePointWorkflow
+    promptVersion: fastStorefront ? STOREFRONT_ROOM_INTEGRATION_PROMPT_VERSION : simplePointWorkflow
       ? SIMPLE_POINT_PROMPT_VERSION
       : PROMPT_VERSION,
     engineVersions: {
       placementGeometry: SIMPLE_PLACEMENT_VERSION,
-      composite: fastStorefront ? STOREFRONT_ISOLATED_COMPOSITE_VERSION : simplePointWorkflow ? CONTACT_LIGHT_COMPOSITE_VERSION : SIMPLE_COMPOSITE_VERSION,
+      composite: fastStorefront ? STOREFRONT_ROOM_INTEGRATION_COMPOSITE_VERSION : simplePointWorkflow ? CONTACT_LIGHT_COMPOSITE_VERSION : SIMPLE_COMPOSITE_VERSION,
       scaleEstimation: fastStorefront ? STOREFRONT_WIDTH_POSE_PREFLIGHT_VERSION : SCALE_ESTIMATION_VERSION,
-      quality: fastStorefront ? STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION : simplePointWorkflow ? VISUAL_REVIEW_VERSION : QUALITY_VERSION,
+      quality: fastStorefront ? STOREFRONT_ROOM_INTEGRATION_REVIEW_VERSION : simplePointWorkflow ? VISUAL_REVIEW_VERSION : QUALITY_VERSION,
       // The prompt the model actually receives. simple_point sends the
       // harmonize prompt (SIMPLE_COMPOSITE_PROMPT_VERSION); the "simple point"
       // version is the render's own contract, already on `promptVersion`.
-      prompt: fastStorefront ? STOREFRONT_DETAIL_ISOLATION_PROMPT_VERSION : simplePointWorkflow
+      prompt: fastStorefront ? STOREFRONT_ROOM_INTEGRATION_PROMPT_VERSION : simplePointWorkflow
         ? SIMPLE_COMPOSITE_PROMPT_VERSION
         : PROMPT_VERSION,
       // Resolved, never assumed: a missing key turns a run synthetic in
@@ -1028,9 +1030,13 @@ async function runSimplePointRender(
   const fastStorefront = render.publicSessionId?.startsWith("storefront:") === true &&
     render.engineVersions?.quality === STOREFRONT_PLACEMENT_REVIEW_VERSION && input.mode !== "replace";
   const detailRealisticReview = render.engineVersions?.quality === STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION;
-  const fastRealisticReview = detailRealisticReview || render.engineVersions?.quality === STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION;
+  const roomIntegration = render.engineVersions?.composite === STOREFRONT_ROOM_INTEGRATION_COMPOSITE_VERSION;
+  const roomIntegrationReview = render.engineVersions?.quality === STOREFRONT_ROOM_INTEGRATION_REVIEW_VERSION;
+  if (roomIntegration !== roomIntegrationReview || (roomIntegration && render.engineVersions?.prompt !== STOREFRONT_ROOM_INTEGRATION_PROMPT_VERSION))
+    throw new RenderError("Le contrat d’intégration dans la pièce est incompatible.", 422);
+  const fastRealisticReview = roomIntegration || detailRealisticReview || render.engineVersions?.quality === STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION;
   const isolatedProducts = render.engineVersions?.composite === STOREFRONT_ISOLATED_COMPOSITE_VERSION;
-  const widthAnchoredIsolated = isolatedProducts &&
+  const widthAnchoredIsolated = (isolatedProducts || roomIntegration) &&
     render.engineVersions?.scaleEstimation === STOREFRONT_WIDTH_POSE_PREFLIGHT_VERSION;
   const detailIsolation = isolatedProducts &&
     render.engineVersions?.prompt === STOREFRONT_DETAIL_ISOLATION_PROMPT_VERSION;
@@ -1041,10 +1047,10 @@ async function runSimplePointRender(
   const cameraFirstIsolation = isolatedProducts &&
     (cameraWindowIsolation || render.engineVersions?.prompt === STOREFRONT_CAMERA_FIRST_ISOLATION_PROMPT_VERSION);
   const realisticStorefront = render.publicSessionId?.startsWith("storefront:") === true &&
-    [STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION].includes(render.engineVersions?.quality ?? "") && input.mode !== "replace";
-  const realisticReviewVersion = detailRealisticReview ? STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION : fastRealisticReview ? STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION : STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION;
-  const imageEditQuality = highQualityIsolation ? "high" : "medium";
-  const imagePromptVersion = detailIsolation ? STOREFRONT_DETAIL_ISOLATION_PROMPT_VERSION : highQualityIsolation ? STOREFRONT_HIGH_QUALITY_ISOLATION_PROMPT_VERSION : cameraWindowIsolation ? STOREFRONT_CAMERA_WINDOW_ISOLATION_PROMPT_VERSION : cameraFirstIsolation ? STOREFRONT_CAMERA_FIRST_ISOLATION_PROMPT_VERSION : realisticReviewVersion;
+    [STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_ROOM_INTEGRATION_REVIEW_VERSION].includes(render.engineVersions?.quality ?? "") && input.mode !== "replace";
+  const realisticReviewVersion = roomIntegration ? STOREFRONT_ROOM_INTEGRATION_REVIEW_VERSION : detailRealisticReview ? STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION : fastRealisticReview ? STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION : STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION;
+  const imageEditQuality = roomIntegration || highQualityIsolation ? "high" : "medium";
+  const imagePromptVersion = roomIntegration ? STOREFRONT_ROOM_INTEGRATION_PROMPT_VERSION : detailIsolation ? STOREFRONT_DETAIL_ISOLATION_PROMPT_VERSION : highQualityIsolation ? STOREFRONT_HIGH_QUALITY_ISOLATION_PROMPT_VERSION : cameraWindowIsolation ? STOREFRONT_CAMERA_WINDOW_ISOLATION_PROMPT_VERSION : cameraFirstIsolation ? STOREFRONT_CAMERA_FIRST_ISOLATION_PROMPT_VERSION : realisticReviewVersion;
   const boundedStorefront = fastStorefront || realisticStorefront;
   const renderDeadlineMs = Math.min(renderDeadline(startedAt), boundedStorefront ? render.createdAt.getTime() + 180_000 : Infinity);
   if (realisticStorefront && input.scaleReference && simpleObjects.some(item => item.pixelsPerCm === null))
@@ -1109,7 +1115,7 @@ async function runSimplePointRender(
   }
 
   const mode = "insert" as const;
-  const { provider, route } = selectEditingProvider(mode, "final", "openai", isolatedProducts ? render.engineVersions?.editModel : undefined);
+  const { provider, route } = selectEditingProvider(mode, "final", "openai", isolatedProducts || roomIntegration ? render.engineVersions?.editModel : undefined);
   const setStage = async (
     pipelineState: NonNullable<RenderDocument["pipelineState"]>,
     pipelineStage: string,
@@ -1219,8 +1225,8 @@ async function runSimplePointRender(
   if (realisticStorefront && scales.some(scale => scale.pixelsPerCm === null))
     throw new RenderError("La taille ne peut pas être estimée sur cette photo. Choisissez une vue plus lisible, ou ajoutez un repère de hauteur.", 422);
   // A projected upright centimetre and a projected horizontal centimetre
-  // differ under camera pitch. Only new isolated jobs use the width estimate;
-  // the historical height-based guide and admitted v3 jobs remain unchanged.
+  // differ under camera pitch. Width-aware jobs use the independent estimate;
+  // historical admissions keep their frozen guide and scaling contract.
   const widthScales = widthAnchoredIsolated && !serverConfig.aiMockMode && "widthPixelsPerCm" in scaleResult
     ? (scaleResult as SceneScaleResult & { widthPixelsPerCm?: Array<number | null> }).widthPixelsPerCm
     : undefined;
@@ -1408,7 +1414,7 @@ async function runSimplePointRender(
     organizationId,
     kind: "render",
     visibility: privateVisibility(render.publicSessionId),
-    buffer: composition.baseWebp,
+    buffer: roomIntegration ? workingScene : composition.baseWebp,
     contentType: "image/webp",
     expiresAt: scene.expiresAt,
   });
@@ -1416,12 +1422,23 @@ async function runSimplePointRender(
     $set: { compositeAssetId: compositeAsset.id, updatedAt: new Date() },
   });
 
-  const editComposition = realisticStorefront ? perspectiveEditComposition(composition) : composition;
+  const roomGuideObjects: StorefrontPerspectiveGuideObject[] = roomIntegration ? simpleObjects.map((item, index) => ({
+    index, point: item.placementPoint, kind: item.placementKind,
+    dimensionsCm: { width: item.product.widthCm, height: item.product.heightCm, depth: item.product.depthCm },
+    pixelsPerCm: scales[index]!.pixelsPerCm!,
+    widthPixelsPerCm: widthScales?.[index] ?? scales[index]!.pixelsPerCm!,
+    pose: realisticPoses?.[index],
+  })) : [];
+  const editComposition = roomIntegration ? roomIntegrationEditComposition(composition, roomGuideObjects)
+    : realisticStorefront ? perspectiveEditComposition(composition) : composition;
   // The room is the editable authority. A pasted catalogue pose in image1
   // biases the model toward that camera, so v3 uses a separate measured guide.
   const padded = await padCompositionForAspect(fastRealisticReview
     ? { ...editComposition, imageWebp: workingScene, baseWebp: workingScene }
     : editComposition, requestedSize);
+  // A room edit and its PNG alpha mask have matching raster and format.
+  // Historical admissions keep their exact WebP inputs.
+  const modelInputBuffer = roomIntegration ? await sharp(padded.imageWebp).png().toBuffer() : padded.imageWebp;
   // What the model is handed, and the region it is allowed to touch. Between
   // the composite and the delivered image these are the only evidence of
   // whether a failure came from the request or from the answer.
@@ -1430,8 +1447,8 @@ async function runSimplePointRender(
       db,
       render,
       "model_input",
-      padded.imageWebp,
-      "image/webp",
+      modelInputBuffer,
+      roomIntegration ? "image/png" : "image/webp",
       scene.expiresAt,
     ),
     captureStage(
@@ -1485,10 +1502,10 @@ async function runSimplePointRender(
     .map((index) => productReferences[index])
     .filter((reference): reference is ImageReference => Boolean(reference));
 
-  const compositionData = new Uint8Array(padded.imageWebp);
+  const compositionData = new Uint8Array(modelInputBuffer);
   const visualInput: Omit<StorefrontPlacementReviewInput, "generated"> = {
     room: { data: sceneImage, mimeType: "image/webp" },
-    composition: { data: composition.baseWebp, mimeType: "image/webp" },
+    composition: { data: roomIntegration ? workingScene : composition.baseWebp, mimeType: "image/webp" },
     products: simpleObjects.map((item, index) => {
       const placement = composition.placements.find(
         (entry) => entry.objectIndex === index,
@@ -1516,7 +1533,7 @@ async function runSimplePointRender(
   };
   if (realisticStorefront) {
     const reference = input.scaleReference;
-    const guideObjects: StorefrontPerspectiveGuideObject[] = simpleObjects.map((item, index) => ({
+    const guideObjects: StorefrontPerspectiveGuideObject[] = roomIntegration ? roomGuideObjects : simpleObjects.map((item, index) => ({
       index, point: item.placementPoint, kind: item.placementKind,
       dimensionsCm: { width: item.product.widthCm, height: item.product.heightCm, depth: item.product.depthCm },
       pixelsPerCm: scales[index]!.pixelsPerCm!,
@@ -1546,12 +1563,17 @@ async function runSimplePointRender(
         ? `IMAGE ORDER: image1 is the untouched room to edit; image2 is the first product identity photo; image3 is the annotated room geometry guide; images4+ are the remaining catalogue identity photos. Draw the products into image1 only. The guide has no pasted product and its annotations must never appear in the output. Reconstruct the SAME physical product in the room's camera view. Read the room's downward camera angle from the floor, table tops and support geometry: open the visible top face accordingly instead of copying the catalogue photograph's camera angle. Keep the object's vertical axis aligned to scene gravity.`
         : "The composition is a POSITION GUIDE only: its pasted catalogue camera angle and bounding box are NOT authoritative. Reproject the SAME physical product to the room camera view, including the visible top face when the camera looks down. Keep it upright with scene gravity, never tilted or floating.",
       "The unmarked product photographs are the identity authority. Preserve the exact design, material, colour, patterns, handles, lid, crown and proportions. Do not copy their camera angle or background into the room. No invented, missing or duplicate parts or products.",
+      ...(roomIntegration ? [
+        "Generate the complete room photograph with the same physical product occupying its requested local support volume. Do not return an isolated product, a transparent image, a flat sticker or a resized catalogue cutout. Reconstruct visible side and top surfaces together in the room camera, with a continuous three-dimensional shape and true physical proportions.",
+        "The customer's marked point is the front bottom contact of a standing object, or the centre of a flat/wall object. Keep that requested position; never move it to the middle of the frame or to a more convenient place. Infer the support-plane depth and visibility from the actual room. Existing foreground furniture must still occlude the inserted product where physically required.",
+        "Generate the product and its local support interaction together. The base needs believable attachment to the floor/table, through appropriate small contact shading, ambient occlusion and edge softness consistent with nearby real objects. An arbitrary black ellipse is not a substitute for support geometry. Do not make the product hover, keep a bright cutout rim under it, or use uniformly sharp catalogue edges against a softer room. Fine lighting aesthetics remain secondary to pose, size, position and catalogue identity.",
+      ] : []),
       ...(fastRealisticReview ? [`CATALOGUE IMAGE IDENTITIES: ${JSON.stringify(frontToBack.map((index, order) => ({ image: order === 0 ? 2 : order + 3, guideLabel: index + 1, name: simpleObjects[index]!.product.name })))}`] : []),
       `Original room frame: ${sceneWidth}x${sceneHeight}; composition padding: offset(${padded.offsetX},${padded.offsetY}) in ${padded.paddedWidth}x${padded.paddedHeight}.`,
       ...(fastRealisticReview ? ["All pixel coordinates and pixel lengths below refer to the padded INPUT room and its identically padded guide, never directly to the output raster. Transfer these positions and lengths proportionally if the generated output resolution differs. Normalized contact coordinates refer to the ORIGINAL ROOM before padding."] : []),
       ...(fastRealisticReview ? [`ESTIMATED CAMERA POSE AT EACH PRODUCT TOP: ${JSON.stringify(realisticPoses ?? null)}. These angles are approximate room evidence, not calibrated measurements. The geometry guide shows a projected enclosing volume at that height; its top-plane ellipse is only a perspective cue, never a design feature to invent. Use this downward view to expose the physical product's top more strongly when indicated. A rounded horizontal lid or rim must project with the indicated open top-plane proportions rather than collapse into the thin catalogue ellipse. Retain its exact catalogue components. A null angle means unknown: infer from the room instead of assuming a universal tilt.`] : []),
       reference ? `USER HEIGHT REFERENCE (same depth as product contacts): ${JSON.stringify(reference)}. The marked ROOM GUIDE labels101=reference base,102=reference top. The actual vertical height between them is ${reference.realHeightCm}cm. Use this to size physical HEIGHT, not the entire silhouette bounding box (which also includes the projected top/depth). No labels or markers in the result.` : `No measured reference is available. Infer a plausible approximate scale from the real room supports, camera view and the physical product dimensions. The initial size estimate is ${JSON.stringify(scales)}; correct visual contradictions rather than blindly reproducing its bounding box. Do not claim exact metric reconstruction.`,
-      `PRODUCT CONTRACTS, normalized in original room coordinates: ${JSON.stringify(simpleObjects.map((item, index) => ({ index, name: item.product.name, contact: item.placementPoint, kind: item.placementKind, dimensionsCm: { width: item.product.widthCm, height: item.product.heightCm, depth: item.product.depthCm }, ...(fastRealisticReview ? { guideLabel: index + 1, contactPixelInPaddedInput: { x: Math.min(sceneWidth - 1, Math.round(item.placementPoint.x * sceneWidth)) + padded.offsetX, y: Math.min(sceneHeight - 1, Math.round(item.placementPoint.y * sceneHeight)) + padded.offsetY }, projectedPhysicalHeightPxInPaddedInput: Math.round(item.product.heightCm * scales[index]!.pixelsPerCm!), approximateProjectedWidthPxInPaddedInput: Math.round(item.product.widthCm * scales[index]!.pixelsPerCm!) } : {}) })))}`,
+      `PRODUCT CONTRACTS, normalized in original room coordinates: ${JSON.stringify(simpleObjects.map((item, index) => ({ index, name: item.product.name, contact: item.placementPoint, kind: item.placementKind, dimensionsCm: { width: item.product.widthCm, height: item.product.heightCm, depth: item.product.depthCm }, ...(fastRealisticReview ? { guideLabel: index + 1, contactPixelInPaddedInput: { x: Math.min(sceneWidth - 1, Math.round(item.placementPoint.x * sceneWidth)) + padded.offsetX, y: Math.min(sceneHeight - 1, Math.round(item.placementPoint.y * sceneHeight)) + padded.offsetY }, projectedPhysicalHeightPxInPaddedInput: Math.round(item.product.heightCm * scales[index]!.pixelsPerCm!), approximateProjectedWidthPxInPaddedInput: Math.round(item.product.widthCm * (roomIntegration ? roomGuideObjects[index]!.widthPixelsPerCm! : scales[index]!.pixelsPerCm!)) } : {}) })))}`,
       fastRealisticReview
         ? "For a standing object, the numbered guide crosshair is the BOTTOM-MIDDLE of the visible physical base, not the centre of its floor footprint or its shadow. Centre that visible bottom edge exactly on the crosshair pixel, without shifting right, left or down. The guide vertical line is approximate physical body height; projected top/depth may extend above it. Its dashed frame is a size hint, not a catalogue silhouette. Preserve physical height/width/depth proportions and reorient the top to the actual room camera. For flat/wall objects use the marked centre. Keep the complete silhouette in frame."
         : "Place each standing object's actual contact base at its requested point. For flat or wall objects keep the requested centre. Keep the entire silhouette complete.",
@@ -1601,7 +1623,7 @@ async function runSimplePointRender(
         // leaves room for the single final review within the 180s job deadline.
         deadlineMs: Math.min(renderDeadlineMs, Date.now() + 135_000),
         references: [
-          { data: compositionData, mimeType: "image/webp", role: isolatedProducts ? "room_original" : "composition" },
+          { data: compositionData, mimeType: roomIntegration ? "image/png" : "image/webp", role: isolatedProducts ? "room_original" : "composition" },
           ...orderedReferences,
           ...(referenceGuide ? [{ data: new Uint8Array(localGuide?.image ?? paddedGuide?.imageWebp ?? referenceGuide), mimeType: "image/webp" as const, role: "spatial_guide" as const }] : []),
         ],
@@ -1645,6 +1667,9 @@ async function runSimplePointRender(
       } catch {
         throw new RenderError("Le produit généré ne peut pas être posé proprement à cet emplacement. Réessayez sur une zone dégagée.", 422);
       }
+    } else if (roomIntegration) {
+      finalBuffer = await restoreRoomIntegrationBackground(editComposition, padded, generated);
+      visualInput.instructions += " The product and its support interaction were generated together in the full room image. There is no isolated product alpha, no product resizing after generation and no pixel-exact base re-stamping. Check the actual final support attachment, volume and depth instead of treating a marker-matched sprite as proof.";
     } else {
       finalBuffer = await restorePerspectiveBackground(editComposition, padded, generated);
     }
@@ -1660,6 +1685,7 @@ async function runSimplePointRender(
       step: "storefront_placement_review", provider: "openai", model: serverConfig.openaiVisionModel,
       ...storefrontPlacementReviewAllowance(), promptVersion: realisticReviewVersion,
     }, () => reviewStorefrontPlacement({ ...visualInput, realism: true, fastReview: fastRealisticReview, scaleReference: reference,
+      ...(roomIntegration ? { roomIntegration: true } : {}),
       ...(detailRealisticReview ? { detailReview: true, generatedProducts: {
         image: { data: new Uint8Array(generated), mimeType: "image/webp" as const },
         productIds: frontToBack.map(index => `${simpleObjects[index]!.product.id}:${index}`),

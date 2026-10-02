@@ -17,6 +17,8 @@ import {
   STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION,
   STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION,
   STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION,
+  STOREFRONT_ROOM_INTEGRATION_REVIEW_VERSION,
+  storefrontRoomIntegrationReviewSchema,
   storefrontRealisticPlacementReviewSchema,
   type StorefrontPlacementReviewInput,
   type StorefrontScaleReference,
@@ -280,6 +282,15 @@ function realisticAccepted(withReference = false) {
       },
     })),
   };
+}
+
+function roomIntegrated(withReference = false) {
+  const data = realisticAccepted(withReference);
+  return { ...data, products: data.products.map(entry => ({ ...entry,
+    checks: { ...entry.checks, supportIntegration: {
+      passed: true, score: 0.95, reason: "Appui lisible, volume et occultation cohérents avec le sol.",
+    } },
+  })) };
 }
 
 describe("storefront photographic placement qualification", () => {
@@ -669,6 +680,136 @@ describe("storefront fast photographic placement qualification", () => {
       render: {} as DurableContext["render"], token: "test-token", signal: controller.signal,
     }, () => reviewStorefrontPlacement(fastInput()))).rejects.toBe(error);
     expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("storefront physical room-integration qualification", () => {
+  const options = { realism: true, roomIntegration: true };
+  const roomInput = (): StorefrontPlacementReviewInput => ({ ...realisticInput(), roomIntegration: true });
+  const oldChecks = ["present", "identity", "position", "scale", "perspective", "contact", "edges", "occlusion", "noDuplicate", "gravity", "silhouetteComplete", "photographicCoherence", "referenceScale"] as const;
+
+  it("requires the new support evidence without changing historical photographic schemas", () => {
+    expect(STOREFRONT_ROOM_INTEGRATION_REVIEW_VERSION).toBe("storefront-room-integration-review-v5");
+    expect(parseStorefrontPlacementReview(roomIntegrated(), [realisticProduct], options)).toMatchObject({
+      status: "accepted", version: STOREFRONT_ROOM_INTEGRATION_REVIEW_VERSION,
+    });
+    expect(storefrontRoomIntegrationReviewSchema.safeParse(realisticAccepted()).success).toBe(false);
+    expect(storefrontRealisticPlacementReviewSchema.safeParse(roomIntegrated()).success).toBe(false);
+    expect(() => parseStorefrontPlacementReview(realisticAccepted(), [realisticProduct], options)).toThrow();
+  });
+
+  it.each([
+    { passed: false, score: 0.95, reason: "Panier collé sans interaction avec le sol." },
+    { passed: true, score: 0.79, reason: "Appui et profondeur insuffisamment démontrés." },
+  ])("rejects the V8 basket counterexample even when its anchor, identity and all thirteen old checks pass (%j)", integration => {
+    const data = roomIntegrated();
+    data.products[0]!.checks.supportIntegration = integration;
+    const decision = parseStorefrontPlacementReview(data, [realisticProduct], options);
+    expect(decision.status).toBe("rejected");
+    expect(decision.checks.find(check => check.name.endsWith("geometry_position"))!.score).toBe(1);
+    expect(decision.checks.find(check => check.name.endsWith("identity"))!.score).toBe(0.95);
+    expect(decision.checks.find(check => check.name.endsWith("supportIntegration"))!.score).toBeLessThan(0.8);
+  });
+
+  it.each(oldChecks)("keeps the previous %s gate mandatory even with convincing support", name => {
+    const data = roomIntegrated(true);
+    const measured = { ...options, scaleReference: measuredReference };
+    data.products[0]!.checks[name] = { passed: true, score: 0.79, reason: "Contradiction visible." };
+    expect(parseStorefrontPlacementReview(data, [realisticProduct], measured).status).toBe("rejected");
+  });
+
+  it("keeps contact, confidence, references and exact placement-ID coverage independent of support", () => {
+    const moved = roomIntegrated();
+    moved.products[0]!.observedContact.x = 0.6;
+    expect(parseStorefrontPlacementReview(moved, [realisticProduct], options).status).toBe("rejected");
+    const uncertain = roomIntegrated();
+    uncertain.products[0]!.confidence = 0.79;
+    expect(parseStorefrontPlacementReview(uncertain, [realisticProduct], options).status).toBe("rejected");
+    const duplicates = roomIntegrated();
+    duplicates.products.push({ ...duplicates.products[0]! });
+    expect(() => parseStorefrontPlacementReview(duplicates, [realisticProduct], options)).toThrow();
+    expect(parseStorefrontPlacementReview(roomIntegrated(), [realisticProduct], { ...options, scaleReference: measuredReference }).status).toBe("rejected");
+  });
+
+  it.each([
+    { realism: undefined, detailReview: false },
+    { realism: false, detailReview: false },
+    { realism: true, detailReview: true },
+  ])("refuses incompatible integration options locally before fetch (%j)", async mode => {
+    const fetcher = vi.fn<typeof globalThis.fetch>();
+    vi.stubGlobal("fetch", fetcher);
+    await expect(reviewStorefrontPlacement({ ...roomInput(), ...mode })).rejects.toMatchObject({
+      code: "invalid_input", providerCalled: false, retryable: false,
+    });
+    expect(() => parseStorefrontPlacementReview(roomIntegrated(), [realisticProduct], { roomIntegration: true, ...mode })).toThrow();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("uses one LOW/45-second review of the final room and originals without isolated native evidence", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(AbortSignal, "timeout").mockImplementation(ms => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException("Timed out", "TimeoutError")), ms);
+      return controller.signal;
+    });
+    const fetcher = vi.fn<typeof globalThis.fetch>(async () => Response.json(envelope(roomIntegrated())));
+    vi.stubGlobal("fetch", fetcher);
+    const result = await reviewStorefrontPlacement({ ...roomInput(), generatedProducts: { image, productIds: ["invalid-native-id"] } });
+    expect(result.version).toBe(STOREFRONT_ROOM_INTEGRATION_REVIEW_VERSION);
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(AbortSignal.timeout).toHaveBeenCalledWith(45_000);
+    const body = JSON.parse(fetcher.mock.calls[0]![1]!.body as string);
+    expect(body).toMatchObject({ reasoning: { effort: "low" }, max_output_tokens: 6000,
+      text: { format: { name: "storefront_room_integration_review", strict: true } } });
+    const prompt = body.input[0].content[0].text as string;
+    expect(prompt).toContain("supportIntegration is a REQUIRED independent check");
+    expect(prompt).toContain("exact bottom anchor DO NOT establish support integration");
+    expect(prompt).toContain("clean woven basket pasted at the right point");
+    expect(prompt).toContain("contact shading or ambient occlusion");
+    expect(prompt).toContain("Product position, physical scale and source identity remain mandatory");
+    expect(prompt).not.toContain("GENERATED PRODUCT VIEW DETAIL WITH COLUMN IDS");
+    const content = body.input[1].content as Array<{ type: string; text?: string }>;
+    expect(content.filter(entry => entry.type === "input_image")).toHaveLength(3);
+    expect(content.filter(entry => entry.type === "input_text").slice(1).map(entry => entry.text)).toEqual([
+      "ORIGINAL ROOM", "FINAL PLACEMENT TO VERIFY", `ORIGINAL PRODUCT ${product.id}`,
+    ]);
+    expect(body.text.format.schema.properties.products.items.properties.checks.required).toContain("supportIntegration");
+    expect(storefrontPlacementReviewAllowance().estimatedCostUsd).toBeCloseTo(0.55);
+  });
+
+  it("fails closed on missing integration evidence returned by the provider", async () => {
+    const fetcher = vi.fn<typeof globalThis.fetch>(async () => Response.json(envelope(realisticAccepted())));
+    vi.stubGlobal("fetch", fetcher);
+    await expect(reviewStorefrontPlacement(roomInput())).rejects.toThrow();
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it.each([undefined, false])("preserves the old body byte-for-byte when integration is disabled (%s)", async roomIntegration => {
+    const fetcher = vi.fn<typeof globalThis.fetch>(async () => Response.json(envelope(realisticAccepted())));
+    vi.stubGlobal("fetch", fetcher);
+    await reviewStorefrontPlacement({ ...realisticInput(), fastReview: true });
+    await reviewStorefrontPlacement({ ...realisticInput(), fastReview: true, roomIntegration });
+    expect(fetcher.mock.calls[0]![1]!.body).toBe(fetcher.mock.calls[1]![1]!.body);
+  });
+
+  it.each(["headers", "body"] as const)("aborts the integration %s phase after 45 seconds without retry", async phase => {
+    vi.useFakeTimers();
+    vi.spyOn(AbortSignal, "timeout").mockImplementation(ms => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException("Timed out", "TimeoutError")), ms);
+      return controller.signal;
+    });
+    const waitForAbort = (signal: AbortSignal) => new Promise<never>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+    const fetcher = vi.fn<typeof globalThis.fetch>(async (_url, init) => {
+      const signal = init!.signal as AbortSignal;
+      if (phase === "headers") return waitForAbort(signal);
+      return Object.assign(new Response("ignored"), { json: () => waitForAbort(signal) });
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const result = reviewStorefrontPlacement(roomInput()).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(45_000);
+    expect(await result).toMatchObject({ code: "timeout", providerCalled: true, retryable: false });
+    expect(fetcher).toHaveBeenCalledOnce();
   });
 });
 

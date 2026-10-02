@@ -42,6 +42,10 @@ export class MockImageProvider
     request: ImageGenerationRequest | ImageEditingRequest,
   ): Promise<ProviderAttemptResult> {
     let data = request.composition;
+    // Room-edit inputs may be PNG to match their alpha mask. Mock outputs
+    // retain the same WebP transport contract as the real image provider.
+    if (Buffer.from(data).subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])))
+      data = new Uint8Array(await sharp(Buffer.from(data)).webp({ lossless: true }).toBuffer());
     if ("productIsolation" in request && request.productIsolation === true) {
       try {
         data = new Uint8Array(await mockIsolatedProducts(request));

@@ -27,7 +27,8 @@ export function isStorefrontPlacementRender(
   return render.engineVersions?.quality === "storefront-placement-review-v1" ||
     render.engineVersions?.quality === "storefront-realistic-placement-v2" ||
     render.engineVersions?.quality === "storefront-realistic-placement-v3" ||
-    render.engineVersions?.quality === "storefront-realistic-detail-v4";
+    render.engineVersions?.quality === "storefront-realistic-detail-v4" ||
+    render.engineVersions?.quality === "storefront-room-integration-review-v5";
 }
 
 export function renderTerminalAnnouncement(
@@ -247,7 +248,8 @@ export function renderProgress(render: ProgressInput) {
   const sourcePixelPlacement = render.engineVersions?.quality === "storefront-placement-review-v1";
   const perspectivePlacement = render.engineVersions?.quality === "storefront-realistic-placement-v2" ||
     render.engineVersions?.quality === "storefront-realistic-placement-v3" ||
-    render.engineVersions?.quality === "storefront-realistic-detail-v4";
+    render.engineVersions?.quality === "storefront-realistic-detail-v4" ||
+    render.engineVersions?.quality === "storefront-room-integration-review-v5";
   const copies = perspectivePlacement ? perspectiveStageCopy : sourcePixelPlacement ? placementStageCopy : stageCopy;
   const placementStage =
     typeof render.placement?.pipelineStage === "string"

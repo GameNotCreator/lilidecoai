@@ -117,8 +117,10 @@ describe("merchant render diagnostics", () => {
     expect(body.sceneProjection).toBeNull();
   });
 
-  it("exposes only bounded numeric projection evidence from a completed real storefront checkpoint", async () => {
-    mocks.findOne.mockResolvedValue(realRender());
+  it.each(["storefront-isolated-product-v4", "storefront-room-integration-v5"])("exposes only bounded numeric projection evidence from a completed real %s checkpoint", async composite => {
+    const render = realRender();
+    render.engineVersions!.composite = composite;
+    mocks.findOne.mockResolvedValue(render);
     const response = await GET(request, context);
     const body = await response.json();
     expect(response.headers.get("Cache-Control")).toBe("no-store");
