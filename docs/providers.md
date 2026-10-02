@@ -84,9 +84,13 @@ file d’attente comprise. Il ne relance pas automatiquement une image refusée.
 `STOREFRONT_IMAGE_MODEL` utilise `gpt-image-2.5-sunburst` par défaut, à qualité
 `medium`, pour produire une vraie transparence WebP sans masque. Les photos
 catalogue restent les références d’identité, une par objet. Les nouvelles
-admissions `storefront-isolated-camera-first-v5` transmettent d’abord le guide
-de caméra, puis la pièce, puis ces photos catalogue. Ce contrat de prompt est
-figé à l’admission ; les anciens rendus gardent leur ordre catalogue en premier.
+admissions `storefront-isolated-camera-window-v6` transmettent d’abord une
+fenêtre agrandie du guide autour de tous les emplacements, puis la pièce,
+puis ces photos catalogue. Le recadrage conserve la perspective et décrit
+explicitement ses coordonnées dans la photo originale ; il ne change ni les
+angles estimés ni les pixels du résultat final. Ce contrat est figé à l’admission.
+Les anciens v5 gardent leur guide complet ; les profils antérieurs gardent leur
+ordre catalogue en premier.
 Un panier de trois objets utilise trois colonnes dans la même
 génération. Les répétitions d’un produit conservent leur colonne.
 

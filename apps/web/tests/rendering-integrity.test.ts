@@ -176,13 +176,16 @@ function structuredReview(
 }
 
 /** Inject a historical admitted contract at the fixture's storage boundary. */
-async function runHistoricalStorefrontRender(scaleEstimation = "storefront-scene-pose-v3") {
+async function runHistoricalStorefrontRender(
+  scaleEstimation = "storefront-scene-pose-v3",
+  promptVersion = "storefront-realistic-placement-v3",
+) {
   const insert = renders.insertOne;
   renders.insertOne = async row => {
     const versions = row.engineVersions as NonNullable<RenderDocument["engineVersions"]>;
     versions.scaleEstimation = scaleEstimation;
-    versions.prompt = "storefront-realistic-placement-v3";
-    row.promptVersion = "storefront-realistic-placement-v3";
+    versions.prompt = promptVersion;
+    row.promptVersion = promptVersion;
     return insert(row);
   };
   try {
@@ -210,6 +213,15 @@ async function deliveredProductBox() {
     }
   }
   return { left, top, bottom, width: right - left + 1, height: bottom - top + 1 };
+}
+
+function cameraGuideWindow(prompt: string) {
+  const contract = prompt.split("CAMERA GUIDE WINDOW: ")[1]?.split(". image1 shows")[0];
+  expect(contract).toBeDefined();
+  return JSON.parse(contract!) as {
+    originalFrame: { width: number; height: number };
+    window: { left: number; top: number; width: number; height: number };
+  };
 }
 
 beforeEach(async () => {
@@ -518,7 +530,7 @@ describe("simple render orchestration with offline providers", () => {
     expect(scenePreflightNames).toEqual(["storefront_scene_pose_preflight"]);
     expect(scenePreflightTexts[0]).not.toContain("product widths in centimetres");
   });
-  it("freezes the new camera-first contract at admission and maps catalogues to source images 3 onward", async () => {
+  it("freezes the new camera-window contract at admission and maps catalogues to source images 3 onward", async () => {
     await scenes.updateOne({ id: "scene" }, { $set: { publicSessionId: "storefront:visitor-1" } });
     request.simplePlacements = request.simplePlacements!.map((item, index) => ({
       ...item, placementPoint: { ...item.placementPoint, y: [0.55, 0.85, 0.7][index]! },
@@ -535,19 +547,19 @@ describe("simple render orchestration with offline providers", () => {
     const insert = renders.insertOne;
     renders.insertOne = async row => {
       // Assert the immutable admission contract before any provider could run.
-      expect(row).toMatchObject({ promptVersion: "storefront-isolated-camera-first-v5", engineVersions: {
-        prompt: "storefront-isolated-camera-first-v5", composite: "storefront-isolated-product-v4",
+      expect(row).toMatchObject({ promptVersion: "storefront-isolated-camera-window-v6", engineVersions: {
+        prompt: "storefront-isolated-camera-window-v6", composite: "storefront-isolated-product-v4",
         scaleEstimation: "storefront-scene-width-pose-v4", quality: "storefront-realistic-placement-v3",
       } });
       return insert(row);
     };
     const result = await createRender(db, "org", request, "storefront:visitor-1");
-    expect(result).toMatchObject({ status: "succeeded", promptVersion: "storefront-isolated-camera-first-v5",
-      engineVersions: { prompt: "storefront-isolated-camera-first-v5" } });
-    expect(renders.rows[0]!.promptVersion).toBe("storefront-isolated-camera-first-v5");
+    expect(result).toMatchObject({ status: "succeeded", promptVersion: "storefront-isolated-camera-window-v6",
+      engineVersions: { prompt: "storefront-isolated-camera-window-v6" } });
+    expect(renders.rows[0]!.promptVersion).toBe("storefront-isolated-camera-window-v6");
     expect(mocks.edit).toHaveBeenCalledTimes(1);
     const imageRequest = mocks.edit.mock.calls[0]![0];
-    expect(imageRequest).toMatchObject({ productIsolation: true, productIsolationCameraFirst: true });
+    expect(imageRequest).toMatchObject({ productIsolation: true, productIsolationCameraFirst: true, quality: "medium" });
     expect(imageRequest.prompt).toContain("image1 is the annotated room geometry guide");
     expect(imageRequest.prompt).toContain("image2 is the unmarked room CAMERA");
     expect(imageRequest.prompt).toContain("images3..5 are the original catalogue identity photographs");
@@ -567,8 +579,56 @@ describe("simple render orchestration with offline providers", () => {
     ]);
     const originals = imageRequest.references.filter((reference: ImageReference) => reference.role.startsWith("product_"));
     expect(originals.map((reference: ImageReference) => Buffer.from(reference.data))).toEqual([catalogues[1], catalogues[2], catalogues[0]]);
-    expect(attempts.rows.find(row => row.stage === "generating_final")!.promptVersion).toBe("storefront-isolated-camera-first-v5");
+    const windowContract = cameraGuideWindow(imageRequest.prompt);
+    expect(windowContract.originalFrame).toEqual({ width: 400, height: 300 });
+    const guides = imageRequest.references.filter((reference: ImageReference) => reference.role === "spatial_guide");
+    expect(guides).toHaveLength(1);
+    const guideSize = await sharp(Buffer.from(guides[0]!.data)).metadata();
+    const { window } = windowContract;
+    expect(Math.abs(guideSize.width! * window.height - guideSize.height! * window.width)).toBeLessThanOrEqual(Math.max(window.width, window.height));
+    expect(imageRequest.prompt).toContain("Coordinates in the contracts still refer to the full original room");
+    expect(attempts.rows.find(row => row.stage === "generating_final")!.promptVersion).toBe("storefront-isolated-camera-window-v6");
     expect(reviewCalls).toBe(1);
+  });
+  it("uses one local camera guide whose window grows to contain one through three products", async () => {
+    await scenes.updateOne({ id: "scene" }, { $set: { publicSessionId: "storefront:visitor-1" } });
+    const placements = request.simplePlacements!;
+    const windows: Array<ReturnType<typeof cameraGuideWindow>["window"]> = [];
+    for (const count of [1, 2, 3]) {
+      request.simplePlacements = placements.slice(0, count);
+      request.idempotencyKey = crypto.randomUUID();
+      const result = await createRender(db, "org", request, "storefront:visitor-1");
+      expect(result.status).toBe("succeeded");
+      const imageRequest = mocks.edit.mock.calls.at(-1)![0];
+      const { originalFrame, window } = cameraGuideWindow(imageRequest.prompt);
+      expect(originalFrame).toEqual({ width: 400, height: 300 });
+      expect(window.left).toBeGreaterThanOrEqual(0);
+      expect(window.top).toBeGreaterThanOrEqual(0);
+      expect(window.left + window.width).toBeLessThanOrEqual(originalFrame.width);
+      expect(window.top + window.height).toBeLessThanOrEqual(originalFrame.height);
+      expect(window.width * window.height).toBeLessThan(originalFrame.width * originalFrame.height);
+      for (const placement of request.simplePlacements) {
+        const contactX = Math.round(placement.placementPoint.x * originalFrame.width);
+        const contactY = Math.round(placement.placementPoint.y * originalFrame.height);
+        expect(contactX).toBeGreaterThanOrEqual(window.left);
+        expect(contactX).toBeLessThan(window.left + window.width);
+        expect(contactY).toBeGreaterThanOrEqual(window.top);
+        expect(contactY).toBeLessThan(window.top + window.height);
+      }
+      const guides = imageRequest.references.filter((reference: ImageReference) => reference.role === "spatial_guide");
+      expect(guides).toHaveLength(1);
+      const guideSize = await sharp(Buffer.from(guides[0]!.data)).metadata();
+      expect(Math.max(guideSize.width!, guideSize.height!)).toBeLessThanOrEqual(1024);
+      // Uniform enlargement may round by one pixel, but cannot warp the crop.
+      expect(Math.abs(guideSize.width! * window.height - guideSize.height! * window.width)).toBeLessThanOrEqual(Math.max(window.width, window.height));
+      expect(imageRequest).toMatchObject({ quality: "medium", productIsolationCameraFirst: true });
+      expect(imageRequest.references.filter((reference: ImageReference) => reference.role.startsWith("product_"))).toHaveLength(count);
+      windows.push(window);
+    }
+    expect(windows[0]!.width).toBeLessThan(windows[2]!.width);
+    expect(windows[0]!.width * windows[0]!.height).toBeLessThan(windows[2]!.width * windows[2]!.height);
+    expect(mocks.edit).toHaveBeenCalledTimes(3);
+    expect(reviewCalls).toBe(3);
   });
   it("sizes a newly admitted isolated product from horizontal 6 rather than vertical 4 pixels per centimetre", async () => {
     await scenes.updateOne({ id: "scene" }, { $set: { publicSessionId: "storefront:visitor-1" } });
@@ -576,8 +636,8 @@ describe("simple render orchestration with offline providers", () => {
     preflightVerticalPixelsPerCm = 4;
     preflightWidthPixelsPerCm = 6;
     const result = await createRender(db, "org", request, "storefront:visitor-1");
-    expect(result).toMatchObject({ status: "succeeded", promptVersion: "storefront-isolated-camera-first-v5",
-      engineVersions: { scaleEstimation: "storefront-scene-width-pose-v4", prompt: "storefront-isolated-camera-first-v5" } });
+    expect(result).toMatchObject({ status: "succeeded", promptVersion: "storefront-isolated-camera-window-v6",
+      engineVersions: { scaleEstimation: "storefront-scene-width-pose-v4", prompt: "storefront-isolated-camera-window-v6" } });
     expect(scenePreflightNames).toEqual(["storefront_scene_width_pose_preflight"]);
     expect(scenePreflightTexts[0]).toContain("product widths in centimetres, in the exact placement order: [10].");
     // Native mock is 40x80: 10 cm horizontal width at 6 px/cm becomes 60x120 uniformly.
@@ -638,6 +698,28 @@ describe("simple render orchestration with offline providers", () => {
     const contracts = JSON.parse(imageRequest.prompt.split("PER-COLUMN CONTRACTS: ")[1]!.split("\n")[0]!) as Array<{ sourceImage: number }>;
     expect(contracts.map(contract => contract.sourceImage)).toEqual([1, 2, 3]);
     expect(attempts.rows.find(row => row.stage === "generating_final")!.promptVersion).toBe("storefront-realistic-placement-v3");
+    expect(mocks.edit).toHaveBeenCalledTimes(1);
+    expect(reviewCalls).toBe(1);
+  });
+  it("retains the full-frame camera-first guide for an admitted v5 job", async () => {
+    await scenes.updateOne({ id: "scene" }, { $set: { publicSessionId: "storefront:visitor-1" } });
+    const result = await runHistoricalStorefrontRender("storefront-scene-width-pose-v4", "storefront-isolated-camera-first-v5");
+    expect(result).toMatchObject({ status: "succeeded", promptVersion: "storefront-isolated-camera-first-v5",
+      engineVersions: { prompt: "storefront-isolated-camera-first-v5", scaleEstimation: "storefront-scene-width-pose-v4" } });
+    const imageRequest = mocks.edit.mock.calls[0]![0];
+    expect(imageRequest).toMatchObject({ quality: "medium", productIsolation: true, productIsolationCameraFirst: true });
+    expect(imageRequest.prompt).toContain("image1 is the annotated room geometry guide");
+    expect(imageRequest.prompt).toContain("image2 is the unmarked room CAMERA");
+    expect(imageRequest.prompt).toContain("images3..5 are the original catalogue identity photographs");
+    expect(imageRequest.prompt).not.toContain("CAMERA GUIDE WINDOW");
+    const guides = imageRequest.references.filter((reference: ImageReference) => reference.role === "spatial_guide");
+    expect(guides).toHaveLength(1);
+    const guideSize = await sharp(Buffer.from(guides[0]!.data)).metadata();
+    const sceneSize = await sharp(Buffer.from(imageRequest.scene)).metadata();
+    expect([guideSize.width, guideSize.height]).toEqual([sceneSize.width, sceneSize.height]);
+    expect(guideSize.width! * guideSize.height!).toBeGreaterThan(400 * 300);
+    expect(renders.rows[0]!.promptVersion).toBe("storefront-isolated-camera-first-v5");
+    expect(attempts.rows.find(row => row.stage === "generating_final")!.promptVersion).toBe("storefront-isolated-camera-first-v5");
     expect(mocks.edit).toHaveBeenCalledTimes(1);
     expect(reviewCalls).toBe(1);
   });

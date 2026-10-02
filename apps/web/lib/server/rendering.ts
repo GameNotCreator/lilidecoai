@@ -37,7 +37,8 @@ import {
 } from "./ai/visual-review";
 import { reviewStorefrontPlacement, storefrontPlacementReviewAllowance, STOREFRONT_PLACEMENT_REVIEW_VERSION, STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION, type StorefrontPlacementReviewInput } from "./ai/storefront-placement-review";
 import { perspectiveEditComposition, restorePerspectiveBackground } from "./storefront-realistic-composite";
-import { buildStorefrontPerspectiveGuide } from "./storefront-perspective-guide";
+import { buildStorefrontPerspectiveGuide, type StorefrontPerspectiveGuideObject } from "./storefront-perspective-guide";
+import { localiseStorefrontPerspectiveGuide } from "./storefront-perspective-guide-window";
 import { composeStorefrontIsolatedProducts, STOREFRONT_ISOLATED_COMPOSITE_VERSION } from "./storefront-isolated-composite";
 import { inspectStorefrontScene, storefrontScenePreflightAllowance, STOREFRONT_SCENE_PREFLIGHT_VERSION, STOREFRONT_POSE_PREFLIGHT_VERSION, STOREFRONT_WIDTH_POSE_PREFLIGHT_VERSION, type StorefrontScenePose } from "./ai/storefront-scene-preflight";
 import { captureStage } from "./render-capture";
@@ -129,6 +130,7 @@ import {
 } from "./durable-queue";
 
 const STOREFRONT_CAMERA_FIRST_ISOLATION_PROMPT_VERSION = "storefront-isolated-camera-first-v5";
+const STOREFRONT_CAMERA_WINDOW_ISOLATION_PROMPT_VERSION = "storefront-isolated-camera-window-v6";
 
 interface NormalizedBox {
   xMin: number;
@@ -509,7 +511,7 @@ export async function createRender(
     ],
     attemptCount: 0,
     estimatedCostUsd: 0,
-    promptVersion: fastStorefront ? STOREFRONT_CAMERA_FIRST_ISOLATION_PROMPT_VERSION : simplePointWorkflow
+    promptVersion: fastStorefront ? STOREFRONT_CAMERA_WINDOW_ISOLATION_PROMPT_VERSION : simplePointWorkflow
       ? SIMPLE_POINT_PROMPT_VERSION
       : PROMPT_VERSION,
     engineVersions: {
@@ -520,7 +522,7 @@ export async function createRender(
       // The prompt the model actually receives. simple_point sends the
       // harmonize prompt (SIMPLE_COMPOSITE_PROMPT_VERSION); the "simple point"
       // version is the render's own contract, already on `promptVersion`.
-      prompt: fastStorefront ? STOREFRONT_CAMERA_FIRST_ISOLATION_PROMPT_VERSION : simplePointWorkflow
+      prompt: fastStorefront ? STOREFRONT_CAMERA_WINDOW_ISOLATION_PROMPT_VERSION : simplePointWorkflow
         ? SIMPLE_COMPOSITE_PROMPT_VERSION
         : PROMPT_VERSION,
       // Resolved, never assumed: a missing key turns a run synthetic in
@@ -1027,8 +1029,10 @@ async function runSimplePointRender(
   const isolatedProducts = render.engineVersions?.composite === STOREFRONT_ISOLATED_COMPOSITE_VERSION;
   const widthAnchoredIsolated = isolatedProducts &&
     render.engineVersions?.scaleEstimation === STOREFRONT_WIDTH_POSE_PREFLIGHT_VERSION;
+  const cameraWindowIsolation = isolatedProducts &&
+    render.engineVersions?.prompt === STOREFRONT_CAMERA_WINDOW_ISOLATION_PROMPT_VERSION;
   const cameraFirstIsolation = isolatedProducts &&
-    render.engineVersions?.prompt === STOREFRONT_CAMERA_FIRST_ISOLATION_PROMPT_VERSION;
+    (cameraWindowIsolation || render.engineVersions?.prompt === STOREFRONT_CAMERA_FIRST_ISOLATION_PROMPT_VERSION);
   const realisticStorefront = render.publicSessionId?.startsWith("storefront:") === true &&
     [STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION].includes(render.engineVersions?.quality ?? "") && input.mode !== "replace";
   const realisticReviewVersion = fastRealisticReview ? STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION : STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION;
@@ -1503,19 +1507,26 @@ async function runSimplePointRender(
   };
   if (realisticStorefront) {
     const reference = input.scaleReference;
+    const guideObjects: StorefrontPerspectiveGuideObject[] = simpleObjects.map((item, index) => ({
+      index, point: item.placementPoint, kind: item.placementKind,
+      dimensionsCm: { width: item.product.widthCm, height: item.product.heightCm, depth: item.product.depthCm },
+      pixelsPerCm: scales[index]!.pixelsPerCm!,
+      pose: realisticPoses?.[index],
+    }));
     const placementGuide = fastRealisticReview ? await buildStorefrontPerspectiveGuide({
       room: workingScene, width: sceneWidth, height: sceneHeight,
-      objects: simpleObjects.map((item, index) => ({
-        index, point: item.placementPoint, kind: item.placementKind,
-        dimensionsCm: { width: item.product.widthCm, height: item.product.heightCm, depth: item.product.depthCm },
-        pixelsPerCm: scales[index]!.pixelsPerCm!,
-        pose: realisticPoses?.[index],
-      })), reference,
+      objects: guideObjects, reference,
     }) : null;
     const referenceGuide = placementGuide ?? (reference ? await markPoints(sceneImage, [
       { ...reference.basePoint, label: 101 },
       { ...reference.topPoint, label: 102 },
     ], sceneWidth, sceneHeight) : null);
+    if (cameraWindowIsolation && !referenceGuide)
+      throw new RenderError("Le guide de perspective n’est pas disponible pour cet emplacement.", 422);
+    const localGuide = cameraWindowIsolation ? await localiseStorefrontPerspectiveGuide({
+      guide: referenceGuide!, width: sceneWidth, height: sceneHeight, objects: guideObjects,
+      maxDimension: 1024, reference,
+    }) : null;
     const paddedGuide = referenceGuide && fastRealisticReview ? await padCompositionForAspect({
       ...editComposition, imageWebp: referenceGuide, baseWebp: referenceGuide,
     }, requestedSize) : null;
@@ -1547,6 +1558,7 @@ async function runSimplePointRender(
       cameraFirstIsolation
         ? `IMAGE ORDER: image1 is the annotated room geometry guide and establishes the OUTPUT CAMERA at the numbered product position. image2 is the unmarked room CAMERA AND LIGHT REFERENCE ONLY. images3..${simpleObjects.length + 2} are the original catalogue identity photographs, one per output product. Use the camera view from images1 and2 to re-render the products from images3+. Neither room image, guide annotation nor enclosing guide volume may appear in the output. Catalogue images define identity only; their camera view must not override the room camera.`
         : `IMAGE ORDER: images1..${simpleObjects.length} are the original catalogue identity photographs, one per output product. image${simpleObjects.length + 1} is the unmarked room CAMERA AND LIGHT REFERENCE ONLY. image${simpleObjects.length + 2} is the annotated room geometry guide CAMERA REFERENCE ONLY. Neither room image may appear in the output.`,
+      ...(localGuide ? [`CAMERA GUIDE WINDOW: ${JSON.stringify({ originalFrame: localGuide.originalFrame, window: localGuide.window })}. image1 shows only this local window of the original room geometry guide, enlarged without changing its aspect ratio. This crop does not change the camera, object scale, elevation, roll, placement or field of view of image2. Coordinates in the contracts still refer to the full original room. Use the enlarged projected top-plane outline as a visible approximate perspective cue, not as a product design, pixel box to fill or measured calibration. Reconstruct the complete real product from its catalogue photo in that room-camera view; do not copy the catalogue top-plane projection.`] : []),
       `OUTPUT LAYOUT: split the entire output canvas into exactly ${simpleObjects.length} equal vertical columns. Each column contains exactly one complete product, centered horizontally. Use the largest UNIFORM fit within BOTH the column width and canvas height, with generous transparent margins on all four sides; never stretch or change proportions to fill the column. Never cross a column boundary or touch an image edge. ${cameraFirstIsolation ? "Column1 matches image3, column2 matches image4, and so on." : "Column1 matches image1, column2 matches image2, and so on."} No labels, numbers, extra objects or separate detached shadows.`,
       "Reconstruct each SAME catalogue product in the camera view of its intended position in the reference room. Preserve its exact material, colour, weave, patterns, lid, crown, handles, proportions and all characteristic parts. The original catalogue photograph is the identity authority; its camera angle is not the output camera angle. Do not invent a new product or simply cut out the original catalogue view.",
       `PER-COLUMN CONTRACTS: ${JSON.stringify(frontToBack.map((index, order) => {
@@ -1582,11 +1594,11 @@ async function runSimplePointRender(
         references: [
           { data: compositionData, mimeType: "image/webp", role: isolatedProducts ? "room_original" : "composition" },
           ...orderedReferences,
-          ...(referenceGuide ? [{ data: new Uint8Array(paddedGuide?.imageWebp ?? referenceGuide), mimeType: "image/webp" as const, role: "spatial_guide" as const }] : []),
+          ...(referenceGuide ? [{ data: new Uint8Array(localGuide?.image ?? paddedGuide?.imageWebp ?? referenceGuide), mimeType: "image/webp" as const, role: "spatial_guide" as const }] : []),
         ],
         mode, outputQuality: "final", preserveBackground: true,
       });
-      await recordProviderAttempt(db, render, result, "generating_final", cameraFirstIsolation ? STOREFRONT_CAMERA_FIRST_ISOLATION_PROMPT_VERSION : realisticReviewVersion, route.degradedMode, 1);
+      await recordProviderAttempt(db, render, result, "generating_final", cameraWindowIsolation ? STOREFRONT_CAMERA_WINDOW_ISOLATION_PROMPT_VERSION : cameraFirstIsolation ? STOREFRONT_CAMERA_FIRST_ISOLATION_PROMPT_VERSION : realisticReviewVersion, route.degradedMode, 1);
       if (durableContext.getStore() && result.status === "failed") {
         const code = result.error?.code ?? "";
         if (result.estimatedCostUsd > 0 || ["timeout", "network_error", "empty_image_response"].includes(code))
@@ -1652,7 +1664,7 @@ async function runSimplePointRender(
       provider: route.provider, model: provider.model, resultAssetId: resultAsset.id, compositeAssetId: candidateAsset.id,
       qualityScore: decision.score, qualityChecks: decision.checks, qualityDecision: decision,
       estimatedCostUsd: usageTotals.estimatedCostUsd, attemptCount: result.attemptCount,
-      latencyMs: Date.now() - startedAt, promptVersion: cameraFirstIsolation ? STOREFRONT_CAMERA_FIRST_ISOLATION_PROMPT_VERSION : realisticReviewVersion,
+      latencyMs: Date.now() - startedAt, promptVersion: cameraWindowIsolation ? STOREFRONT_CAMERA_WINDOW_ISOLATION_PROMPT_VERSION : cameraFirstIsolation ? STOREFRONT_CAMERA_FIRST_ISOLATION_PROMPT_VERSION : realisticReviewVersion,
       modelChain: [{ provider: route.provider, model: provider.model, role: "perspective_edit" },
         { provider: "openai", model: serverConfig.openaiVisionModel, role: "reference_scale_and_realism_review" }],
       audit: { scaleSources: scales.map(scale => scale.scaleSource), scaleFallbackFired: scales.some(scale => scale.scaleSource === "assumed_room_width"),
