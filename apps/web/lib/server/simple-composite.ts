@@ -734,6 +734,7 @@ export async function compositeObjectsOnScene(
 export async function padCompositionForAspect(
   composition: CompositionLike,
   requestedSize: string,
+  options: { exactAspect?: boolean } = {},
 ): Promise<PaddedComposition> {
   const [requestedWidth, requestedHeight] = requestedSize
     .split("x")
@@ -743,7 +744,7 @@ export async function padCompositionForAspect(
   const ratio = sceneWidth / sceneHeight;
   let paddedWidth = sceneWidth;
   let paddedHeight = sceneHeight;
-  if (Math.abs(ratio - targetRatio) / targetRatio > 0.01) {
+  if (Math.abs(ratio - targetRatio) / targetRatio > (options.exactAspect ? 0 : 0.01)) {
     if (ratio > targetRatio) {
       paddedHeight = Math.round(sceneWidth / targetRatio);
     } else {

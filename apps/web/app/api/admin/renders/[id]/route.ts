@@ -35,7 +35,7 @@ function sceneProjection(render: RenderDocument) {
   const profile = render.engineVersions?.scaleEstimation;
   if (!["queued", "processing", "succeeded", "failed"].includes(render.status) ||
       render.engineVersions?.mockMode !== false ||
-      !["storefront-isolated-product-v4", "storefront-room-integration-v5"].includes(render.engineVersions?.composite ?? "") ||
+      !["storefront-isolated-product-v4", "storefront-room-integration-v5", "storefront-room-local-integration-v6"].includes(render.engineVersions?.composite ?? "") ||
       !["storefront-scene-width-pose-v4", "storefront-scene-pose-v3", "storefront-manual-reference-v1"].includes(profile ?? "") ||
       typeof render.publicSessionId !== "string" || !render.publicSessionId.startsWith("storefront:") ||
       render.publicSessionId.length <= "storefront:".length || step?.status !== "completed") return null;

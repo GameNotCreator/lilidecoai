@@ -74,17 +74,24 @@ celui que le serveur composite.
    Une reprise ciblée est possible si le temps restant le permet ; deux
    éditions maximum. Aucun final n’est livré si le contrôle est indisponible.
 
-## Boutique publique : produits isolés
+## Boutique publique : insertion dans la pièce
 
-Les nouvelles admissions `storefront-room-integration-v5`, avec le prompt
-`storefront-room-integration-v9`, génèrent une photographie complète à partir de
-la pièce originale, d’un masque local de volume/contact, du guide et des photos
-catalogue. Le produit et son interaction avec le support sont générés ensemble.
+Les nouvelles admissions `storefront-room-local-integration-v6`, avec le prompt
+`storefront-room-local-integration-v10`, génèrent un extrait de la pièce à partir
+de la photo originale, d’un masque local de volume/contact, du guide et des photos
+catalogue. Photo, masque et guide sont recadrés avec la même fenêtre, sans
+redimensionnement préalable. Les points d’appui sont traduits dans ce repère
+local puis dans le cadre avec marges. Le produit et son interaction avec le
+support sont générés ensemble avec davantage de pixels disponibles autour de
+l’emplacement. La géométrie du mobilier doit rester identique, y compris dans
+la zone autorisée ; seules les occlusions réellement dues au produit sont admises.
 Le site ne découpe ni ne redimensionne un sprite produit après la génération.
 Les pixels hors de la zone autorisée sont restaurés depuis la pièce ; le raster
 généré est aligné par une mise à l’échelle uniforme, jamais déformé. Les guides
 utilisent séparément largeur projetée et hauteur verticale. Une image transparente
-ou un aspect incohérent est refusé.
+ou un aspect incohérent est refusé. La version historique
+`storefront-room-integration-v5` / `storefront-room-integration-v9` conserve son
+édition dans le cadre complet pour les rendus déjà admis.
 
 Le contrôle `storefront-room-integration-review-v5` ajoute une preuve obligatoire
 `supportIntegration` à tous les critères précédents. Une belle texture, une base

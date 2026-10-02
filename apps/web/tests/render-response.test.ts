@@ -67,7 +67,7 @@ describe("render response contract after MongoDB storage", () => {
             secret: "must-not-leak", unrelatedAsset: "must-not-leak" } } },
       } as unknown as RenderDocument["execution"] };
   }
-  it.each(["storefront-isolated-product-v4", "storefront-room-integration-v5"])("references only the existing %s checkpoint without delivering a failed render", composite => {
+  it.each(["storefront-isolated-product-v4", "storefront-room-integration-v5", "storefront-room-local-integration-v6"])("references only the existing %s checkpoint without delivering a failed render", composite => {
     const render = isolatedRender();
     render.engineVersions!.composite = composite;
     const payload = renderResponse(persistedRender(render));

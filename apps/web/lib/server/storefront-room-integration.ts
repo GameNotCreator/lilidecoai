@@ -4,6 +4,22 @@ import type { StorefrontPerspectiveGuideObject } from "./storefront-perspective-
 
 export const STOREFRONT_ROOM_INTEGRATION_COMPOSITE_VERSION =
   "storefront-room-integration-v5";
+export const STOREFRONT_LOCAL_ROOM_INTEGRATION_COMPOSITE_VERSION =
+  "storefront-room-local-integration-v6";
+
+export interface StorefrontRoomIntegrationWindow {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+export interface StorefrontLocalRoomIntegration {
+  composition: SimpleComposition;
+  guide: Buffer;
+  /** Pixel coordinates in the oriented original room, before padding. */
+  window: StorefrontRoomIntegrationWindow;
+  originalFrame: { width: number; height: number };
+}
 
 const positive = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value) && value > 0;
@@ -145,4 +161,132 @@ export async function restoreRoomIntegrationBackground(
     }
   }
   return sharp(output, { raw: { width, height, channels: 3 } }).webp({ lossless: true }).toBuffer();
+}
+
+function editableBounds(composition: SimpleComposition) {
+  validateComposition(composition);
+  const { sceneWidth: width, sceneHeight: height, maskRaw } = composition;
+  if (!Buffer.isBuffer(maskRaw) || maskRaw.length !== width * height * 4) throw invalid();
+  let left = width, top = height, right = -1, bottom = -1;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const alpha = maskRaw[(y * width + x) * 4 + 3];
+      if (alpha !== 0 && alpha !== 255) throw invalid();
+      if (alpha !== 0) continue;
+      left = Math.min(left, x); right = Math.max(right, x);
+      top = Math.min(top, y); bottom = Math.max(bottom, y);
+    }
+  }
+  if (right < left || bottom < top) throw invalid();
+  return { left, top, right: right + 1, bottom: bottom + 1 };
+}
+
+function validateWindow(composition: SimpleComposition, window: StorefrontRoomIntegrationWindow) {
+  const bounds = editableBounds(composition);
+  if (!window || !Number.isSafeInteger(window.left) || window.left < 0 ||
+      !Number.isSafeInteger(window.top) || window.top < 0 ||
+      !dimension(window.width) || !dimension(window.height) ||
+      window.left + window.width > composition.sceneWidth ||
+      window.top + window.height > composition.sceneHeight ||
+      window.left > bounds.left || window.top > bounds.top ||
+      window.left + window.width < bounds.right || window.top + window.height < bounds.bottom) throw invalid();
+}
+
+async function cropRoomComposition(
+  composition: SimpleComposition,
+  window: StorefrontRoomIntegrationWindow,
+): Promise<SimpleComposition> {
+  validateWindow(composition, window);
+  const room = await sharp(composition.sceneWebp!, { limitInputPixels: 16_000_000 })
+    .removeAlpha().toColourspace("srgb").raw().toBuffer({ resolveWithObject: true });
+  if (room.info.width !== composition.sceneWidth || room.info.height !== composition.sceneHeight || room.info.channels !== 3) throw invalid();
+  const [photo, maskRaw] = await Promise.all([
+    sharp(room.data, { raw: { width: room.info.width, height: room.info.height, channels: 3 } })
+      .extract(window).webp({ lossless: true }).toBuffer(),
+    sharp(composition.maskRaw, { raw: { width: composition.sceneWidth, height: composition.sceneHeight, channels: 4 } })
+      .extract(window).raw().toBuffer(),
+  ]);
+  return {
+    ...composition, sceneWebp: photo, imageWebp: photo, baseWebp: photo, maskRaw,
+    sceneWidth: window.width, sceneHeight: window.height,
+    placements: composition.placements.map(placement => {
+      const visible = placement.visible;
+      const left = visible ? Math.max(window.left, visible.left) : 0;
+      const top = visible ? Math.max(window.top, visible.top) : 0;
+      const right = visible ? Math.min(window.left + window.width, visible.left + visible.width) : 0;
+      const bottom = visible ? Math.min(window.top + window.height, visible.top + visible.height) : 0;
+      return { ...placement, left: placement.left - window.left, top: placement.top - window.top,
+        baseX: placement.baseX - window.left, baseY: placement.baseY - window.top,
+        visible: visible && right > left && bottom > top
+          ? { left: left - window.left, top: top - window.top, width: right - left, height: bottom - top } : null };
+    }),
+    overlays: composition.overlays.map(overlay => ({ ...overlay,
+      left: overlay.left - window.left, top: overlay.top - window.top,
+      baseX: overlay.baseX - window.left, baseY: overlay.baseY - window.top })),
+  };
+}
+
+/** Crop room, allowed region and guide identically; pixels and camera are unchanged. */
+export async function localiseRoomIntegration(
+  composition: SimpleComposition,
+  objects: StorefrontPerspectiveGuideObject[],
+  guide: Buffer,
+): Promise<StorefrontLocalRoomIntegration> {
+  // Reuse V9's geometry validation without changing the caller's edit mask.
+  roomIntegrationEditComposition(composition, objects);
+  const bounds = editableBounds(composition);
+  if (!Buffer.isBuffer(guide) || !guide.length || guide.length > 32_000_000) throw invalid();
+  const metadata = await sharp(guide, { limitInputPixels: 16_000_000 }).metadata();
+  if (metadata.width !== composition.sceneWidth || metadata.height !== composition.sceneHeight ||
+      !["png", "jpeg", "webp"].includes(metadata.format ?? "") || (metadata.pages ?? 1) !== 1 ||
+      (metadata.orientation !== undefined && metadata.orientation !== 1)) throw invalid();
+  for (const object of objects) {
+    const x = Math.min(composition.sceneWidth - 1, Math.round(object.point.x * composition.sceneWidth));
+    const y = Math.min(composition.sceneHeight - 1, Math.round(object.point.y * composition.sceneHeight));
+    if (composition.maskRaw[(y * composition.sceneWidth + x) * 4 + 3] !== 0) throw invalid();
+  }
+  const extent = Math.max(...objects.flatMap(object => [
+    object.dimensionsCm.width * object.widthPixelsPerCm!,
+    object.dimensionsCm.height * object.pixelsPerCm,
+    object.dimensionsCm.depth * object.widthPixelsPerCm!,
+  ]));
+  const margin = Math.max(24, Math.ceil(extent * 0.6));
+  const left = Math.max(0, bounds.left - margin);
+  const top = Math.max(0, bounds.top - margin);
+  const right = Math.min(composition.sceneWidth, bounds.right + margin);
+  const bottom = Math.min(composition.sceneHeight, bounds.bottom + margin);
+  const window = { left, top, width: right - left, height: bottom - top };
+  const [localComposition, localGuide] = await Promise.all([
+    cropRoomComposition(composition, window),
+    sharp(guide, { limitInputPixels: 16_000_000 }).extract(window).webp({ lossless: true }).toBuffer(),
+  ]);
+  return { composition: localComposition, guide: localGuide, window,
+    originalFrame: { width: composition.sceneWidth, height: composition.sceneHeight } };
+}
+
+/** Reinsert the complete local scene edit; never rescale or re-stamp a product. */
+export async function restoreLocalRoomIntegrationBackground(
+  originalComposition: SimpleComposition,
+  window: StorefrontRoomIntegrationWindow,
+  paddedLocal: PaddedComposition,
+  generated: Buffer,
+): Promise<Buffer> {
+  const localComposition = await cropRoomComposition(originalComposition, window);
+  const localEdited = await restoreRoomIntegrationBackground(localComposition, paddedLocal, generated);
+  const [room, edited] = await Promise.all([
+    sharp(originalComposition.sceneWebp!).removeAlpha().toColourspace("srgb").raw().toBuffer(),
+    sharp(localEdited).removeAlpha().toColourspace("srgb").raw().toBuffer(),
+  ]);
+  const width = originalComposition.sceneWidth;
+  const output = Buffer.from(room);
+  for (let y = 0; y < window.height; y++) {
+    for (let x = 0; x < window.width; x++) {
+      const globalPixel = (y + window.top) * width + x + window.left;
+      if (originalComposition.maskRaw[globalPixel * 4 + 3] !== 0) continue;
+      const localOffset = (y * window.width + x) * 3;
+      edited.copy(output, globalPixel * 3, localOffset, localOffset + 3);
+    }
+  }
+  return sharp(output, { raw: { width, height: originalComposition.sceneHeight, channels: 3 } })
+    .webp({ lossless: true }).toBuffer();
 }

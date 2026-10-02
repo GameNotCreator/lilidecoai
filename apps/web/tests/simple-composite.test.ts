@@ -111,6 +111,37 @@ const standingOverlay = async (
   ...overrides,
 });
 
+describe("local-edit aspect padding", () => {
+  it("pads a near-matching local frame without resizing its room or mask and preserves the legacy tolerance", async () => {
+    const width = 201, height = 300;
+    const source = Buffer.alloc(width * height * 3);
+    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+      const offset = (y * width + x) * 3;
+      source.set([x % 256, y % 256, (x + y) % 256], offset);
+    }
+    const imageWebp = await sharp(source, { raw: { width, height, channels: 3 } })
+      .webp({ lossless: true }).toBuffer();
+    const maskRaw = Buffer.alloc(width * height * 4, 255);
+    maskRaw[(240 * width + 100) * 4 + 3] = 0;
+    const composition = { sceneWidth: width, sceneHeight: height, imageWebp,
+      baseWebp: imageWebp, sceneWebp: imageWebp, maskRaw, overlays: [] };
+    const legacy = await padCompositionForAspect(composition, "1024x1536");
+    expect(legacy).toMatchObject({ padded: false, paddedWidth: 201, paddedHeight: 300, offsetX: 0, offsetY: 0 });
+    expect(legacy.imageWebp).toBe(imageWebp);
+    expect(await padCompositionForAspect(composition, "1024x1536", { exactAspect: false })).toEqual(legacy);
+
+    const strict = await padCompositionForAspect(composition, "1024x1536", { exactAspect: true });
+    expect(strict).toMatchObject({ padded: true, paddedWidth: 201, paddedHeight: 302, offsetX: 0, offsetY: 1 });
+    expect(await sharp(strict.imageWebp).extract({ left: 0, top: 1, width, height }).removeAlpha().raw().toBuffer()).toEqual(source);
+    expect(await sharp(strict.maskPng).extract({ left: 0, top: 1, width, height }).raw().toBuffer()).toEqual(maskRaw);
+    const mask = await sharp(strict.maskPng).raw().toBuffer();
+    expect(mask.subarray(0, width * 4)).toEqual(Buffer.alloc(width * 4, 255));
+    expect(mask.subarray(301 * width * 4)).toEqual(Buffer.alloc(width * 4, 255));
+    expect(await pixelAt(strict.imageWebp, 100, 0)).toEqual({ r: 118, g: 118, b: 118 });
+    expect(await pixelAt(strict.imageWebp, 100, 301)).toEqual({ r: 118, g: 118, b: 118 });
+  });
+});
+
 describe("contact-light insertion", () => {
   const rightLighting = {
     lightDirection: "right" as const,

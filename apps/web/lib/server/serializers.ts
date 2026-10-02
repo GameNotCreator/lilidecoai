@@ -103,7 +103,7 @@ function isolatedProductStages(render: RenderDocument) {
   const existing = render.stages;
   if (existing?.model_output || render.status === "deleted" || render.status === "cancelled" ||
       !render.publicSessionId?.startsWith("storefront:") ||
-      !["storefront-isolated-product-v4", "storefront-room-integration-v5"].includes(render.engineVersions?.composite ?? "") ||
+      !["storefront-isolated-product-v4", "storefront-room-integration-v5", "storefront-room-local-integration-v6"].includes(render.engineVersions?.composite ?? "") ||
       render.engineVersions?.mockMode !== false) return existing;
   const step = render.execution?.steps["storefront-perspective-image"];
   if (step?.status !== "completed" || !step.output || typeof step.output !== "object") return existing;

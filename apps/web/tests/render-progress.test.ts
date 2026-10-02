@@ -319,4 +319,36 @@ describe("storefront source-photo placement progress", () => {
     expect(isStorefrontPlacementRender({ engineVersions: unresolved })).toBe(false);
     expect(renderProgress(input({ engineVersions: unresolved, placement: { pipelineStage: "generating_final" } })).steps[2]!.label).toBe("Lumière et ombres");
   });
+  it.each([
+    ["estimating_scale", ["active", "pending", "pending", "pending"]],
+    ["compositing", ["complete", "active", "pending", "pending"]],
+    ["generating_final", ["complete", "complete", "active", "pending"]],
+    ["checking_placement", ["complete", "complete", "complete", "active"]],
+    ["complete", ["complete", "complete", "complete", "complete"]],
+  ] as const)("recognizes V10 local room integration for the real server phase %s", (stage, states) => {
+    const resolved = { ...engineVersions, quality: "storefront-room-integration-review-v5",
+      composite: "storefront-room-local-integration-v6", prompt: "storefront-room-local-integration-v10", imageQuality: "high" };
+    const result = renderProgress(input({ engineVersions: resolved, placement: { pipelineStage: stage } }));
+    expect(isStorefrontPlacementRender({ engineVersions: resolved })).toBe(true);
+    expect(result.sourcePixelPlacement).toBe(false);
+    expect(result.steps.map(step => step.state)).toEqual(states);
+    expect(result.steps).toHaveLength(4);
+    expect(result.steps[2]!.label).toMatch(/perspective|intégration/i);
+    expect(`${result.title} ${result.detail}`).not.toMatch(/V10|sprite|alpha|storefront-room/);
+  });
+  it("keeps V10 review active at the deadline and leaves queued local edits pending", () => {
+    const resolved = { ...engineVersions, quality: "storefront-room-integration-review-v5",
+      composite: "storefront-room-local-integration-v6", prompt: "storefront-room-local-integration-v10" };
+    const render = input({ engineVersions: resolved, pipelineState: "quality_check",
+      placement: { pipelineStage: "generating_final" }, compositeUrl: "/api/assets/private-provisional",
+      execution: { version: "v1", deadlineAt: "2026-10-02T12:03:00Z", attempts: 1, retrying: false } });
+    expect(renderProgress(render).steps.map(step => step.state)).toEqual(["complete", "complete", "complete", "active"]);
+    expect(renderProgress(render).title).toContain("Vérification");
+    expect(renderTerminalAnnouncement(render.status)).toBe("");
+    const queued = renderProgress(input({ status: "queued", engineVersions: resolved, placement: { pipelineStage: "generating_final" } }));
+    expect(queued.steps.every(step => step.state === "pending")).toBe(true);
+    const unresolved = { ...resolved, quality: "unknown-review" };
+    expect(isStorefrontPlacementRender({ engineVersions: unresolved })).toBe(false);
+    expect(renderProgress(input({ engineVersions: unresolved, placement: { pipelineStage: "generating_final" } })).steps[2]!.label).toBe("Lumière et ombres");
+  });
 });

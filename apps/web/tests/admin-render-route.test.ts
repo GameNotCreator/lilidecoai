@@ -117,7 +117,7 @@ describe("merchant render diagnostics", () => {
     expect(body.sceneProjection).toBeNull();
   });
 
-  it.each(["storefront-isolated-product-v4", "storefront-room-integration-v5"])("exposes only bounded numeric projection evidence from a completed real %s checkpoint", async composite => {
+  it.each(["storefront-isolated-product-v4", "storefront-room-integration-v5", "storefront-room-local-integration-v6"])("exposes only bounded numeric projection evidence from a completed real %s checkpoint", async composite => {
     const render = realRender();
     render.engineVersions!.composite = composite;
     mocks.findOne.mockResolvedValue(render);

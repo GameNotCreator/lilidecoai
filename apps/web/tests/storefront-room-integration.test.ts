@@ -2,16 +2,186 @@ import { describe, expect, it } from "vitest";
 import sharp from "sharp";
 import { padCompositionForAspect, type SimpleComposition } from "../lib/server/simple-composite";
 import type { StorefrontPerspectiveGuideObject } from "../lib/server/storefront-perspective-guide";
+import { buildStorefrontPerspectiveGuide } from "../lib/server/storefront-perspective-guide";
 import {
   roomIntegrationEditComposition,
   restoreRoomIntegrationBackground,
   STOREFRONT_ROOM_INTEGRATION_COMPOSITE_VERSION,
+  STOREFRONT_LOCAL_ROOM_INTEGRATION_COMPOSITE_VERSION,
+  localiseRoomIntegration,
+  restoreLocalRoomIntegrationBackground,
 } from "../lib/server/storefront-room-integration";
 
 const object = (index = 0, x = 0.5, y = 0.8): StorefrontPerspectiveGuideObject => ({
   index, point: { x, y }, kind: "standing", dimensionsCm: { width: 10, height: 20, depth: 10 },
   pixelsPerCm: 2, widthPixelsPerCm: 3,
   pose: { cameraElevationDegrees: 30, cameraRollDegrees: 0 },
+});
+
+describe("storefront local-room integration", () => {
+  async function localFixture(objects: StorefrontPerspectiveGuideObject[] = [{ ...object(0, 0.2, 0.8), pixelsPerCm: 2.5 }]) {
+    const width = 400, height = 300;
+    const pixels = Buffer.alloc(width * height * 3);
+    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+      const offset = (y * width + x) * 3;
+      pixels[offset] = (x * 7 + y * 3) % 256; pixels[offset + 1] = x % 256; pixels[offset + 2] = y % 256;
+    }
+    const room = await sharp(pixels, { raw: { width, height, channels: 3 } }).webp({ lossless: true }).toBuffer();
+    const original = { ...await fixture(), sceneWebp: room, sceneWidth: width, sceneHeight: height,
+      maskRaw: Buffer.alloc(width * height * 4, 255) };
+    const composition = roomIntegrationEditComposition(original, objects);
+    const guide = await buildStorefrontPerspectiveGuide({ room, width, height, objects });
+    return { composition, objects, guide };
+  }
+
+  it("crops the room, guide and editable mask at the same original pixels with contextual room around the complete volume", async () => {
+    const { composition, objects, guide } = await localFixture();
+    const beforeRoom = Buffer.from(composition.sceneWebp!);
+    const beforeMask = Buffer.from(composition.maskRaw);
+    const local = await localiseRoomIntegration(composition, objects, guide);
+    expect(STOREFRONT_LOCAL_ROOM_INTEGRATION_COMPOSITE_VERSION).toBe("storefront-room-local-integration-v6");
+    expect(local.originalFrame).toEqual({ width: 400, height: 300 });
+    expect(local.window).toEqual({ left: 29, top: 139, width: 102, height: 137 });
+    expect(local.composition.sceneWidth).toBe(102);
+    expect(local.composition.sceneHeight).toBe(137);
+    expect(local.composition.imageWebp).toBe(local.composition.sceneWebp);
+    expect(local.composition.baseWebp).toBe(local.composition.sceneWebp);
+    const expectedRoom = await sharp(composition.sceneWebp!).extract(local.window).removeAlpha().raw().toBuffer();
+    const expectedGuide = await sharp(guide).extract(local.window).removeAlpha().raw().toBuffer();
+    expect(await sharp(local.composition.sceneWebp!).removeAlpha().raw().toBuffer()).toEqual(expectedRoom);
+    expect(await sharp(local.guide).removeAlpha().raw().toBuffer()).toEqual(expectedGuide);
+    const expectedMask = await sharp(composition.maskRaw, { raw: { width: 400, height: 300, channels: 4 } }).extract(local.window).raw().toBuffer();
+    expect(local.composition.maskRaw).toEqual(expectedMask);
+    expect(alpha(local.composition, 80 - local.window.left, 240 - local.window.top)).toBe(0);
+    expect(alpha(local.composition, 0, 0)).toBe(255);
+    expect(composition.sceneWebp).toEqual(beforeRoom);
+    expect(composition.maskRaw).toEqual(beforeMask);
+  });
+
+  it("includes every repeated-product placement in a three-object window, including contact shading and scene edges", async () => {
+    const { composition, objects, guide } = await localFixture([
+      { ...object(0, 0.1, 0.85), kind: "flat" },
+      { ...object(1, 0.5, 0.5), kind: "wall" },
+      object(2, 0.95, 0.98),
+    ]);
+    const local = await localiseRoomIntegration(composition, objects, guide);
+    expect(local.window.left).toBe(0);
+    expect(local.window.top).toBeGreaterThan(0);
+    expect(local.window.width).toBe(400);
+    expect(local.window.top + local.window.height).toBe(300);
+    for (let y = 0; y < 300; y++) for (let x = 0; x < 400; x++) {
+      if (alpha(composition, x, y) !== 0) continue;
+      expect(x).toBeGreaterThanOrEqual(local.window.left);
+      expect(x).toBeLessThan(local.window.left + local.window.width);
+      expect(y).toBeGreaterThanOrEqual(local.window.top);
+      expect(y).toBeLessThan(local.window.top + local.window.height);
+      expect(alpha(local.composition, x - local.window.left, y - local.window.top)).toBe(0);
+    }
+  });
+
+  it("translates placement metadata and anchors without changing shape, depth order or measurement scale", async () => {
+    const { composition, objects, guide } = await localFixture();
+    composition.placements = [{ objectIndex: 0, kind: "standing", left: 65, top: 190, widthPx: 30, heightPx: 50,
+      baseX: 80, baseY: 240, visible: { left: 65, top: 190, width: 30, height: 50 }, croppedByFrame: 0,
+      sizeFactor: 1, clamped: false, scaleSource: "vision", pixelsPerCm: 2.5, impliedWidthCm: 10,
+      impliedHeightCm: 20, dimensionConsistency: null, depthKey: 0.8, overlaps: false }];
+    const local = await localiseRoomIntegration(composition, objects, guide);
+    expect(local.composition.placements[0]).toMatchObject({ left: 36, top: 51, baseX: 51, baseY: 101,
+      widthPx: 30, heightPx: 50, pixelsPerCm: 2.5, depthKey: 0.8,
+      visible: { left: 36, top: 51, width: 30, height: 50 } });
+    expect(composition.placements[0]).toMatchObject({ left: 65, top: 190, baseX: 80, baseY: 240 });
+  });
+
+  it("keeps a complete full-frame window when edit regions already fill the photograph", async () => {
+    const { composition, objects, guide } = await localFixture();
+    composition.maskRaw = Buffer.alloc(400 * 300 * 4, 255);
+    for (let pixel = 0; pixel < 400 * 300; pixel++) composition.maskRaw[pixel * 4 + 3] = 0;
+    const local = await localiseRoomIntegration(composition, objects, guide);
+    expect(local.window).toEqual({ left: 0, top: 0, width: 400, height: 300 });
+    expect(await sharp(local.composition.sceneWebp!).raw().toBuffer()).toEqual(await sharp(composition.sceneWebp!).raw().toBuffer());
+  });
+
+  it("clamps normalized edge contacts to visible pixels and retains every edit and contact patch", async () => {
+    const { composition, objects, guide } = await localFixture([
+      object(0, 0, 1), object(1, 1, 1), { ...object(2, 0.5, 0), kind: "wall" },
+    ]);
+    const local = await localiseRoomIntegration(composition, objects, guide);
+    expect(local.window).toEqual({ left: 0, top: 0, width: 400, height: 300 });
+    const pixels = await sharp(local.guide).removeAlpha().raw().toBuffer();
+    for (const [x, y] of [[0, 299], [399, 299], [200, 0]]) {
+      expect(alpha(local.composition, x!, y!)).toBe(0);
+      expect(rgb(pixels, 400, x!, y!)).toEqual([229, 35, 43]);
+    }
+    expect(local.composition.maskRaw).toEqual(composition.maskRaw);
+  });
+
+  it("aligns a uniformly enlarged local edit and copies only global allowed RGB, preserving every other room pixel", async () => {
+    const { composition, objects, guide } = await localFixture();
+    const local = await localiseRoomIntegration(composition, objects, guide);
+    const padded = await padCompositionForAspect(local.composition, "1024x1536");
+    const generated = await sharp({ create: { width: padded.paddedWidth * 2, height: padded.paddedHeight * 2,
+      channels: 3, background: "#0099ee" } }).png().toBuffer();
+    const output = await restoreLocalRoomIntegrationBackground(composition, local.window, padded, generated);
+    expect(await sharp(output).metadata()).toMatchObject({ width: 400, height: 300, hasAlpha: false });
+    const pixels = await sharp(output).raw().toBuffer();
+    const room = await sharp(composition.sceneWebp!).raw().toBuffer();
+    expect(rgb(pixels, 400, 80, 210)).toEqual([0, 153, 238]);
+    expect(rgb(pixels, 400, 80, 241)).toEqual([0, 153, 238]);
+    const changedProtectedPixels: number[] = [];
+    for (let pixel = 0; pixel < 400 * 300; pixel++) {
+      if (composition.maskRaw[pixel * 4 + 3] === 0) continue;
+      const offset = pixel * 3;
+      if (pixels[offset] !== room[offset] || pixels[offset + 1] !== room[offset + 1] || pixels[offset + 2] !== room[offset + 2])
+        changedProtectedPixels.push(pixel);
+    }
+    expect(changedProtectedPixels).toEqual([]);
+  });
+
+  it("refuses transparent or wrong-aspect local outputs and windows that omit any global edit region", async () => {
+    const { composition, objects, guide } = await localFixture();
+    const local = await localiseRoomIntegration(composition, objects, guide);
+    const padded = await padCompositionForAspect(local.composition, "1024x1536");
+    const transparent = await sharp({ create: { width: padded.paddedWidth, height: padded.paddedHeight,
+      channels: 4, background: "#00000000" } }).png().toBuffer();
+    await expect(restoreLocalRoomIntegrationBackground(composition, local.window, padded, transparent)).rejects.toThrow("opaque");
+    const square = await sharp({ create: { width: 100, height: 100, channels: 3, background: "#abcdef" } }).png().toBuffer();
+    await expect(restoreLocalRoomIntegrationBackground(composition, local.window, padded, square)).rejects.toThrow();
+    await expect(restoreLocalRoomIntegrationBackground(composition, { left: 70, top: 200, width: 20, height: 20 }, padded, padded.imageWebp)).rejects.toThrow();
+    await expect(restoreLocalRoomIntegrationBackground(composition, { ...local.window, left: -1 }, padded, padded.imageWebp)).rejects.toThrow();
+  });
+
+  it("restores a native portrait response for a near-ratio local crop when exact padding is requested", async () => {
+    const width = 201, height = 300;
+    const room = await sharp({ create: { width, height, channels: 3, background: "#526578" } })
+      .webp({ lossless: true }).toBuffer();
+    const maskRaw = Buffer.alloc(width * height * 4, 255);
+    for (let y = 130; y <= 170; y++) for (let x = 80; x <= 120; x++) maskRaw[(y * width + x) * 4 + 3] = 0;
+    const composition = { ...await fixture(), sceneWidth: width, sceneHeight: height,
+      sceneWebp: room, imageWebp: room, baseWebp: room, maskRaw };
+    const window = { left: 0, top: 0, width, height };
+    const generated = await sharp({ create: { width: 1024, height: 1536, channels: 3, background: "#0099ee" } }).png().toBuffer();
+    const legacy = await padCompositionForAspect(composition, "1024x1536");
+    await expect(restoreLocalRoomIntegrationBackground(composition, window, legacy, generated)).rejects.toThrow();
+    const padded = await padCompositionForAspect(composition, "1024x1536", { exactAspect: true });
+    const output = await restoreLocalRoomIntegrationBackground(composition, window, padded, generated);
+    expect(await sharp(output).metadata()).toMatchObject({ width, height, hasAlpha: false });
+    const pixels = await sharp(output).raw().toBuffer();
+    expect(rgb(pixels, width, 100, 150)).toEqual([0, 153, 238]);
+    expect(rgb(pixels, width, 100, 0)).toEqual([82, 101, 120]);
+    expect(rgb(pixels, width, 100, 299)).toEqual([82, 101, 120]);
+  });
+
+  it("refuses missing/unreadable or mismatched guides, empty/bad masks and invalid objects locally", async () => {
+    const { composition, objects, guide } = await localFixture();
+    const wrongGuide = await sharp({ create: { width: 200, height: 300, channels: 3, background: "#abcdef" } }).webp().toBuffer();
+    for (const badGuide of [Buffer.alloc(0), Buffer.from("bad"), wrongGuide])
+      await expect(localiseRoomIntegration(composition, objects, badGuide)).rejects.toThrow();
+    await expect(localiseRoomIntegration({ ...composition, maskRaw: Buffer.alloc(400 * 300 * 4, 255) }, objects, guide)).rejects.toThrow();
+    const partialMask = Buffer.from(composition.maskRaw); partialMask[3] = 128;
+    await expect(localiseRoomIntegration({ ...composition, maskRaw: partialMask }, objects, guide)).rejects.toThrow();
+    await expect(localiseRoomIntegration(composition, [objects[0]!, objects[0]!], guide)).rejects.toThrow();
+    await expect(localiseRoomIntegration(composition, [{ ...objects[0]!, point: { x: 0.9, y: 0.1 } }], guide)).rejects.toThrow();
+  });
 });
 async function fixture(): Promise<SimpleComposition> {
   const room = await sharp({ create: { width: 160, height: 120, channels: 3, background: "#526578" } })
