@@ -1,4 +1,8 @@
-import { productSchema } from "@lili/types";
+import {
+  productSchema,
+  storefrontScaleReferenceSchema,
+  type StorefrontScaleReference,
+} from "@lili/types";
 import type { SimpleDimensionPair, SimplePlacementKind } from "@lili/geometry";
 import { z } from "zod";
 
@@ -35,6 +39,60 @@ export const storefrontCatalogSchema = z.object({
   }),
 });
 export type StorefrontCatalog = z.infer<typeof storefrontCatalogSchema>;
+/** Pure validation shared with the UI; the server recomputes from encoded pixels. */
+export function computeStorefrontReferenceScale(
+  value: unknown,
+  sceneWidth: number,
+  sceneHeight: number,
+  placementPoints: ReadonlyArray<{ x: number; y: number }> = [],
+): {
+  reference: StorefrontScaleReference;
+  pixelsPerCm: number;
+  referencePixels: number;
+} {
+  const parsed = storefrontScaleReferenceSchema.safeParse(value);
+  if (!parsed.success)
+    throw new Error(
+      "Indiquez une hauteur connue entre 2 et 300 cm et confirmez la même profondeur.",
+    );
+  if (![sceneWidth, sceneHeight].every((n) => Number.isFinite(n) && n > 0))
+    throw new Error("Les dimensions de la photo sont indisponibles.");
+  const reference = parsed.data;
+  const dx = (reference.topPoint.x - reference.basePoint.x) * sceneWidth;
+  const dy = (reference.basePoint.y - reference.topPoint.y) * sceneHeight;
+  const referencePixels = Math.hypot(dx, dy);
+  if (dy <= 0 || Math.abs(dx) > dy * Math.tan(Math.PI / 6))
+    throw new Error(
+      "Choisissez le bas puis le haut d’une hauteur verticale, sans mesurer le sol en profondeur.",
+    );
+  if (referencePixels < 40)
+    throw new Error(
+      "La référence est trop petite sur la photo. Choisissez une hauteur plus visible.",
+    );
+  const pixelsPerCm = referencePixels / reference.realHeightCm;
+  if (pixelsPerCm < 0.2 || pixelsPerCm > 200)
+    throw new Error(
+      "Cette mesure ne correspond pas à la photo. Vérifiez les points et la hauteur.",
+    );
+  if (
+    placementPoints.some(
+      (point) =>
+        ![point.x, point.y].every(
+          (n) => Number.isFinite(n) && n >= 0 && n <= 1,
+        ) ||
+        Math.abs(point.y - reference.basePoint.y) > 0.08 ||
+        Math.hypot(
+          (point.x - reference.basePoint.x) * sceneWidth,
+          (point.y - reference.basePoint.y) * sceneHeight,
+        ) >
+          0.25 * Math.max(sceneWidth, sceneHeight),
+    )
+  )
+    throw new Error(
+      "Placez les articles près du bas de la référence, à la même profondeur. Sinon, choisissez une autre référence.",
+    );
+  return { reference, pixelsPerCm, referencePixels };
+}
 export interface CartLine {
   productId: string;
   quantity: number;

@@ -44,7 +44,7 @@ test.beforeAll(async ({ request }, info) => {
 });
 
 for (const width of [320, 375, 430]) {
-  test(`mobile ${width}px: visualizer keeps all three steps and upload controls inside the screen`, async ({ page }) => {
+  test(`mobile ${width}px: visualizer keeps all four steps and upload controls inside the screen`, async ({ page }) => {
     test.skip(test.info().project.name !== "mobile", "Dedicated mobile viewport checks.");
     await page.setViewportSize({ width, height: 844 });
     await page.route("**/api/storefront/products", (route) => route.fulfill({
@@ -60,10 +60,11 @@ for (const width of [320, 375, 430]) {
     });
     await page.goto(`/visualiser?products=${demoProductId}`);
     const steps = page.getByRole("list", { name: "Étapes de visualisation" });
-    await expect(steps.getByRole("listitem")).toHaveCount(3);
-    await expect(steps).toContainText("Votre photo");
-    await expect(steps).toContainText("Les emplacements");
-    await expect(steps).toContainText("Votre visualisation");
+    await expect(steps.getByRole("listitem")).toHaveCount(4);
+    await expect(steps).toContainText("Photo");
+    await expect(steps).toContainText("Échelle");
+    await expect(steps).toContainText("Placement");
+    await expect(steps).toContainText("Résultat");
     await noHorizontalOverflow(page);
     for (const step of await steps.getByRole("listitem").all()) {
       await expect(step).toBeVisible();

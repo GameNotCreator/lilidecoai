@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "mongodb";
+import sharp from "sharp";
 import { mongoStore } from "./helpers/mongo-store";
 
 const mocks = vi.hoisted(() => ({
@@ -8,8 +9,13 @@ const mocks = vi.hoisted(() => ({
   render: vi.fn(),
   seed: vi.fn(),
   refill: vi.fn(),
+  readAsset: vi.fn(),
 }));
 vi.mock("server-only", () => ({}));
+vi.mock("../lib/server/assets", async (original) => ({
+  ...(await original<object>()),
+  readAsset: mocks.readAsset,
+}));
 vi.mock("../lib/server/seed", () => ({
   ensureDemoSeed: mocks.seed,
   ensureDemoCredits: mocks.refill,
@@ -107,6 +113,12 @@ function input(count = 1): RenderInput {
     workflow: "simple_point",
     placement: { productId, sceneId },
     idempotencyKey: "shop-1",
+    scaleReference: {
+      realHeightCm: 30,
+      basePoint: { x: 0.5, y: 0.7 },
+      topPoint: { x: 0.5, y: 0.6 },
+      sameDepthConfirmed: true,
+    },
     simplePlacements: Array.from({ length: count }, () => ({
       productId,
       placementPoint: { x: 0.5, y: 0.7 },
@@ -119,7 +131,7 @@ function input(count = 1): RenderInput {
     dimensionsCm: { width: 999, height: 999, depth: 999, unit: "cm" },
   };
 }
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks();
   serverConfig.aiMockMode = true;
   serverConfig.openaiApiKey = undefined;
@@ -134,6 +146,19 @@ beforeEach(() => {
     id: sceneId,
     organizationId: "org",
     publicSessionId: tenant.publicSessionId,
+    assetId: "scene-asset",
+    status: "uploaded",
+    expiresAt: new Date(Date.now() + 60_000),
+    // Deliberately wrong persisted dimensions: encoded pixels are authoritative.
+    widthPx: 1,
+    heightPx: 1,
+  });
+  mocks.readAsset.mockResolvedValue({
+    buffer: await sharp({
+      create: { width: 1000, height: 1500, channels: 3, background: "white" },
+    })
+      .webp()
+      .toBuffer(),
   });
   mocks.collections.mockReturnValue({
     products,
@@ -169,7 +194,20 @@ describe("public concept store boundary", () => {
     expect(renders.rows[0]).not.toHaveProperty("execution");
   });
   it("cannot replenish a production store through the old demo endpoints", async () => {
-    expect((await dispatchApi(new Request("http://test/v1/auth/signup", { method: "POST", body: JSON.stringify({ email: "new@example.com", password: "test-password-value" }) }), ["auth", "signup"])).status).toBe(403);
+    expect(
+      (
+        await dispatchApi(
+          new Request("http://test/v1/auth/signup", {
+            method: "POST",
+            body: JSON.stringify({
+              email: "new@example.com",
+              password: "test-password-value",
+            }),
+          }),
+          ["auth", "signup"],
+        )
+      ).status,
+    ).toBe(403);
     expect(
       (
         await dispatchApi(
@@ -263,28 +301,54 @@ describe("public concept store boundary", () => {
     const catalog = await getStorefrontCatalog(db);
     expect(catalog.products).toHaveLength(1);
     expect(catalog.products[0]?.visualizationAvailable).toBe(false);
-    await expect(normalizeStorefrontRender(db, tenant, input())).rejects.toThrow("indisponible");
+    await expect(
+      normalizeStorefrontRender(db, tenant, input()),
+    ).rejects.toThrow("indisponible");
     expect(mocks.render).not.toHaveBeenCalled();
   });
   it("applies a catalog veto even to an otherwise trusted legacy cutout without preparation tracking", async () => {
-    products.rows[0]!.visualizationBlockedReason = "Photo avec plante non incluse dans le produit";
+    products.rows[0]!.visualizationBlockedReason =
+      "Photo avec plante non incluse dans le produit";
     const catalog = await getStorefrontCatalog(db);
     expect(catalog.products).toHaveLength(1);
     expect(catalog.products[0]?.visualizationAvailable).toBe(false);
-    expect(catalog.products[0]).not.toHaveProperty("visualizationBlockedReason");
-    await expect(normalizeStorefrontRender(db, tenant, input())).rejects.toThrow("indisponible");
+    expect(catalog.products[0]).not.toHaveProperty(
+      "visualizationBlockedReason",
+    );
+    await expect(
+      normalizeStorefrontRender(db, tenant, input()),
+    ).rejects.toThrow("indisponible");
     expect(mocks.render).not.toHaveBeenCalled();
   });
   it.each([
     {},
-    { failure: { sourceAssetId: "image", detail: "Photo à reprendre", at: new Date() } },
-    { lease: { token: "preparing", sourceAssetId: "image", expiresAt: new Date(Date.now() + 60_000) } },
-  ])("blocks new visualization while a tracked preparation is not ready: %j", async (preparation) => {
-    products.rows[0]!.productPreparation = preparation;
-    expect((await getStorefrontCatalog(db)).products[0]?.visualizationAvailable).toBe(false);
-    await expect(normalizeStorefrontRender(db, tenant, input())).rejects.toThrow("indisponible");
-    expect(mocks.render).not.toHaveBeenCalled();
-  });
+    {
+      failure: {
+        sourceAssetId: "image",
+        detail: "Photo à reprendre",
+        at: new Date(),
+      },
+    },
+    {
+      lease: {
+        token: "preparing",
+        sourceAssetId: "image",
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    },
+  ])(
+    "blocks new visualization while a tracked preparation is not ready: %j",
+    async (preparation) => {
+      products.rows[0]!.productPreparation = preparation;
+      expect(
+        (await getStorefrontCatalog(db)).products[0]?.visualizationAvailable,
+      ).toBe(false);
+      await expect(
+        normalizeStorefrontRender(db, tenant, input()),
+      ).rejects.toThrow("indisponible");
+      expect(mocks.render).not.toHaveBeenCalled();
+    },
+  );
   it("uses catalogue dimensions and placement instead of client overrides", async () => {
     const normalized = await normalizeStorefrontRender(db, tenant, input(3));
     expect(normalized.simplePlacements).toHaveLength(3);
@@ -293,10 +357,64 @@ describe("public concept store boundary", () => {
       placementPoint: { x: 0.5, y: 0.7 },
       dimensionPair: { mode: "height_length", heightCm: 30, lengthCm: 20 },
       placementKind: "standing",
+      pixelsPerCm: expect.closeTo(5, 8),
     });
     expect(normalized).not.toHaveProperty("userInstructions");
     expect(normalized).not.toHaveProperty("dimensionsCm");
     expect(normalized.preserveBackground).toBe(true);
+  });
+  it("admits an estimated placement without a reference while dropping arbitrary client scale", async () => {
+    const request = input();
+    delete request.scaleReference;
+    const response = await dispatchApi(
+      new Request("http://test/v1/renders/final", {
+        method: "POST",
+        body: JSON.stringify(request),
+      }),
+      ["renders", "final"],
+    );
+    expect(response.status).toBe(201);
+    expect(mocks.render).toHaveBeenCalledOnce();
+    expect(mocks.render.mock.calls[0]?.[2]).not.toHaveProperty(
+      "scaleReference",
+    );
+    expect(
+      mocks.render.mock.calls[0]?.[2].simplePlacements[0],
+    ).not.toHaveProperty("pixelsPerCm");
+    expect(mocks.readAsset).not.toHaveBeenCalled();
+  });
+  it("refuses a reference on another depth, a horizontal measure and a reference too small", async () => {
+    for (const patch of [
+      { basePoint: { x: 0.5, y: 0.9 }, topPoint: { x: 0.5, y: 0.8 } },
+      { topPoint: { x: 0.7, y: 0.7 } },
+      { topPoint: { x: 0.5, y: 0.699 } },
+    ])
+      await expect(
+        normalizeStorefrontRender(db, tenant, {
+          ...input(),
+          scaleReference: { ...input().scaleReference!, ...patch },
+        }),
+      ).rejects.toThrow();
+    expect(mocks.render).not.toHaveBeenCalled();
+  });
+  it("uses EXIF-oriented encoded dimensions instead of a forged client scale or scene width", async () => {
+    const rotated = await sharp({
+      create: { width: 1500, height: 1000, channels: 3, background: "white" },
+    })
+      .jpeg()
+      .withMetadata({ orientation: 6 })
+      .toBuffer();
+    mocks.readAsset.mockResolvedValue({ buffer: rotated });
+    const normalized = await normalizeStorefrontRender(db, tenant, input());
+    expect(normalized.simplePlacements?.[0]?.pixelsPerCm).toBeCloseTo(5);
+    expect(normalized.scaleReference).toEqual(input().scaleReference);
+  });
+  it("does not read another visitor's scene bytes while normalizing a reference", async () => {
+    scenes.rows[0]!.publicSessionId = "storefront:other";
+    await expect(
+      normalizeStorefrontRender(db, tenant, input()),
+    ).rejects.toThrow("photo");
+    expect(mocks.readAsset).not.toHaveBeenCalled();
   });
   it.each([0, 4])("rejects %i items", async (count) => {
     await expect(
@@ -364,14 +482,52 @@ describe("public concept store boundary", () => {
     null,
     { organizationId: "org", balance: 0 },
     { organizationId: "org", balance: -1 },
-    { organizationId: "org", balance: 0, reserved: 1, holds: [{ key: "render:in-flight" }] },
+    {
+      organizationId: "org",
+      balance: 0,
+      reserved: 1,
+      holds: [{ key: "render:in-flight" }],
+    },
     { organizationId: "other", balance: 100 },
-  ])("refuses an unfunded real shop request before admission without spending or replenishing: %j", async (wallet) => {
+  ])(
+    "refuses an unfunded real shop request before admission without spending or replenishing: %j",
+    async (wallet) => {
+      serverConfig.aiMockMode = false;
+      serverConfig.openaiApiKey = "test-configuration-only";
+      if (wallet) wallets.rows.push(wallet);
+      const walletBefore = structuredClone(wallets.rows);
+      const lookup = vi.spyOn(wallets, "findOne");
+      const response = await dispatchApi(
+        new Request("http://test/v1/renders/final", {
+          method: "POST",
+          body: JSON.stringify(input()),
+        }),
+        ["renders", "final"],
+      );
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({
+        detail: STOREFRONT_BUDGET_UNAVAILABLE_MESSAGE,
+      });
+      expect(lookup).toHaveBeenCalledWith({
+        organizationId: "org",
+        balance: { $gte: 1 },
+      });
+      expect(mocks.render).not.toHaveBeenCalled();
+      expect(renders.rows).toEqual([]);
+      expect(wallets.rows).toEqual(walletBefore);
+      expect(mocks.seed).not.toHaveBeenCalled();
+      expect(mocks.refill).not.toHaveBeenCalled();
+    },
+  );
+  it("admits a funded real shop request without consuming the worker's reservation", async () => {
     serverConfig.aiMockMode = false;
     serverConfig.openaiApiKey = "test-configuration-only";
-    if (wallet) wallets.rows.push(wallet);
-    const walletBefore = structuredClone(wallets.rows);
-    const lookup = vi.spyOn(wallets, "findOne");
+    wallets.rows.push({
+      organizationId: "org",
+      balance: 1,
+      reserved: 0,
+      holds: [],
+    });
     const response = await dispatchApi(
       new Request("http://test/v1/renders/final", {
         method: "POST",
@@ -379,28 +535,11 @@ describe("public concept store boundary", () => {
       }),
       ["renders", "final"],
     );
-    expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ detail: STOREFRONT_BUDGET_UNAVAILABLE_MESSAGE });
-    expect(lookup).toHaveBeenCalledWith({ organizationId: "org", balance: { $gte: 1 } });
-    expect(mocks.render).not.toHaveBeenCalled();
-    expect(renders.rows).toEqual([]);
-    expect(wallets.rows).toEqual(walletBefore);
-    expect(mocks.seed).not.toHaveBeenCalled();
-    expect(mocks.refill).not.toHaveBeenCalled();
-  });
-  it("admits a funded real shop request without consuming the worker's reservation", async () => {
-    serverConfig.aiMockMode = false;
-    serverConfig.openaiApiKey = "test-configuration-only";
-    wallets.rows.push({ organizationId: "org", balance: 1, reserved: 0, holds: [] });
-    const response = await dispatchApi(
-      new Request("http://test/v1/renders/final", {
-        method: "POST", body: JSON.stringify(input()),
-      }),
-      ["renders", "final"],
-    );
     expect(response.status).toBe(201);
     expect(mocks.render).toHaveBeenCalledOnce();
-    expect(wallets.rows).toEqual([{ organizationId: "org", balance: 1, reserved: 0, holds: [] }]);
+    expect(wallets.rows).toEqual([
+      { organizationId: "org", balance: 1, reserved: 0, holds: [] },
+    ]);
   });
   it("recovers an admitted real shop request even after the wallet is empty and its product archived", async () => {
     serverConfig.aiMockMode = false;
@@ -409,14 +548,20 @@ describe("public concept store boundary", () => {
     const lookup = vi.spyOn(wallets, "findOne");
     const renderId = "00000000-0000-4000-8000-000000000030";
     renders.rows.push({
-      id: renderId, organizationId: "org", publicSessionId: "storefront:a",
-      engine: "legacy", idempotencyKey: "shop-1", status: "queued",
-      createdAt: new Date(), placement: { sceneId, productId },
+      id: renderId,
+      organizationId: "org",
+      publicSessionId: "storefront:a",
+      engine: "legacy",
+      idempotencyKey: "shop-1",
+      status: "queued",
+      createdAt: new Date(),
+      placement: { sceneId, productId },
     });
     products.rows[0]!.status = "archived";
     const response = await dispatchApi(
       new Request("http://test/v1/renders/final", {
-        method: "POST", body: JSON.stringify(input()),
+        method: "POST",
+        body: JSON.stringify(input()),
       }),
       ["renders", "final"],
     );
@@ -431,8 +576,11 @@ describe("public concept store boundary", () => {
     serverConfig.openaiApiKey = "test-configuration-only";
     wallets.rows.push({ organizationId: "org", balance: 0 });
     renders.rows.push({
-      id: "old", organizationId: "org", publicSessionId: "storefront:a",
-      engine: "legacy", status: "failed",
+      id: "old",
+      organizationId: "org",
+      publicSessionId: "storefront:a",
+      engine: "legacy",
+      status: "failed",
       requestSnapshot: { version: 1, input: input() },
     });
     const rendersBefore = structuredClone(renders.rows);
@@ -441,7 +589,9 @@ describe("public concept store boundary", () => {
       ["renders", "old", "retry"],
     );
     expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ detail: STOREFRONT_BUDGET_UNAVAILABLE_MESSAGE });
+    expect(await response.json()).toEqual({
+      detail: STOREFRONT_BUDGET_UNAVAILABLE_MESSAGE,
+    });
     expect(mocks.render).not.toHaveBeenCalled();
     expect(renders.rows).toEqual(rendersBefore);
     expect(wallets.rows).toEqual([{ organizationId: "org", balance: 0 }]);

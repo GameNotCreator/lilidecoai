@@ -43,6 +43,14 @@ export const normalizedPointSchema = z.object({
   x: z.number().finite().min(0).max(1),
   y: z.number().finite().min(0).max(1),
 });
+/** A customer-supplied height visible on the same support/depth as the product. */
+export const storefrontScaleReferenceSchema = z.object({
+  realHeightCm: z.number().finite().min(2).max(300),
+  basePoint: normalizedPointSchema,
+  topPoint: normalizedPointSchema,
+  sameDepthConfirmed: z.literal(true),
+}).strict();
+export type StorefrontScaleReference = z.infer<typeof storefrontScaleReferenceSchema>;
 const dimensionValueCmSchema = z.number().finite().positive().max(1_500);
 const dimensionReferenceSchema = z.object({
   axis: z.enum(["width", "height"]),
@@ -120,6 +128,7 @@ export const renderRequestSchema = z
   .object({
     engine: renderEngineSchema.optional(),
     spatialReference: spatialReferenceSchema.optional(),
+    scaleReference: storefrontScaleReferenceSchema.optional(),
     workflow: z.enum(["standard", "simple_point"]).default("standard"),
     mode: renderModeSchema.default("insert"),
     placement: z.object({

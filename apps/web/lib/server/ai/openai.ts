@@ -9,6 +9,7 @@ import type {
 } from "@lili/ai-router";
 
 import { serverConfig } from "../config";
+import { durableAbortSignal } from "../durable-context";
 import {
   imageCostAllowance,
   imageQualityForModel,
@@ -127,7 +128,7 @@ export class OpenAIImageProvider
           "Idempotency-Key": request.idempotencyKey,
         },
         body,
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: durableAbortSignal(AbortSignal.timeout(timeoutMs)),
       });
     } catch (reason) {
       const timeout =

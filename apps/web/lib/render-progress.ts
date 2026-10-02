@@ -13,11 +13,19 @@ export const STOREFRONT_PLACEMENT_PROGRESS_STEPS = [
   "Vérification du placement",
 ] as const;
 
+export const STOREFRONT_PERSPECTIVE_PROGRESS_STEPS = [
+  "Lecture de l’intérieur",
+  "Placement des objets",
+  "Adaptation de la perspective",
+  "Vérification du placement",
+] as const;
+
 /** This is the server-resolved quality contract, never a client preference. */
 export function isStorefrontPlacementRender(
   render: Pick<Render, "engineVersions">,
 ): boolean {
-  return render.engineVersions?.quality === "storefront-placement-review-v1";
+  return render.engineVersions?.quality === "storefront-placement-review-v1" ||
+    render.engineVersions?.quality === "storefront-realistic-placement-v2";
 }
 
 export function renderTerminalAnnouncement(
@@ -217,10 +225,26 @@ const placementStageCopy: Record<string, StageCopy> = {
   complete: { ...stageCopy.complete!, phase: 3 },
 };
 
+const perspectiveStageCopy: Record<string, StageCopy> = {
+  ...placementStageCopy,
+  generating_final: {
+    title: "Adaptation de la perspective",
+    detail: "L’orientation des objets est adaptée à votre photo en conservant leur apparence et leur emplacement.",
+    phase: 2,
+  },
+  checking_placement: {
+    ...placementStageCopy.checking_placement!, phase: 3,
+  },
+  quality_check: { ...placementStageCopy.quality_check!, phase: 3 },
+  completed: { ...stageCopy.completed!, phase: 4 },
+  complete: { ...stageCopy.complete!, phase: 4 },
+};
+
 /** Progress comes exclusively from server evidence, never elapsed time. */
 export function renderProgress(render: ProgressInput) {
-  const sourcePixelPlacement = isStorefrontPlacementRender(render);
-  const copies = sourcePixelPlacement ? placementStageCopy : stageCopy;
+  const sourcePixelPlacement = render.engineVersions?.quality === "storefront-placement-review-v1";
+  const perspectivePlacement = render.engineVersions?.quality === "storefront-realistic-placement-v2";
+  const copies = perspectivePlacement ? perspectiveStageCopy : sourcePixelPlacement ? placementStageCopy : stageCopy;
   const placementStage =
     typeof render.placement?.pipelineStage === "string"
       ? render.placement.pipelineStage
@@ -257,7 +281,9 @@ export function renderProgress(render: ProgressInput) {
     queued,
     retrying,
     sourcePixelPlacement,
-    steps: (sourcePixelPlacement
+    steps: (perspectivePlacement
+      ? STOREFRONT_PERSPECTIVE_PROGRESS_STEPS
+      : sourcePixelPlacement
       ? STOREFRONT_PLACEMENT_PROGRESS_STEPS
       : RENDER_PROGRESS_STEPS
     ).map((label, index) => ({

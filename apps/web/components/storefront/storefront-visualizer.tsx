@@ -31,6 +31,7 @@ import {
   productPlacementKind,
   safeStorefrontUrl,
   visualizationProblem,
+  computeStorefrontReferenceScale,
   type StorefrontProduct,
 } from "@/lib/storefront";
 import {
@@ -118,6 +119,16 @@ export function StorefrontVisualizer({
 function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
   const [consent, setConsent] = useState(false);
   const [scene, setScene] = useState<Scene | null>(null);
+  const [sceneImageReady, setSceneImageReady] = useState(false);
+  const [referenceBase, setReferenceBase] = useState<Point | null>(null);
+  const [referenceTop, setReferenceTop] = useState<Point | null>(null);
+  const [referenceHeight, setReferenceHeight] = useState("");
+  const [sameDepth, setSameDepth] = useState(false);
+  const [referenceReady, setReferenceReady] = useState(false);
+  const [useMeasurement, setUseMeasurement] = useState(false);
+  const [referenceTarget, setReferenceTarget] = useState<"base" | "top">(
+    "base",
+  );
   const [points, setPoints] = useState<Array<Point | null>>(() =>
     products.map(() => null),
   );
@@ -140,7 +151,16 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
   const renderedId = pending(render) ? render!.id : null;
   const frozen = Boolean(busy || render || uncertain);
   const allPlaced = points.length === products.length && points.every(Boolean);
-  const step = render ? 3 : scene ? 2 : 1;
+  const step = render ? 4 : !scene ? 1 : referenceReady ? 3 : 2;
+  const scaleReference =
+    referenceBase && referenceTop
+      ? {
+          realHeightCm: Number(referenceHeight.replace(",", ".")),
+          basePoint: referenceBase,
+          topPoint: referenceTop,
+          sameDepthConfirmed: sameDepth,
+        }
+      : null;
   const activeProduct = products[activeIndex] ?? products[0]!;
   const units = useMemo(
     () =>
@@ -198,6 +218,14 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
         await storefrontApi("/v1/scenes", { method: "POST", body: form }),
       );
       setScene(uploaded);
+      setSceneImageReady(false);
+      setReferenceBase(null);
+      setReferenceTop(null);
+      setReferenceHeight("");
+      setSameDepth(false);
+      setReferenceReady(false);
+      setUseMeasurement(false);
+      setReferenceTarget("base");
       setPoints(products.map(() => null));
       setActiveIndex(0);
       pendingBody.current = null;
@@ -214,6 +242,31 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
   }
   function choosePoint(point: Point) {
     if (frozen) return;
+    if (!referenceReady) {
+      if (referenceTarget === "base") {
+        setReferenceBase(point);
+        setReferenceTarget("top");
+      } else setReferenceTop(point);
+      setError("");
+      return;
+    }
+    if (scene && useMeasurement) {
+      try {
+        computeStorefrontReferenceScale(
+          scaleReference,
+          scene.widthPx,
+          scene.heightPx,
+          [point],
+        );
+      } catch (reason) {
+        setError(
+          reason instanceof Error
+            ? reason.message
+            : "Gardez l’article près de votre référence.",
+        );
+        return;
+      }
+    }
     const next = [...points];
     next[activeIndex] = point;
     setPoints(next);
@@ -237,7 +290,30 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
     if (point) choosePoint(point);
   }
   async function generate() {
-    if (!scene || !allPlaced || requestLock.current || render) return;
+    if (
+      !scene ||
+      !referenceReady ||
+      !allPlaced ||
+      requestLock.current ||
+      render
+    )
+      return;
+    try {
+      if (useMeasurement)
+        computeStorefrontReferenceScale(
+          scaleReference,
+          scene.widthPx,
+          scene.heightPx,
+          points.filter((point): point is Point => !!point),
+        );
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Vérifiez la référence de hauteur.",
+      );
+      return;
+    }
     requestLock.current = true;
     setBusy(
       uncertain
@@ -259,6 +335,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
         engine: "legacy",
         workflow: "simple_point",
         mode: "insert",
+        ...(useMeasurement ? { scaleReference } : {}),
         simplePlacements: products.map((product, index) => ({
           productId: product.id,
           placementPoint: points[index],
@@ -347,18 +424,16 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
   return (
     <>
       <ol className="store-steps" aria-label="Étapes de visualisation">
-        {["Votre photo", "Les emplacements", "Votre visualisation"].map(
-          (label, i) => (
-            <li
-              key={label}
-              aria-current={step === i + 1 ? "step" : undefined}
-              data-complete={step > i + 1}
-            >
-              <span>{step > i + 1 ? <Check size={16} /> : `0${i + 1}`}</span>
-              {label}
-            </li>
-          ),
-        )}
+        {["Photo", "Échelle", "Placement", "Résultat"].map((label, i) => (
+          <li
+            key={label}
+            aria-current={step === i + 1 ? "step" : undefined}
+            data-complete={step > i + 1}
+          >
+            <span>{step > i + 1 ? <Check size={16} /> : `0${i + 1}`}</span>
+            {label}
+          </li>
+        ))}
       </ol>
       <div className="store-visual-layout">
         <aside className="store-selection">
@@ -370,7 +445,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
             <button
               className="store-selected-unit"
               key={key}
-              disabled={frozen || !scene}
+              disabled={frozen || !scene || !referenceReady}
               aria-pressed={activeIndex === index && !render}
               onClick={() => {
                 setActiveIndex(index);
@@ -395,13 +470,13 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
             </button>
           ))}
           <p className="store-small-note">
-            Les dimensions du catalogue sont conservées. La perspective et
-            l’échelle de la photo restent estimées ; cette visualisation ne
-            remplace pas une vérification des mesures chez vous.
+            Les dimensions du catalogue sont conservées. La taille dans votre
+            photo est estimée. Vous pouvez ajouter un repère de hauteur pour
+            l’affiner.
           </p>
         </aside>
         <section className="store-workspace" aria-label="Votre intérieur">
-          {error && (
+          {error && (!scene || referenceReady || render) && (
             <p role="alert" className="store-error">
               {error}
             </p>
@@ -415,7 +490,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
               <h2>Montrez-nous votre intérieur.</h2>
               <p>
                 Prenez une photo bien éclairée, avec le sol ou le support
-                visible. Gardez un peu d’espace autour du futur emplacement.
+                visible. Gardez de l’espace autour du futur emplacement.
               </p>
               <label className="store-consent">
                 <input
@@ -563,17 +638,27 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
               <div className="store-workspace-heading">
                 <div>
                   <p className="store-kicker">
-                    POINT {activeIndex + 1} · {activeProduct.name}
+                    {referenceReady
+                      ? `POINT ${activeIndex + 1} · ${activeProduct.name}`
+                      : "LA TAILLE DANS VOTRE PIÈCE"}
                   </p>
                   <h2>
-                    {allPlaced
-                      ? "Chaque pièce a sa place."
-                      : "Où l’imaginez-vous ?"}
+                    {!referenceReady
+                      ? "Affiner la taille, si vous le souhaitez."
+                      : allPlaced
+                        ? "Chaque pièce a sa place."
+                        : "Où l’imaginez-vous ?"}
                   </h2>
                   <p>
-                    {productPlacementKind(activeProduct) === "standing"
-                      ? "Touchez le point où la base de cet article touchera le sol ou le meuble."
-                      : "Touchez le centre de l’emplacement souhaité."}
+                    {!referenceReady
+                      ? referenceTarget === "base"
+                        ? "Vous pouvez continuer avec une taille estimée. Si vous connaissez une hauteur dans la pièce, indiquez son bas puis son sommet pour affiner l’échelle."
+                        : "Touchez maintenant le sommet de cet objet, puis indiquez sa hauteur."
+                      : productPlacementKind(activeProduct) === "standing"
+                        ? useMeasurement
+                          ? "Touchez le point où la base de cet article touchera le sol ou le meuble, à la même profondeur que votre référence."
+                          : "Touchez le point où la base de cet article touchera le sol ou le meuble."
+                        : "Touchez le centre de l’emplacement souhaité."}
                   </p>
                 </div>
                 <button
@@ -596,12 +681,56 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
                   }}
                 />
               </div>
+              {!referenceReady && (
+                <button
+                  type="button"
+                  className="btn min-h-11 h-auto w-full whitespace-normal mb-4"
+                  disabled={frozen}
+                  onClick={() => {
+                    setUseMeasurement(false);
+                    setReferenceReady(true);
+                    setError("");
+                    frame.current?.focus();
+                  }}
+                >
+                  Continuer avec une échelle estimée
+                </button>
+              )}
+              {!referenceReady && (
+                <div className="flex flex-col gap-2 sm:flex-row mb-4">
+                  <button
+                    type="button"
+                    className="btn min-h-11 h-auto whitespace-normal"
+                    aria-pressed={referenceTarget === "base"}
+                    disabled={frozen}
+                    onClick={() => setReferenceTarget("base")}
+                  >
+                    {referenceBase ? "Modifier le bas" : "1. Choisir le bas"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn min-h-11 h-auto whitespace-normal"
+                    aria-pressed={referenceTarget === "top"}
+                    disabled={frozen}
+                    onClick={() => setReferenceTarget("top")}
+                  >
+                    {referenceTop
+                      ? "Modifier le sommet"
+                      : "2. Choisir le sommet"}
+                  </button>
+                </div>
+              )}
               <button
                 ref={frame}
                 className="store-placement-frame"
+                style={{ aspectRatio: `${scene.widthPx} / ${scene.heightPx}` }}
                 onClick={tap}
-                disabled={frozen}
-                aria-label={`Placer ${activeProduct.name} sur la photo. Au clavier, utilisez les flèches puis Entrée.`}
+                disabled={frozen || !sceneImageReady}
+                aria-label={
+                  referenceReady
+                    ? `Placer ${activeProduct.name} sur la photo. Au clavier, utilisez les flèches puis Entrée.`
+                    : `Choisir ${referenceTarget === "base" ? "le bas" : "le sommet"} de la référence sur la photo. Au clavier, utilisez les flèches puis Entrée.`
+                }
                 onKeyDown={(event) => {
                   if (
                     frozen ||
@@ -645,9 +774,53 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={scene.imageUrl}
-                  alt="Votre pièce : choisissez les emplacements de votre sélection"
+                  alt={
+                    referenceReady
+                      ? "Votre pièce : choisissez les emplacements de votre sélection"
+                      : "Votre pièce : indiquez les extrémités d’une hauteur connue"
+                  }
                   draggable={false}
+                  onLoad={() => setSceneImageReady(true)}
                 />
+                {referenceBase &&
+                  referenceTop &&
+                  (!referenceReady || useMeasurement) && (
+                    <svg
+                      aria-hidden="true"
+                      viewBox={`0 0 ${scene.widthPx} ${scene.heightPx}`}
+                      className="absolute inset-0 h-full w-full pointer-events-none text-primary"
+                    >
+                      <line
+                        x1={referenceBase.x * scene.widthPx}
+                        y1={referenceBase.y * scene.heightPx}
+                        x2={referenceTop.x * scene.widthPx}
+                        y2={referenceTop.y * scene.heightPx}
+                        stroke="currentColor"
+                        strokeWidth={Math.max(scene.widthPx / 250, 3)}
+                        strokeDasharray="12 8"
+                      />
+                    </svg>
+                  )}
+                {[
+                  { point: referenceBase, label: "B" },
+                  { point: referenceTop, label: "H" },
+                ].map(
+                  ({ point, label }) =>
+                    point &&
+                    (!referenceReady || useMeasurement) && (
+                      <span
+                        key={label}
+                        className="store-placement-pin"
+                        style={{
+                          left: `${point.x * 100}%`,
+                          top: `${point.y * 100}%`,
+                        }}
+                        aria-hidden="true"
+                      >
+                        {label}
+                      </span>
+                    ),
+                )}
                 {points.map(
                   (point, index) =>
                     point && (
@@ -676,51 +849,160 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
                   <Plus size={20} />
                 </span>
               </button>
-              <div
-                className="store-placement-status"
-                role="status"
-                aria-live="polite"
-              >
-                <MapPin size={17} />
-                <span>
-                  {points.filter(Boolean).length} emplacement
-                  {points.filter(Boolean).length > 1 ? "s" : ""} choisi
-                  {points.filter(Boolean).length > 1 ? "s" : ""} sur{" "}
-                  {products.length}.
-                  {allPlaced
-                    ? " Vous pouvez encore les modifier en sélectionnant un article."
-                    : ` À présent : ${activeProduct.name}.`}
-                </span>
-              </div>
-              {allPlaced && (
-                <p className="store-scale-note">
-                  L’échelle sera estimée pendant la création de votre image. Les
-                  dimensions du catalogue restent inchangées ; le résultat sera
-                  une proposition approximative.
-                </p>
-              )}
-              <div className="store-generate-row">
-                <button
-                  className="store-text-link"
-                  disabled={frozen || !points.some(Boolean)}
-                  onClick={() => {
-                    setPoints(products.map(() => null));
-                    setActiveIndex(0);
-                    pendingBody.current = null;
+              {!referenceReady ? (
+                <form
+                  className="my-4 flex flex-col gap-4 min-w-0"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    try {
+                      computeStorefrontReferenceScale(
+                        scaleReference,
+                        scene.widthPx,
+                        scene.heightPx,
+                      );
+                      setReferenceReady(true);
+                      setUseMeasurement(true);
+                      setError("");
+                      frame.current?.focus();
+                    } catch (reason) {
+                      setError(
+                        reason instanceof Error
+                          ? reason.message
+                          : "Vérifiez votre référence.",
+                      );
+                    }
                   }}
                 >
-                  <RotateCcw size={16} />
-                  Replacer les articles
-                </button>
-                <button
-                  className="store-button"
-                  disabled={!allPlaced || !!busy}
-                  onClick={() => void generate()}
-                >
-                  <ScanLine size={18} />
-                  {uncertain ? "Vérifier ma demande" : "Créer ma visualisation"}
-                </button>
-              </div>
+                  {error && (
+                    <p
+                      role="alert"
+                      id="store-reference-error"
+                      className="store-error"
+                    >
+                      {error}
+                    </p>
+                  )}
+                  <label className="flex flex-col gap-2 min-w-0">
+                    <span>Hauteur réelle de votre référence (cm)</span>
+                    <input
+                      className="input min-h-11 w-full min-w-0 text-base"
+                      type="text"
+                      inputMode="decimal"
+                      required
+                      value={referenceHeight}
+                      disabled={frozen}
+                      aria-describedby={`store-reference-help${error ? " store-reference-error" : ""}`}
+                      onChange={(event) =>
+                        setReferenceHeight(event.target.value)
+                      }
+                      placeholder="Exemple : 30"
+                    />
+                  </label>
+                  <p
+                    id="store-reference-help"
+                    className="text-sm text-base-content/70"
+                  >
+                    Mesurez une hauteur verticale : une bouteille, une boîte ou
+                    un meuble dont vous connaissez la hauteur. Ne mesurez pas
+                    une longueur qui part vers le fond de la pièce.
+                  </p>
+                  <label className="flex gap-3 items-start min-h-11 py-2 cursor-pointer text-sm">
+                    <input
+                      type="checkbox"
+                      required
+                      className="mt-1 shrink-0 w-5 h-5 accent-primary"
+                      checked={sameDepth}
+                      disabled={frozen}
+                      onChange={(event) => setSameDepth(event.target.checked)}
+                    />
+                    <span>
+                      Ma référence repose sur le même sol ou meuble, près des
+                      articles à placer et à la même profondeur.
+                    </span>
+                  </label>
+                  <button
+                    className="btn min-h-11 h-auto whitespace-normal"
+                    type="submit"
+                    disabled={frozen || !referenceBase || !referenceTop}
+                  >
+                    Confirmer cette hauteur et placer les articles
+                  </button>
+                </form>
+              ) : (
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between my-4">
+                  <p className="text-sm">
+                    {useMeasurement
+                      ? `Repère de hauteur : ${referenceHeight} cm. Gardez les articles près du point B.`
+                      : "Taille estimée à partir de votre photo."}
+                  </p>
+                  <button
+                    type="button"
+                    className="store-text-link min-h-11"
+                    disabled={frozen}
+                    onClick={() => {
+                      setReferenceReady(false);
+                      setPoints(products.map(() => null));
+                      setActiveIndex(0);
+                      pendingBody.current = null;
+                    }}
+                  >
+                    {useMeasurement
+                      ? "Modifier le repère"
+                      : "Ajouter un repère de hauteur"}
+                  </button>
+                </div>
+              )}
+              {referenceReady && (
+                <>
+                  <div
+                    className="store-placement-status"
+                    role="status"
+                    aria-live="polite"
+                  >
+                    <MapPin size={17} />
+                    <span>
+                      {points.filter(Boolean).length} emplacement
+                      {points.filter(Boolean).length > 1 ? "s" : ""} choisi
+                      {points.filter(Boolean).length > 1 ? "s" : ""} sur{" "}
+                      {products.length}.
+                      {allPlaced
+                        ? " Vous pouvez encore les modifier en sélectionnant un article."
+                        : ` À présent : ${activeProduct.name}.`}
+                    </span>
+                  </div>
+                  {allPlaced && (
+                    <p className="store-scale-note">
+                      {useMeasurement
+                        ? "Votre repère de hauteur sera utilisé avec les dimensions du catalogue. Les articles doivent rester à la même profondeur que ce repère."
+                        : "Taille estimée. Vérifiez l’espace disponible avant votre achat."}
+                    </p>
+                  )}
+                  <div className="store-generate-row">
+                    <button
+                      className="store-text-link"
+                      disabled={frozen || !points.some(Boolean)}
+                      onClick={() => {
+                        setPoints(products.map(() => null));
+                        setActiveIndex(0);
+                        pendingBody.current = null;
+                      }}
+                    >
+                      <RotateCcw size={16} />
+                      Replacer les articles
+                    </button>
+                    <button
+                      className="store-button"
+                      disabled={!allPlaced || !!busy}
+                      onClick={() => void generate()}
+                    >
+                      <ScanLine size={18} />
+                      {uncertain
+                        ? "Vérifier ma demande"
+                        : "Créer ma visualisation"}
+                    </button>
+                  </div>
+                </>
+              )}
             </>
           )}
           {busy && (

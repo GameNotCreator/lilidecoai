@@ -20,7 +20,7 @@ const mocks = vi.hoisted(() => ({
     openaiModel: "test-image",
     openaiBaseUrl: "https://invalid.test/v1",
     openaiQuality: "high",
-    openaiMaxCostUsd: 1,
+    openaiMaxCostUsd: 2,
   },
 }));
 vi.mock("server-only", () => ({}));
@@ -193,6 +193,7 @@ beforeEach(async () => {
     images: [{ data: input.composition, mimeType: "image/webp" }],
     safety: { blocked: false },
   }));
+  vi.mocked(getOrEstimateSceneScale).mockClear();
   const sceneBuffer = await sharp({
     create: { width: 400, height: 300, channels: 3, background: "#dddddd" },
   })
@@ -287,6 +288,15 @@ beforeEach(async () => {
       if (init.body instanceof FormData)
         return new Response("cleanup unavailable", { status: 502 });
       const payload = JSON.parse(String(init.body));
+      if (payload.text?.format?.name === "storefront_scene_preflight") {
+        if (inspectionFailure) throw new Error("offline");
+        return Response.json({ status: "completed", output: [{ type: "message", status: "completed", content: [{ type: "output_text", text: JSON.stringify({
+          points: request.simplePlacements!.map((_, index) => ({ index: index + 1, pixelsPerCm: 2.5,
+            supportKind: "floor", imageClear: true, clarityScore: 1, targetVisible: true, supportVisible: true,
+            obstacleAtPoint: obstacle, obstacleName: obstacle ? "old vase" : null,
+            obstacleBox: obstacle ? { xMin: 0, yMin: 0, xMax: 1, yMax: 1 } : null, evidence: "Sol libre et perspective lisible." })),
+        }) }] }] });
+      }
       if (payload.text?.format?.name === "scene_obstacle_inspection") {
         if (inspectionFailure) throw new Error("offline");
         return Response.json({
@@ -314,17 +324,21 @@ beforeEach(async () => {
           ],
         });
       }
-      if (payload.text?.format?.name === "storefront_placement_review") {
+      if (["storefront_placement_review", "storefront_realistic_placement_review"].includes(payload.text?.format?.name)) {
         reviewRequest = payload;
         reviewCalls++;
         if (qualityUnavailable) return new Response("offline", { status: 503 });
         const text = payload.input[1].content[0].text as string;
-        const placementData = JSON.parse(text.split("Placement contracts: ")[1]!.split(". Placement contracts in")[0]!) as Array<{ id: string; expectedBox: Record<string, number> }>;
+        const placementData = JSON.parse(text.split("Placement contracts: ")[1]!.split(". ")[0]!) as Array<{ id: string; expectedBox: Record<string, number>; placementPoint?: { x: number; y: number } }>;
+        const realistic = payload.text.format.name === "storefront_realistic_placement_review";
         const checks = ["present", "identity", "position", "scale", "perspective", "contact", "edges", "occlusion", "noDuplicate"];
         return Response.json({ status: "completed", output: [{ type: "message", status: "completed", content: [{ type: "output_text", text: JSON.stringify({
           accepted: true, score: 0.95, confidence: 0.95, photoUsable: passed(), backgroundPreserved: passed(), noUnrequestedProducts: passed(), feedback: "Placement conforme.",
-          products: placementData.map(({ id, expectedBox }) => ({ id, confidence: 0.95, observedBox: expectedBox, foregroundOccluded: false,
-            checks: Object.fromEntries(checks.map(name => [name, name === "identity" && reviewPayload.identityFailure ? { ...passed(), passed: false } : passed()])) })),
+          products: placementData.map(({ id, expectedBox, placementPoint }) => ({ id, confidence: 0.95, observedBox: expectedBox, foregroundOccluded: false,
+            ...(realistic ? { observedContact: placementPoint } : {}),
+            checks: { ...Object.fromEntries(checks.map(name => [name, name === "identity" && reviewPayload.identityFailure ? { ...passed(), passed: false } : passed()])),
+              ...(realistic ? { gravity: passed(), silhouetteComplete: passed(), photographicCoherence: reviewPayload.photographicFailure ? { ...passed(), passed: false } : passed(),
+                referenceScale: text.includes('"realHeightCm"') ? passed() : null } : {}) } })),
         }) }] }] });
       }
       const stage =
@@ -400,26 +414,31 @@ describe("restricted spatial admission", () => {
 });
 
 describe("simple render orchestration with offline providers", () => {
-  it("qualifies a new storefront placement once without image generation or a lighting claim", async () => {
+  it("qualifies a storefront perspective edit once with an optional reference and no second image generation", async () => {
     await scenes.updateOne({ id: "scene" }, { $set: { publicSessionId: "storefront:visitor-1" } });
     const result = await createRender(db, "org", request, "storefront:visitor-1");
-    expect(result).toMatchObject({ status: "succeeded", provider: "deterministic", attemptCount: 0,
-      qualityDecision: { status: "accepted", version: "storefront-placement-review-v1" },
-      engineVersions: { quality: "storefront-placement-review-v1", editModel: "deterministic-source-composite", imageQuality: "n/a" } });
-    expect(mocks.edit).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ status: "succeeded", provider: "openai", attemptCount: 1,
+      qualityDecision: { status: "accepted", version: "storefront-realistic-placement-v2" },
+      engineVersions: { quality: "storefront-realistic-placement-v2", editModel: "test-image", imageQuality: "medium", scaleEstimation: "storefront-scene-preflight-v1" } });
+    expect(mocks.edit).toHaveBeenCalledTimes(1);
+    const imageRequest = mocks.edit.mock.calls[0]![0];
+    expect(imageRequest).toMatchObject({ quality: "medium", preserveBackground: true });
+    expect(imageRequest.prompt).toContain("camera looks down");
+    expect(imageRequest.deadlineMs - Date.now()).toBeLessThanOrEqual(135_000);
     expect(reviewCalls).toBe(1);
     expect(preflightRequest).toBeNull();
     expect(attempts.rows.filter(row => row.stage === "storefront_placement_review")).toHaveLength(1);
-    expect(vi.mocked(getOrEstimateSceneScale).mock.calls[0]![4]).toMatchObject({ profile: "storefront-placement-v1" });
+    expect(getOrEstimateSceneScale).not.toHaveBeenCalled();
     expect(result.qualityChecks.every(check => !check.name.includes("lighting"))).toBe(true);
     expect(reviewRequest!.input[1]!.content.filter(entry => entry.type === "input_image")).toHaveLength(5);
   });
-  it.each(["identity", "unavailable"])("does not deliver or retry a fast storefront %s defect", async failure => {
+  it.each(["identity", "unavailable", "photographic"])("does not deliver or retry a storefront %s defect", async failure => {
     await scenes.updateOne({ id: "scene" }, { $set: { publicSessionId: "storefront:visitor-1" } });
     reviewPayload.identityFailure = failure === "identity";
     qualityUnavailable = failure === "unavailable";
+    reviewPayload.photographicFailure = failure === "photographic";
     await expect(createRender(db, "org", request, "storefront:visitor-1")).rejects.toThrow();
-    expect(mocks.edit).not.toHaveBeenCalled();
+    expect(mocks.edit).toHaveBeenCalledTimes(1);
     expect(reviewCalls).toBe(1);
     expect(mocks.capture).not.toHaveBeenCalled();
     expect(renders.rows[0]!.status).toBe("failed");
@@ -432,6 +451,32 @@ describe("simple render orchestration with offline providers", () => {
     expect(mocks.edit).not.toHaveBeenCalled();
     expect(reviewCalls).toBe(0);
     expect(mocks.capture).not.toHaveBeenCalled();
+  });
+  it("uses a supplied reference without a second scale call and preserves it in the replay snapshot", async () => {
+    await scenes.updateOne({ id: "scene" }, { $set: { publicSessionId: "storefront:visitor-1" } });
+    request.simplePlacements = [{ ...request.simplePlacements![0]!, pixelsPerCm: 2.5 }];
+    request.scaleReference = { realHeightCm: 20, basePoint: { x: 0.15, y: 0.8 },
+      topPoint: { x: 0.15, y: 0.633333 }, sameDepthConfirmed: true };
+    const result = await createRender(db, "org", request, "storefront:visitor-1");
+    expect(result.status).toBe("succeeded");
+    expect(result.engineVersions?.scaleEstimation).toBe("storefront-manual-reference-v1");
+    expect(mocks.edit).toHaveBeenCalledTimes(1);
+    expect(mocks.edit.mock.calls[0]![0].references.some((reference: { role: string }) => reference.role === "spatial_guide")).toBe(true);
+    expect(renders.rows[0]!.requestSnapshot).toMatchObject({ input: { scaleReference: request.scaleReference } });
+    expect(result.qualityChecks.some(check => check.name.includes("referenceScale"))).toBe(true);
+  });
+  it("journals an uncertain storefront image once without review, delivery or another image attempt", async () => {
+    await scenes.updateOne({ id: "scene" }, { $set: { publicSessionId: "storefront:visitor-1" } });
+    mocks.edit.mockResolvedValue({ provider: "openai", model: "test-image", status: "failed",
+      durationMs: 90_000, estimatedCostUsd: 0.4, attemptCount: 1, images: [], safety: { blocked: false },
+      error: { code: "timeout", message: "Résultat incertain.", retryable: true } });
+    await expect(createRender(db, "org", request, "storefront:visitor-1")).rejects.toThrow();
+    expect(mocks.edit).toHaveBeenCalledTimes(1);
+    expect(reviewCalls).toBe(0);
+    expect(mocks.capture).not.toHaveBeenCalled();
+    expect(attempts.rows.filter(row => row.stage === "generating_final" && row.usageOutcome === "unknown")).toHaveLength(1);
+    expect(renders.rows[0]!).toMatchObject({ status: "failed", creditCharged: false });
+    expect(renders.rows[0]!.resultAssetId).toBeUndefined();
   });
   it("loads the room and product inputs concurrently and reads a repeated asset once", async () => {
     request.simplePlacements = request.simplePlacements!.map((item) => ({

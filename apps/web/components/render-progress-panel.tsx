@@ -165,7 +165,7 @@ export function RenderProgressPanel({
                 : preview
                   ? progress.sourcePixelPlacement
                     ? "Image provisoire, avant la vérification finale du placement."
-                    : "Image provisoire : la lumière et les ombres du rendu final sont en préparation."
+                    : "Image provisoire : la perspective et l’intégration du rendu final sont en préparation."
                   : previewReady
                     ? "Comparez votre pièce avec le placement préparé."
                     : "L’aperçu de vos objets apparaîtra ici dès que le placement sera prêt."}

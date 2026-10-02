@@ -8,7 +8,12 @@ test("backoffice authorizes a bounded quota with safe manual retry and mobile co
   const width = testInfo.project.name === "mobile" ? 320 : 1280;
   await page.setViewportSize({ width, height: 844 });
   const login = await page.request.post("/api/admin/session", {
-    headers: { Origin: origin },
+    // This UI fixture does not exercise login throttling. Keep its browser
+    // projects/retries distinct from other tests sharing the local server.
+    headers: {
+      Origin: origin,
+      "X-Forwarded-For": `192.0.2.${(testInfo.project.name === "mobile" ? 30 : 20) + testInfo.retry}`,
+    },
     data: { username: "LiliDeco", password: "LiliDeco2026" },
   });
   expect(login.status()).toBe(201);

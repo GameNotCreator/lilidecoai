@@ -12,6 +12,7 @@ import {
   storefrontProductSchema,
   visualizationHref,
   visualizationProblem,
+  computeStorefrontReferenceScale,
   type StorefrontProduct,
 } from "../lib/storefront";
 
@@ -30,6 +31,54 @@ const product: StorefrontProduct = storefrontProductSchema.parse({
   priceCents: 5600,
   currency: "TND",
   stock: 4,
+});
+
+describe("storefront reference height", () => {
+  const reference = {
+    realHeightCm: 30,
+    basePoint: { x: 0.5, y: 0.7 },
+    topPoint: { x: 0.5, y: 0.6 },
+    sameDepthConfirmed: true,
+  };
+  it("scales a known upright height using image pixels rather than normalized distance", () => {
+    expect(
+      computeStorefrontReferenceScale(reference, 1000, 1500).pixelsPerCm,
+    ).toBeCloseTo(5);
+    const rolled = { ...reference, topPoint: { x: 0.56, y: 0.6 } };
+    expect(
+      computeStorefrontReferenceScale(rolled, 1000, 1500).pixelsPerCm,
+    ).toBeCloseTo(Math.hypot(60, 150) / 30);
+  });
+  it.each([
+    undefined,
+    { ...reference, realHeightCm: 0 },
+    { ...reference, realHeightCm: 301 },
+    { ...reference, sameDepthConfirmed: false },
+    { ...reference, topPoint: { x: 0.8, y: 0.7 } },
+    { ...reference, topPoint: { x: 0.5, y: 0.71 } },
+    { ...reference, topPoint: { x: 0.5, y: 0.699 } },
+  ])("refuses invalid references: %j", (value) => {
+    expect(() => computeStorefrontReferenceScale(value, 1000, 1500)).toThrow();
+  });
+  it("rejects placements at a different depth or too far from the reference", () => {
+    expect(() =>
+      computeStorefrontReferenceScale(reference, 1000, 1500, [
+        { x: 0.5, y: 0.9 },
+      ]),
+    ).toThrow(/profondeur/);
+    expect(() =>
+      computeStorefrontReferenceScale(reference, 1000, 1500, [
+        { x: 0.99, y: 0.7 },
+      ]),
+    ).toThrow(/profondeur/);
+    expect(
+      computeStorefrontReferenceScale(reference, 1000, 1500, [
+        { x: 0.55, y: 0.7 },
+        { x: 0.6, y: 0.72 },
+        { x: 0.65, y: 0.73 },
+      ]).pixelsPerCm,
+    ).toBeCloseTo(5);
+  });
 });
 
 describe("storefront cart and catalog boundary", () => {

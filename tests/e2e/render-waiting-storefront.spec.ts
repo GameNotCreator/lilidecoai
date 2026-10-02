@@ -15,6 +15,7 @@ for (const width of [320, 375, 1280]) {
       "One browser project per viewport.",
     );
     await page.setViewportSize({ width, height: 844 });
+    const perspective = width !== 375;
     const room = await sharp({
       create: { width: 800, height: 600, channels: 3, background: "#ece9e4" },
     })
@@ -81,6 +82,10 @@ for (const width of [320, 375, 1280]) {
     let expired = false;
     let trackingAvailable = true;
     let admissions = 0;
+    let admittedBody: {
+      scaleReference?: { realHeightCm: number; sameDepthConfirmed: boolean };
+      simplePlacements?: unknown[];
+    } = {};
     const render = () => ({
       id: renderId,
       status: expired
@@ -102,13 +107,19 @@ for (const width of [320, 375, 1280]) {
       placement: { pipelineStage: stage },
       qualityScore: null,
       creditCharged: false,
-      promptVersion: "storefront-placement-review-v1",
+      promptVersion: perspective
+        ? "storefront-realistic-placement-v2"
+        : "storefront-placement-review-v1",
       engineVersions: {
         placementGeometry: "simple-placement-v1",
         composite: "composite-v3/contact-light-v6",
         scaleEstimation: "scale-v3/storefront-placement-v1",
-        quality: "storefront-placement-review-v1",
-        prompt: "storefront-placement-review-v1",
+        quality: perspective
+          ? "storefront-realistic-placement-v2"
+          : "storefront-placement-review-v1",
+        prompt: perspective
+          ? "storefront-realistic-placement-v2"
+          : "storefront-placement-review-v1",
         mockMode: false,
         imageQuality: "n/a",
         editModel: "deterministic-source-composite",
@@ -128,6 +139,7 @@ for (const width of [320, 375, 1280]) {
     await page.route("**/v1/renders/**", async (route) => {
       if (route.request().method() === "POST") {
         admissions += 1;
+        admittedBody = route.request().postDataJSON();
         await route.fulfill({ status: 201, json: render() });
       } else if (!trackingAvailable) {
         await route.fulfill({
@@ -136,22 +148,101 @@ for (const width of [320, 375, 1280]) {
         });
       } else await route.fulfill({ json: render() });
     });
-    await page.goto(`/visualiser?products=${productId}`);
+    const selectedCount = width === 320 ? 3 : 1;
+    await page.goto(
+      `/visualiser?products=${Array(selectedCount).fill(productId).join(",")}`,
+    );
     await page.getByRole("checkbox", { name: /J’autorise/ }).check();
     await page
       .locator('input[type="file"]')
       .first()
       .setInputFiles({ name: "room.png", mimeType: "image/png", buffer: room });
+    const referenceFrame = page.getByRole("button", {
+      name: /Choisir le bas de la référence/,
+    });
+    await expect(referenceFrame).toBeVisible();
+    await expect(referenceFrame).toBeEnabled();
+    const referenceBounds = await referenceFrame.boundingBox();
+    if (!perspective) {
+      await referenceFrame.click({
+        position: {
+          x: referenceBounds!.width * 0.5,
+          y: referenceBounds!.height * 0.7,
+        },
+      });
+      const topFrame = page.getByRole("button", {
+        name: /Choisir le sommet de la référence/,
+      });
+      await topFrame.click({
+        position: {
+          x: referenceBounds!.width * 0.5,
+          y: referenceBounds!.height * 0.5,
+        },
+      });
+      await page
+        .getByLabel("Hauteur réelle de votre référence (cm)")
+        .fill("30");
+      await page.getByRole("checkbox", { name: /Ma référence repose/ }).check();
+      const confirmReference = page.getByRole("button", {
+        name: "Confirmer cette hauteur et placer les articles",
+      });
+      expect(
+        (await confirmReference.boundingBox())!.height,
+      ).toBeGreaterThanOrEqual(44);
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
+      await page.screenshot({
+        path: `artifacts/reference-height-2026-10-02/reference-${width}.png`,
+        fullPage: true,
+      });
+      await confirmReference.click();
+    } else {
+      await page
+        .getByRole("button", { name: "Continuer avec une échelle estimée" })
+        .click();
+      await expect(
+        page.getByText("Taille estimée à partir de votre photo.", {
+          exact: true,
+        }),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("checkbox", { name: /Ma référence repose/ }),
+      ).toHaveCount(0);
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
+    }
     const placement = page.getByRole("button", { name: /Placer Grenade/ });
     await expect(placement).toBeVisible();
-    await placement.click({ position: { x: 60, y: 90 } });
+    await expect(page.locator(".store-selected-unit")).toHaveCount(
+      selectedCount,
+    );
+    for (let index = 0; index < selectedCount; index++)
+      await placement.click({
+        position: {
+          x: referenceBounds!.width * (0.45 + index * 0.05),
+          y: referenceBounds!.height * 0.7,
+        },
+      });
     await page.getByRole("button", { name: "Créer ma visualisation" }).click();
+    if (perspective) expect(admittedBody).not.toHaveProperty("scaleReference");
+    else
+      expect(admittedBody.scaleReference).toMatchObject({
+        realHeightCm: 30,
+        sameDepthConfirmed: true,
+      });
+    expect(admittedBody.simplePlacements).toHaveLength(selectedCount);
     const panel = page.locator(".render-progress-panel");
     await expect(
       panel.getByRole("heading", { name: "Placement de vos objets" }),
     ).toBeVisible();
     await expect(
-      panel.getByAltText("Aperçu provisoire du placement de vos objets"),
+      panel.getByAltText(perspective ? "Aperçu du placement de vos objets, avant le rendu réaliste" : "Aperçu provisoire du placement de vos objets"),
     ).toBeVisible();
     await expect(panel.locator(".render-progress-image")).toHaveAttribute(
       "data-loaded",
@@ -162,8 +253,10 @@ for (const width of [320, 375, 1280]) {
     await expect(panel.getByText(/Temps écoulé/)).not.toBeVisible();
     await expect(panel.locator('[data-state="complete"]')).toHaveCount(1);
     await expect(panel.locator('[data-state="active"]')).toHaveCount(1);
-    await expect(panel.getByRole("listitem")).toHaveCount(3);
+    await expect(panel.getByRole("listitem")).toHaveCount(perspective ? 4 : 3);
     expect(await panel.innerText()).not.toMatch(/lumière|ombres|réaliste/);
+    if (perspective)
+      await expect(panel.getByText("Image provisoire : la perspective et l’intégration du rendu final sont en préparation.", { exact: true })).toBeVisible();
     await expect(panel.getByText(/Jusqu’à 3 minutes/)).toBeVisible();
     await panel.getByText("Détails de la demande", { exact: true }).click();
     await expect(panel.getByText(/Temps écoulé/)).toBeVisible();
@@ -201,8 +294,16 @@ for (const width of [320, 375, 1280]) {
       panel.getByRole("heading", { name: "Placement de vos objets" }),
     ).toBeVisible();
     trackingAvailable = true;
+    if (perspective) {
+      stage = "generating_final";
+      await panel.getByRole("button", { name: "Vérifier maintenant" }).click();
+      await expect(
+        panel.getByRole("heading", { name: "Adaptation de la perspective" }),
+      ).toBeVisible();
+    }
     stage = "quality_check";
-    await panel.getByRole("button", { name: "Vérifier maintenant" }).click();
+    if (!perspective)
+      await panel.getByRole("button", { name: "Vérifier maintenant" }).click();
     await expect(
       panel.getByRole("heading", { name: "Vérification du placement" }),
     ).toBeVisible();

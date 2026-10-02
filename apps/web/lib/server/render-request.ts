@@ -27,6 +27,7 @@ export interface PlacementInput {
 export interface RenderInput {
   engine?: "legacy" | "spatial";
   spatialReference?: import("@lili/types").SpatialReference;
+  scaleReference?: import("@lili/types").StorefrontScaleReference;
   workflow?: "standard" | "simple_point";
   placement: PlacementInput;
   idempotencyKey: string;

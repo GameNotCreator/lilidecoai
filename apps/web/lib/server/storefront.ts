@@ -1,19 +1,24 @@
 import "server-only";
 
 import type { Db } from "mongodb";
+import sharp from "sharp";
 import {
   storefrontProductSchema,
   productDimensionPair,
   productPlacementKind,
+  computeStorefrontReferenceScale,
   type StorefrontCatalog,
 } from "../storefront";
 import { AuthError, type Tenant } from "./auth";
-import { ApiInputError } from "./assets";
+import { ApiInputError, readAsset } from "./assets";
 import { serverConfig } from "./config";
 import { cutoutTrust } from "./cutout-identity";
 import { productPreparationStatus } from "./product-preparation";
 import { collections } from "./mongodb";
-import { productResponse, STOREFRONT_BUDGET_UNAVAILABLE_MESSAGE } from "./serializers";
+import {
+  productResponse,
+  STOREFRONT_BUDGET_UNAVAILABLE_MESSAGE,
+} from "./serializers";
 import { DEMO_CATALOG_USER_ID, type ProductDocument } from "./types";
 import type { RenderInput } from "./render-request";
 import { isSameOriginRequest } from "./request-origin";
@@ -36,7 +41,8 @@ export function storefrontProductResponse(product: ProductDocument) {
     visualizationAvailable: Boolean(
       product.cutoutAssetId &&
       cutoutTrust(product.cutout).trusted &&
-      (!product.productPreparation || productPreparationStatus(product).status === "ready") &&
+      (!product.productPreparation ||
+        productPreparationStatus(product).status === "ready") &&
       !product.visualizationBlockedReason?.trim() &&
       validDimensions &&
       (product.stock == null || product.stock > 0),
@@ -191,6 +197,43 @@ export async function normalizeStorefrontRender(
       placementKind: productPlacementKind(dto),
     };
   });
+  let referenceScale:
+    ReturnType<typeof computeStorefrontReferenceScale> | undefined;
+  if (input.scaleReference !== undefined) {
+    // Scope before reading bytes: a measurement must never expose another photo.
+    const scene = await collections(db).scenes.findOne({
+      id: input.placement.sceneId,
+      organizationId: tenant.organizationId,
+      publicSessionId: tenant.publicSessionId,
+      status: { $ne: "deleted" },
+      expiresAt: { $gt: new Date() },
+    });
+    if (!scene)
+      throw new AuthError(
+        "Votre photo n’est plus disponible. Envoyez-la à nouveau.",
+        403,
+      );
+    const source = await readAsset(db, scene.assetId);
+    if (!source)
+      throw new ApiInputError(
+        "Votre photo n’est plus disponible. Envoyez-la à nouveau.",
+      );
+    try {
+      const metadata = await sharp(source.buffer).metadata();
+      referenceScale = computeStorefrontReferenceScale(
+        input.scaleReference,
+        metadata.autoOrient.width,
+        metadata.autoOrient.height,
+        simplePlacements.map((item) => item.placementPoint),
+      );
+    } catch (reason) {
+      throw new ApiInputError(
+        reason instanceof Error
+          ? reason.message
+          : "La référence de hauteur est invalide.",
+      );
+    }
+  }
   if (!serverConfig.aiMockMode) {
     // Refuse before admission when the shop cannot reserve a render. The
     // worker still reserves transactionally to cover concurrent requests;
@@ -199,7 +242,8 @@ export async function normalizeStorefrontRender(
       organizationId: tenant.organizationId,
       balance: { $gte: 1 },
     });
-    if (!funded) throw new AuthError(STOREFRONT_BUDGET_UNAVAILABLE_MESSAGE, 503);
+    if (!funded)
+      throw new AuthError(STOREFRONT_BUDGET_UNAVAILABLE_MESSAGE, 503);
   }
   const first = simplePlacements[0]!;
   return {
@@ -209,7 +253,11 @@ export async function normalizeStorefrontRender(
     outputQuality: "final",
     preserveBackground: true,
     idempotencyKey: input.idempotencyKey,
-    simplePlacements,
+    ...(referenceScale ? { scaleReference: referenceScale.reference } : {}),
+    simplePlacements: simplePlacements.map((item) => ({
+      ...item,
+      ...(referenceScale ? { pixelsPerCm: referenceScale.pixelsPerCm } : {}),
+    })),
     placementPoint: first.placementPoint,
     placement: {
       sceneId: input.placement.sceneId,

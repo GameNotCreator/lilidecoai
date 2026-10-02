@@ -69,7 +69,9 @@ test("storefront catalogue, details, cart persistence and three-unit limit", asy
   await page.getByRole("button", { name: "Diminuer Vase Sable" }).click();
   await page.getByRole("link", { name: "Visualiser chez moi" }).click();
   if (test.info().project.name === "chromium")
-    await page.getByRole("link", { name: "Continuer sur cet appareil" }).click();
+    await page
+      .getByRole("link", { name: "Continuer sur cet appareil" })
+      .click();
   await expect(page.locator(".store-selected-unit")).toHaveCount(3);
   expect(
     await page.evaluate(
@@ -135,6 +137,32 @@ test("catalogue product flows through a private photo and a mock render", async 
   const sceneResponse = await uploaded;
   expect(sceneResponse.status()).toBe(201);
   const scene = await sceneResponse.json();
+  const referenceFrame = page.getByRole("button", {
+    name: /Choisir le bas de la référence/,
+  });
+  await expect(referenceFrame).toBeEnabled();
+  const referenceBounds = await referenceFrame.boundingBox();
+  await referenceFrame.click({
+    position: {
+      x: referenceBounds!.width * 0.5,
+      y: referenceBounds!.height * 0.6,
+    },
+  });
+  await page
+    .getByRole("button", { name: /Choisir le sommet de la référence/ })
+    .click({
+      position: {
+        x: referenceBounds!.width * 0.5,
+        y: referenceBounds!.height * 0.4,
+      },
+    });
+  await page.getByLabel("Hauteur réelle de votre référence (cm)").fill("30");
+  await page.getByRole("checkbox", { name: /Ma référence repose/ }).check();
+  await page
+    .getByRole("button", {
+      name: "Confirmer cette hauteur et placer les articles",
+    })
+    .click();
   await expect(
     page.getByRole("button", { name: /^Placer Vase Sable/ }),
   ).toBeVisible();

@@ -199,4 +199,37 @@ describe("storefront source-photo placement progress", () => {
     expect(result.steps.every((step) => step.state === "pending")).toBe(true);
     expect(result.sourcePixelPlacement).toBe(true);
   });
+
+  it.each([
+    ["estimating_scale", ["active", "pending", "pending", "pending"]],
+    ["compositing", ["complete", "active", "pending", "pending"]],
+    ["generating_final", ["complete", "complete", "active", "pending"]],
+    ["checking_placement", ["complete", "complete", "complete", "active"]],
+    ["complete", ["complete", "complete", "complete", "complete"]],
+  ] as const)("shows the perspective profile's four actual stages for %s", (stage, states) => {
+    const result = renderProgress(input({
+      engineVersions: { ...engineVersions, quality: "storefront-realistic-placement-v2" },
+      placement: { pipelineStage: stage },
+    }));
+    expect(result.steps.map((step) => step.state)).toEqual(states);
+    expect(result.sourcePixelPlacement).toBe(false);
+    expect(result.steps.map((step) => step.label)).toEqual([
+      "Lecture de l’intérieur", "Placement des objets",
+      "Adaptation de la perspective", "Vérification du placement",
+    ]);
+    expect(`${result.title} ${result.detail}`).not.toMatch(/lumière|ombres/);
+    if (stage === "generating_final") {
+      expect(result.detail).toContain("orientation");
+      expect(result.detail).toContain("apparence");
+    }
+  });
+
+  it("prioritizes the perspective profile's final control over stale image adaptation evidence", () => {
+    const result = renderProgress(input({
+      engineVersions: { ...engineVersions, quality: "storefront-realistic-placement-v2" },
+      pipelineState: "quality_check", placement: { pipelineStage: "generating_final" },
+    }));
+    expect(result.title).toBe("Vérification du placement");
+    expect(result.steps.map((step) => step.state)).toEqual(["complete", "complete", "complete", "active"]);
+  });
 });

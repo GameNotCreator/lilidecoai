@@ -18,6 +18,32 @@ describe("render request schema", () => {
     expect(parsed.outputQuality).toBe("final");
     expect(parsed.preserveBackground).toBe(true);
   });
+  it("preserves the customer's explicit height reference without affecting legacy requests", () => {
+    const scaleReference = {
+      realHeightCm: 30,
+      basePoint: { x: 0.5, y: 0.7 },
+      topPoint: { x: 0.5, y: 0.5 },
+      sameDepthConfirmed: true,
+    };
+    expect(
+      renderRequestSchema.parse({ ...base, scaleReference }).scaleReference,
+    ).toEqual(scaleReference);
+    expect(renderRequestSchema.parse(base)).not.toHaveProperty(
+      "scaleReference",
+    );
+    expect(() =>
+      renderRequestSchema.parse({
+        ...base,
+        scaleReference: { ...scaleReference, sameDepthConfirmed: false },
+      }),
+    ).toThrow();
+    expect(() =>
+      renderRequestSchema.parse({
+        ...base,
+        scaleReference: { ...scaleReference, realHeightCm: 301 },
+      }),
+    ).toThrow();
+  });
 
   it("requires a confirmed mask for replacement", () => {
     expect(() =>
