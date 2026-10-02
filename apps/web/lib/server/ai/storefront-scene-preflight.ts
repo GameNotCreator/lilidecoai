@@ -20,6 +20,7 @@ import {
 import type { StorefrontScaleReference } from "./storefront-placement-review";
 
 export const STOREFRONT_SCENE_PREFLIGHT_VERSION = "storefront-scene-preflight-v1";
+export const STOREFRONT_POSE_PREFLIGHT_VERSION = "storefront-scene-pose-v2";
 export const STOREFRONT_SCENE_PREFLIGHT_TIMEOUT_MS = 25_000;
 export const STOREFRONT_SCENE_PREFLIGHT_MAX_TOKENS = 6_000;
 
@@ -38,10 +39,19 @@ export interface StorefrontScenePreflightInput {
   points: Array<{ point: { x: number; y: number }; kind: SimplePlacementKind }>;
   deadlineMs: number;
   reference?: StorefrontScaleReference;
+  /** Opt-in: one real product height per requested point, in the same order. */
+  productHeightsCm?: number[];
+}
+export interface StorefrontScenePose {
+  /** Low-confidence room-camera elevation at the object's TOP, never calibration. */
+  cameraElevationDegrees: number | null;
+  cameraRollDegrees: number | null;
+  evidence: string;
 }
 export interface StorefrontScenePreflightResult {
   spans: SceneScaleSpan[];
   inspections: StorefrontSceneInspection[];
+  poses?: StorefrontScenePose[];
 }
 
 const unit = z.number().finite().min(0).max(1);
@@ -74,6 +84,24 @@ export const storefrontScenePreflightSchema = z.object({
     evidence: z.string().trim().min(1).max(240),
   }).strict()).min(1).max(3),
 }).strict();
+export const storefrontScenePosePreflightSchema = storefrontScenePreflightSchema
+  .extend({
+    points: z.array(storefrontScenePreflightSchema.shape.points.element.extend({
+      cameraElevationDegrees: z.number().finite().min(0).max(85).nullable(),
+      cameraRollDegrees: z.number().finite().min(-30).max(30).nullable(),
+      shortposeEvidence: z.string().trim().min(1).max(160),
+    }).strict()).min(1).max(3),
+  }).strict();
+const productHeightsSchema = z.array(z.number().finite().positive()).min(1).max(3);
+
+function validateProductHeights(
+  points: StorefrontScenePreflightInput["points"],
+  productHeightsCm: StorefrontScenePreflightInput["productHeightsCm"],
+) {
+  if (productHeightsCm !== undefined &&
+    (!productHeightsSchema.safeParse(productHeightsCm).success || productHeightsCm.length !== points.length))
+    throw new VisualReviewError("invalid_input", "Les hauteurs des produits doivent couvrir exactement vos emplacements.");
+}
 
 export function storefrontScenePreflightAllowance() {
   return spatialVisionAllowance({
@@ -87,10 +115,14 @@ export function storefrontScenePreflightAllowance() {
 export function parseStorefrontScenePreflight(
   payload: unknown,
   points: StorefrontScenePreflightInput["points"],
+  productHeightsCm?: StorefrontScenePreflightInput["productHeightsCm"],
 ): StorefrontScenePreflightResult {
   if (!pointsSchema.safeParse(points).success)
     throw new VisualReviewError("invalid_input", "Points de placement invalides.");
-  const parsed = storefrontScenePreflightSchema.safeParse(payload);
+  validateProductHeights(points, productHeightsCm);
+  const parsed = (productHeightsCm !== undefined
+    ? storefrontScenePosePreflightSchema
+    : storefrontScenePreflightSchema).safeParse(payload);
   if (!parsed.success)
     throw new VisualReviewError("malformed", "Analyse de la pièce incomplète ou invalide.", false, true);
   const entries = parsed.data.points;
@@ -133,6 +165,17 @@ export function parseStorefrontScenePreflight(
       obstacleBox: entry.obstacleBox,
       evidence: entry.evidence,
     })),
+    ...(productHeightsCm !== undefined ? {
+      poses: entries.map((entry) => {
+        // Parsing selected the complete pose schema; v1 never gets pose fields.
+        const pose = storefrontScenePosePreflightSchema.shape.points.element.parse(entry);
+        return {
+          cameraElevationDegrees: pose.cameraElevationDegrees,
+          cameraRollDegrees: pose.cameraRollDegrees,
+          evidence: pose.shortposeEvidence,
+        };
+      }),
+    } : {}),
   };
 }
 
@@ -146,6 +189,7 @@ export async function inspectStorefrontScene(
     !["image/jpeg", "image/png", "image/webp"].includes(input.room.mimeType) ||
     input.room.data.byteLength === 0 || input.room.data.byteLength > 32_000_000)
     throw new VisualReviewError("invalid_input", "Photo, points ou référence invalides.");
+  validateProductHeights(input.points, input.productHeightsCm);
   if (!serverConfig.openaiApiKey || serverConfig.aiMockMode)
     throw new VisualReviewError("unavailable", "L’analyse de la pièce n’est pas configurée.");
   const startedAt = Date.now();
@@ -195,6 +239,10 @@ export async function inspectStorefrontScene(
             "Standing contacts can be on a floor, table, shelf or counter; never assume a table merely because the object stands upright. Flat objects use a floor/support centre and wall objects a wall centre. Identify the actual visible support; use other and supportVisible:false if it cannot be identified.",
             "Check image clarity, visibility of each target/support and occupancy. A removable object at the exact point is an obstacle; structural furniture, floor, wall, table or shelf are not. If occupied, give the existing object's name and a padded box containing the marked contact and its complete silhouette. Otherwise obstacleName and obstacleBox must both be null. Ambiguous/hidden targets must not be claimed clear.",
             "pixelsPerCm is an approximate projected span at each target depth,0.2..200, or null if not defensible. For standing or wall objects estimate the projected vertical HEIGHT of an upright physical centimetre with scene gravity, including camera pitch/roll; do not mistake top-face depth or a bounding-box height for vertical height. Flat objects use horizontal support-plane length. Cross-check visible reference sizes and camera perspective; no image-y ratio without a calibrated horizon. Do not invent hidden references or certified metric accuracy.",
+            ...(input.productHeightsCm !== undefined ? [
+              `Estimate the ROOM camera pose in this same ONE pass. Real product heights in centimetres, in the exact placement order: ${JSON.stringify(input.productHeightsCm)}. For each marked point, cameraElevationDegrees is the approximate viewing elevation above the horizontal plane through the TOP of a standing product of that height at that target depth: 0 means an edge-on top face, larger angles mean a more open top face, maximum85. The angle at the product top can differ from the angle down to its base. Infer it from real room evidence such as floor and wall planes, table tops, support depth, upright room edges and comparable-height objects; never derive it from a catalogue camera pose, a marker, or a pasted product. No catalogue photographs are provided here.`,
+              "cameraRollDegrees is the approximate clockwise rotation of scene gravity in the image, from -30 to30 degrees: positive roll tilts a projected upright axis toward the right as it rises. Evaluate visible structural upright edges together with horizontal planes. This is a low-confidence visual estimate, never exact camera calibration or a measured 3D reconstruction. Return null independently for either angle when room evidence is insufficient; never substitute a default or invent hidden planes. Provide shortposeEvidence as concise observable French evidence of at most70 characters, explaining unknown angles when necessary. Preserve the same conservative clarity, occupancy and scale checks; every index must appear once in original order.",
+            ] : []),
             input.reference
               ? `Optional user-declared upright height reference: ${JSON.stringify(input.reference)}. Markers101=base,102=top. It is not certified; the server's normalized scale calculation remains authoritative. Do not report high confidence or override it. Still inspect all placement points.`
               : "No measured reference is supplied. All scale values are low-confidence visual estimates; never report a calibration or high confidence.",
@@ -203,8 +251,8 @@ export async function inspectStorefrontScene(
           { type: "input_image", image_url: `data:image/webp;base64,${marked.toString("base64")}`, detail: "original" },
         ] }],
         text: { verbosity: "low", format: {
-          type: "json_schema", name: "storefront_scene_preflight", strict: true,
-          schema: z.toJSONSchema(storefrontScenePreflightSchema),
+          type: "json_schema", name: input.productHeightsCm !== undefined ? "storefront_scene_pose_preflight" : "storefront_scene_preflight", strict: true,
+          schema: z.toJSONSchema(input.productHeightsCm !== undefined ? storefrontScenePosePreflightSchema : storefrontScenePreflightSchema),
         } },
       }),
     });
@@ -233,6 +281,6 @@ export async function inspectStorefrontScene(
   }, () => {
     if (signal?.aborted || Date.now() >= deadline)
       throw new VisualReviewError("deadline", "Le délai d’analyse de la pièce est dépassé.", false, true);
-    return parseStorefrontScenePreflight(extractStructuredReview(payload), input.points);
+    return parseStorefrontScenePreflight(extractStructuredReview(payload), input.points, input.productHeightsCm);
   });
 }

@@ -2,7 +2,7 @@ import sharp from "sharp";
 import type { StorefrontScaleReference } from "./ai/storefront-placement-review";
 
 export const STOREFRONT_GUIDED_REALISTIC_COMPOSITE_VERSION =
-  "storefront-guided-perspective-v2";
+  "storefront-guided-perspective-v3";
 
 export interface StorefrontPerspectiveGuideObject {
   /** Zero-based placement index. Labels 1..3 match the original selection. */
@@ -11,6 +11,12 @@ export interface StorefrontPerspectiveGuideObject {
   kind: "standing" | "wall" | "flat";
   dimensionsCm: { width: number; height: number; depth: number };
   pixelsPerCm: number;
+  pose?: {
+    /** Unknown elevation draws no inferred top face. */
+    cameraElevationDegrees: number | null;
+    /** Positive is clockwise; null keeps a neutral, unmeasured orientation. */
+    cameraRollDegrees: number | null;
+  };
 }
 
 export interface StorefrontPerspectiveGuideInput {
@@ -28,6 +34,11 @@ const validPoint = (point: { x: number; y: number } | undefined) =>
   point != null &&
   [point.x, point.y].every((value) =>
     typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1,
+  );
+const nullableAngle = (value: unknown, minimum: number, maximum: number) =>
+  value === null || (
+    typeof value === "number" && Number.isFinite(value) &&
+    value >= minimum && value <= maximum
   );
 
 function validate(input: StorefrontPerspectiveGuideInput): void {
@@ -47,6 +58,11 @@ function validate(input: StorefrontPerspectiveGuideInput): void {
       ![object.dimensionsCm.width, object.dimensionsCm.height, object.dimensionsCm.depth]
         .every((value) => positive(value) && positive(value * object.pixelsPerCm))
     ) throw new Error("Mesures ou ancrage du guide de perspective invalides.");
+    if (object.pose !== undefined && (
+      !object.pose ||
+      !nullableAngle(object.pose.cameraElevationDegrees, 0, 85) ||
+      !nullableAngle(object.pose.cameraRollDegrees, -30, 30)
+    )) throw new Error("Angles du guide de perspective invalides.");
     indices.add(object.index);
   }
   const reference = input.reference;
@@ -103,11 +119,30 @@ export async function buildStorefrontPerspectiveGuide(
     const segmentBottom = object.kind === "wall" ? anchor.y + projectedHeight / 2 : anchor.y;
     const segmentTop = segmentBottom - projectedHeight;
     const segmentX = clamp(left + projectedWidth + radius + 6, 1, Math.max(1, width - 2));
-    annotations.push(
-      `<rect x="${left}" y="${top}" width="${projectedWidth}" height="${boxHeight}" fill="none" stroke="#0073cc" stroke-width="${stroke}" stroke-dasharray="5 4"/>`,
+    const heightGuide = [
       `<path d="M ${segmentX} ${segmentTop} V ${segmentBottom} M ${segmentX - 3} ${segmentTop} H ${segmentX + 3} M ${segmentX - 3} ${segmentBottom} H ${segmentX + 3}" fill="none" stroke="#00856a" stroke-width="${stroke}"/>`,
       `<text x="${clamp(segmentX + 5, 1, Math.max(1, width - fontSize * 5))}" y="${clamp(segmentTop - 4, fontSize, Math.max(fontSize, height - 2))}" font-family="Arial, sans-serif" font-size="${fontSize}" fill="#00856a" stroke="#ffffff" stroke-width="3" paint-order="stroke">${Math.round(projectedHeight)} px</text>`,
-    );
+    ];
+    if (object.kind === "standing" && object.pose) {
+      const { cameraElevationDegrees, cameraRollDegrees } = object.pose;
+      const projectedDepth = cameraElevationDegrees === null ? null
+        : object.dimensionsCm.depth * object.pixelsPerCm *
+          Math.sin(cameraElevationDegrees * Math.PI / 180);
+      // Contact and top are the visible front edges. The projected top face
+      // extends above the physical body height, never into that measurement.
+      const halfDepth = (projectedDepth ?? 0) / 2;
+      const volume = projectedDepth === null || projectedDepth === 0
+        ? `<rect x="${left}" y="${top}" width="${projectedWidth}" height="${projectedHeight}" fill="none" stroke="#0073cc" stroke-width="${stroke}"/>`
+        : `<path d="M ${left} ${top - halfDepth} V ${anchor.y - halfDepth} M ${left + projectedWidth} ${top - halfDepth} V ${anchor.y - halfDepth}" fill="none" stroke="#0073cc" stroke-width="${stroke}"/><ellipse cx="${anchor.x}" cy="${top - halfDepth}" rx="${projectedWidth / 2}" ry="${halfDepth}" fill="none" stroke="#0073cc" stroke-width="${stroke}"/><ellipse cx="${anchor.x}" cy="${anchor.y - halfDepth}" rx="${projectedWidth / 2}" ry="${halfDepth}" fill="none" stroke="#0073cc" stroke-width="${stroke}"/>`;
+      const transform = cameraRollDegrees === null ? ""
+        : ` transform="rotate(${cameraRollDegrees} ${anchor.x} ${anchor.y})"`;
+      annotations.push(`<g${transform}>${volume}${heightGuide.join("")}</g>`);
+    } else {
+      annotations.push(
+        `<rect x="${left}" y="${top}" width="${projectedWidth}" height="${boxHeight}" fill="none" stroke="#0073cc" stroke-width="${stroke}" stroke-dasharray="5 4"/>`,
+        ...heightGuide,
+      );
+    }
     marker(object.point, object.index + 1, "#e5232b");
   }
   if (reference) {

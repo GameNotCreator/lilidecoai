@@ -19,15 +19,26 @@ async function fixture(): Promise<StorefrontPerspectiveGuideInput> {
     width: 160, height: 120, objects: [object()],
   };
 }
+async function poseFixture(): Promise<StorefrontPerspectiveGuideInput> {
+  return {
+    room: await sharp({ create: { width: 240, height: 240, channels: 3, background: "#526578" } }).webp({ lossless: true }).toBuffer(),
+    width: 240, height: 240,
+    objects: [{ ...object(), dimensionsCm: { width: 40, height: 40, depth: 30 } }],
+  };
+}
 const at = (data: Buffer, width: number, x: number, y: number) =>
   [...data.subarray((y * width + x) * 3, (y * width + x) * 3 + 3)];
+const isBlueGuide = (pixel: number[]) =>
+  pixel[0]! < 70 && pixel[1]! >= 100 && pixel[1]! < 140 && pixel[2]! > 135;
+const isGreenGuide = (pixel: number[]) =>
+  pixel[0]! < 70 && pixel[1]! > 110 && pixel[2]! < 120;
 
 describe("storefront geometry guide", () => {
   it("marks the exact standing contact without moving it to a silhouette corner", async () => {
     const input = await fixture();
     const before = Buffer.from(input.room);
     const guide = await buildStorefrontPerspectiveGuide(input);
-    expect(STOREFRONT_GUIDED_REALISTIC_COMPOSITE_VERSION).toBe("storefront-guided-perspective-v2");
+    expect(STOREFRONT_GUIDED_REALISTIC_COMPOSITE_VERSION).toBe("storefront-guided-perspective-v3");
     expect(await sharp(guide).metadata()).toMatchObject({ format: "webp", width: 160, height: 120 });
     const pixels = await sharp(guide).removeAlpha().raw().toBuffer();
     expect(at(pixels, 160, 80, 96)).toEqual([229, 35, 43]);
@@ -50,6 +61,93 @@ describe("storefront geometry guide", () => {
     expect(await buildStorefrontPerspectiveGuide({ ...input, objects: [deeper] })).toEqual(
       await buildStorefrontPerspectiveGuide(input),
     );
+  });
+
+  it("shows no top-face depth at zero elevation and an elliptical top at 60 degrees", async () => {
+    const input = await poseFixture();
+    const guideAtElevation = async (cameraElevationDegrees: number) =>
+      sharp(await buildStorefrontPerspectiveGuide({
+        ...input,
+        objects: [{ ...input.objects[0]!, pose: { cameraElevationDegrees, cameraRollDegrees: 0 } }],
+      })).removeAlpha().raw().toBuffer();
+    const level = await guideAtElevation(0);
+    const elevated = await guideAtElevation(60);
+    // 80 px physical front-body height: top front edge y=112. A 60 px depth
+    // at 60 degrees adds an ellipse of 52 px depth entirely above that edge.
+    expect(isBlueGuide(at(level, 240, 120, 112))).toBe(true);
+    expect(at(level, 240, 120, 60)).toEqual([82, 101, 120]);
+    expect(isBlueGuide(at(elevated, 240, 120, 60))).toBe(true);
+    expect(isBlueGuide(at(elevated, 240, 120, 112))).toBe(true);
+    expect(isGreenGuide(at(level, 240, 169, 140))).toBe(true);
+    expect(isGreenGuide(at(elevated, 240, 169, 140))).toBe(true);
+    expect(at(elevated, 240, 120, 125)).toEqual([82, 101, 120]);
+    expect(at(elevated, 240, 120, 192)).toEqual([229, 35, 43]);
+  });
+
+  it("scales the top ellipse from physical depth while keeping body height separate", async () => {
+    const input = await poseFixture();
+    const pixels = await sharp(await buildStorefrontPerspectiveGuide({
+      ...input,
+      objects: [{ ...input.objects[0]!, pose: { cameraElevationDegrees: 30, cameraRollDegrees: 0 } }],
+    })).removeAlpha().raw().toBuffer();
+    // sin(30 degrees) projects 60 px depth to 30 px, from y=82 to y=112.
+    expect(isBlueGuide(at(pixels, 240, 120, 82))).toBe(true);
+    expect(isBlueGuide(at(pixels, 240, 120, 112))).toBe(true);
+    expect(at(pixels, 240, 120, 60)).toEqual([82, 101, 120]);
+    expect(isBlueGuide(at(pixels, 240, 80, 160))).toBe(true);
+    expect(isBlueGuide(at(pixels, 240, 160, 160))).toBe(true);
+  });
+
+  it("rotates the volume and height guide clockwise at 10 degrees around the fixed contact", async () => {
+    const input = await poseFixture();
+    const makeGuide = (cameraRollDegrees: number) => buildStorefrontPerspectiveGuide({
+      ...input,
+      objects: [{ ...input.objects[0]!, pose: { cameraElevationDegrees: 0, cameraRollDegrees } }],
+    });
+    const neutral = await sharp(await makeGuide(0)).removeAlpha().raw().toBuffer();
+    const rolled = await sharp(await makeGuide(10)).removeAlpha().raw().toBuffer();
+    expect(at(neutral, 240, 120, 192)).toEqual([229, 35, 43]);
+    expect(at(rolled, 240, 120, 192)).toEqual([229, 35, 43]);
+    // The body's top centre and the height guide both lean right when rising.
+    expect(at(neutral, 240, 134, 113)).toEqual([82, 101, 120]);
+    expect(isBlueGuide(at(rolled, 240, 134, 113))).toBe(true);
+    expect(isGreenGuide(at(rolled, 240, 182, 122))).toBe(true);
+    expect(at(neutral, 240, 182, 122)).toEqual([82, 101, 120]);
+  });
+
+  it("keeps unknown elevation without a top ellipse and unknown roll in a neutral orientation", async () => {
+    const input = await poseFixture();
+    const makeGuide = (cameraRollDegrees: number | null) => buildStorefrontPerspectiveGuide({
+      ...input,
+      objects: [{ ...input.objects[0]!, pose: { cameraElevationDegrees: null, cameraRollDegrees } }],
+    });
+    const unknown = await makeGuide(null);
+    expect(unknown).toEqual(await makeGuide(0));
+    const pixels = await sharp(unknown).removeAlpha().raw().toBuffer();
+    expect(at(pixels, 240, 120, 86)).toEqual([82, 101, 120]);
+    expect(isBlueGuide(at(pixels, 240, 120, 112))).toBe(true);
+    expect(input.objects[0]!.pose).toBeUndefined();
+  });
+
+  it.each(["wall", "flat"] as const)("ignores camera pose for %s geometry", async (kind) => {
+    const input = await fixture();
+    const objectWithoutPose = { ...object(), kind };
+    expect(await buildStorefrontPerspectiveGuide({
+      ...input,
+      objects: [{ ...objectWithoutPose, pose: { cameraElevationDegrees: 60, cameraRollDegrees: 10 } }],
+    })).toEqual(await buildStorefrontPerspectiveGuide({ ...input, objects: [objectWithoutPose] }));
+  });
+
+  it.each([
+    { cameraElevationDegrees: 0, cameraRollDegrees: -30 },
+    { cameraElevationDegrees: 85, cameraRollDegrees: 30 },
+    { cameraElevationDegrees: null, cameraRollDegrees: null },
+    { cameraElevationDegrees: 60, cameraRollDegrees: null },
+    { cameraElevationDegrees: null, cameraRollDegrees: 10 },
+  ])("accepts nullable pose angles and their boundaries (%j)", async (pose) => {
+    const input = await fixture();
+    await expect(buildStorefrontPerspectiveGuide({ ...input, objects: [{ ...object(), pose }] }))
+      .resolves.toBeInstanceOf(Buffer);
   });
 
   it.each(["wall", "flat"] as const)("centres the %s hint on the requested point", async (kind) => {
@@ -102,6 +200,18 @@ describe("storefront geometry guide", () => {
     { objects: [{ ...object(), pixelsPerCm: 1e308 }] },
     { objects: [{ ...object(), dimensionsCm: { width: 0, height: 20, depth: 7 } }] },
     { objects: [{ ...object(), dimensionsCm: { width: 10, height: NaN, depth: 7 } }] },
+    { objects: [{ ...object(), pose: null }] },
+    { objects: [{ ...object(), pose: {} }] },
+    { objects: [{ ...object(), pose: { cameraElevationDegrees: -0.1, cameraRollDegrees: 0 } }] },
+    { objects: [{ ...object(), pose: { cameraElevationDegrees: 85.1, cameraRollDegrees: 0 } }] },
+    { objects: [{ ...object(), pose: { cameraElevationDegrees: NaN, cameraRollDegrees: 0 } }] },
+    { objects: [{ ...object(), pose: { cameraElevationDegrees: Infinity, cameraRollDegrees: 0 } }] },
+    { objects: [{ ...object(), pose: { cameraElevationDegrees: "60", cameraRollDegrees: 0 } }] },
+    { objects: [{ ...object(), pose: { cameraElevationDegrees: 60, cameraRollDegrees: -30.1 } }] },
+    { objects: [{ ...object(), pose: { cameraElevationDegrees: 60, cameraRollDegrees: 30.1 } }] },
+    { objects: [{ ...object(), pose: { cameraElevationDegrees: 60, cameraRollDegrees: NaN } }] },
+    { objects: [{ ...object(), pose: { cameraElevationDegrees: 60, cameraRollDegrees: Infinity } }] },
+    { objects: [{ ...object(), kind: "wall", pose: { cameraElevationDegrees: 90, cameraRollDegrees: 0 } }] },
     { width: 160.5 },
     { height: 0 },
     { room: Buffer.alloc(0) },

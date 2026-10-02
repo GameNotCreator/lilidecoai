@@ -289,13 +289,15 @@ beforeEach(async () => {
       if (init.body instanceof FormData)
         return new Response("cleanup unavailable", { status: 502 });
       const payload = JSON.parse(String(init.body));
-      if (payload.text?.format?.name === "storefront_scene_preflight") {
+      if (["storefront_scene_preflight", "storefront_scene_pose_preflight"].includes(payload.text?.format?.name)) {
         if (inspectionFailure) throw new Error("offline");
         return Response.json({ status: "completed", output: [{ type: "message", status: "completed", content: [{ type: "output_text", text: JSON.stringify({
           points: request.simplePlacements!.map((_, index) => ({ index: index + 1, pixelsPerCm: 2.5,
             supportKind: "floor", imageClear: true, clarityScore: 1, targetVisible: true, supportVisible: true,
             obstacleAtPoint: obstacle, obstacleName: obstacle ? "old vase" : null,
-            obstacleBox: obstacle ? { xMin: 0, yMin: 0, xMax: 1, yMax: 1 } : null, evidence: "Sol libre et perspective lisible." })),
+            obstacleBox: obstacle ? { xMin: 0, yMin: 0, xMax: 1, yMax: 1 } : null, evidence: "Sol libre et perspective lisible.",
+            ...(payload.text.format.name === "storefront_scene_pose_preflight" ? { cameraElevationDegrees: 25, cameraRollDegrees: 0, shortposeEvidence: "Dessus des meubles visible." } : {}),
+          })),
         }) }] }] });
       }
       if (payload.text?.format?.name === "scene_obstacle_inspection") {
@@ -420,12 +422,15 @@ describe("simple render orchestration with offline providers", () => {
     const result = await createRender(db, "org", request, "storefront:visitor-1");
     expect(result).toMatchObject({ status: "succeeded", provider: "openai", attemptCount: 1,
       qualityDecision: { status: "accepted", version: "storefront-realistic-placement-v3" },
-      engineVersions: { quality: "storefront-realistic-placement-v3", composite: "storefront-guided-perspective-v2", editModel: "test-image", imageQuality: "medium", scaleEstimation: "storefront-scene-preflight-v1" } });
+      engineVersions: { quality: "storefront-realistic-placement-v3", composite: "storefront-guided-perspective-v3", editModel: "test-image", imageQuality: "medium", scaleEstimation: "storefront-scene-pose-v2" } });
     expect(mocks.edit).toHaveBeenCalledTimes(1);
     const imageRequest = mocks.edit.mock.calls[0]![0];
     expect(imageRequest).toMatchObject({ quality: "medium", preserveBackground: true });
     expect(imageRequest.prompt).toContain("image1 is the untouched room");
     expect(imageRequest.prompt).toContain("BOTTOM-MIDDLE");
+    expect(imageRequest.prompt).toContain("contactPixelInPaddedInput");
+    expect(imageRequest.prompt).not.toContain("contactPixelInOutput");
+    expect(imageRequest.prompt).toContain("Transfer these positions and lengths proportionally");
     const cleanRoomPixels = await sharp(Buffer.from(imageRequest.scene)).removeAlpha().raw().toBuffer();
     // The scene fixture is gray; a brown pasted product must not bias image1.
     for (let index = 0; index < cleanRoomPixels.length; index += 3) {

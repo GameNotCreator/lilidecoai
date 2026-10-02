@@ -38,7 +38,7 @@ import {
 import { reviewStorefrontPlacement, storefrontPlacementReviewAllowance, STOREFRONT_PLACEMENT_REVIEW_VERSION, STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION, type StorefrontPlacementReviewInput } from "./ai/storefront-placement-review";
 import { perspectiveEditComposition, restorePerspectiveBackground } from "./storefront-realistic-composite";
 import { buildStorefrontPerspectiveGuide, STOREFRONT_GUIDED_REALISTIC_COMPOSITE_VERSION } from "./storefront-perspective-guide";
-import { inspectStorefrontScene, storefrontScenePreflightAllowance, STOREFRONT_SCENE_PREFLIGHT_VERSION } from "./ai/storefront-scene-preflight";
+import { inspectStorefrontScene, storefrontScenePreflightAllowance, STOREFRONT_SCENE_PREFLIGHT_VERSION, STOREFRONT_POSE_PREFLIGHT_VERSION, type StorefrontScenePose } from "./ai/storefront-scene-preflight";
 import { captureStage } from "./render-capture";
 import { cutoutTrust } from "./cutout-identity";
 import { privateVisibility, readAsset, storeAsset } from "./assets";
@@ -511,7 +511,7 @@ export async function createRender(
     engineVersions: {
       placementGeometry: SIMPLE_PLACEMENT_VERSION,
       composite: fastStorefront ? STOREFRONT_GUIDED_REALISTIC_COMPOSITE_VERSION : simplePointWorkflow ? CONTACT_LIGHT_COMPOSITE_VERSION : SIMPLE_COMPOSITE_VERSION,
-      scaleEstimation: fastStorefront ? input.scaleReference ? "storefront-manual-reference-v1" : STOREFRONT_SCENE_PREFLIGHT_VERSION : SCALE_ESTIMATION_VERSION,
+      scaleEstimation: fastStorefront ? input.scaleReference ? "storefront-manual-reference-v1" : STOREFRONT_POSE_PREFLIGHT_VERSION : SCALE_ESTIMATION_VERSION,
       quality: fastStorefront ? STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION : simplePointWorkflow ? VISUAL_REVIEW_VERSION : QUALITY_VERSION,
       // The prompt the model actually receives. simple_point sends the
       // harmonize prompt (SIMPLE_COMPOSITE_PROMPT_VERSION); the "simple point"
@@ -1125,16 +1125,18 @@ async function runSimplePointRender(
   const points = simpleObjects.map((item) => item.placementPoint);
   const kinds = simpleObjects.map((item) => item.placementKind);
   let realisticInspections: SceneInspection[] | undefined;
+  let realisticPoses: StorefrontScenePose[] | undefined;
   const scaleResult: SceneScaleResult = realisticStorefront ? await durableStep(db, "storefront-scene-preflight", "analysis", async () => {
     if (serverConfig.aiMockMode) return { spans: [], lighting: null, cached: true };
     const result = await measureProviderCall(db, render, {
       step: "storefront_scene_preflight", provider: "openai", model: serverConfig.openaiVisionModel,
-      ...storefrontScenePreflightAllowance(), promptVersion: STOREFRONT_SCENE_PREFLIGHT_VERSION,
+      ...storefrontScenePreflightAllowance(), promptVersion: fastRealisticReview ? STOREFRONT_POSE_PREFLIGHT_VERSION : STOREFRONT_SCENE_PREFLIGHT_VERSION,
     }, () => inspectStorefrontScene({ room: { data: sceneImage, mimeType: "image/webp" },
       points: simpleObjects.map(item => ({ point: item.placementPoint, kind: item.placementKind })),
       deadlineMs: Math.min(renderDeadlineMs - 125_000, Date.now() + 25_000), reference: input.scaleReference,
+      ...(fastRealisticReview ? { productHeightsCm: simpleObjects.map(item => item.product.heightCm) } : {}),
     }), { maxAttempts: 1, respectRetryable: true });
-    return { spans: result.spans, inspections: result.inspections, lighting: null, cached: false };
+    return { spans: result.spans, inspections: result.inspections, poses: result.poses, lighting: null, cached: false };
   }) : await durableStep(
     db,
     "scene-scale",
@@ -1166,6 +1168,8 @@ async function runSimplePointRender(
   );
   if (realisticStorefront && "inspections" in scaleResult)
     realisticInspections = (scaleResult as SceneScaleResult & { inspections: SceneInspection[] }).inspections;
+  if (fastRealisticReview && "poses" in scaleResult)
+    realisticPoses = (scaleResult as SceneScaleResult & { poses?: StorefrontScenePose[] }).poses;
   const spans = scaleResult.spans;
   const lighting = scaleResult.lighting;
   if (
@@ -1484,6 +1488,7 @@ async function runSimplePointRender(
         index, point: item.placementPoint, kind: item.placementKind,
         dimensionsCm: { width: item.product.widthCm, height: item.product.heightCm, depth: item.product.depthCm },
         pixelsPerCm: scales[index]!.pixelsPerCm!,
+        pose: realisticPoses?.[index],
       })), reference,
     }) : null;
     const referenceGuide = placementGuide ?? (reference ? await markPoints(sceneImage, [
@@ -1502,8 +1507,10 @@ async function runSimplePointRender(
       "The unmarked product photographs are the identity authority. Preserve the exact design, material, colour, patterns, handles, lid, crown and proportions. Do not copy their camera angle or background into the room. No invented, missing or duplicate parts or products.",
       ...(fastRealisticReview ? [`CATALOGUE IMAGE IDENTITIES: ${JSON.stringify(frontToBack.map((index, order) => ({ image: order === 0 ? 2 : order + 3, guideLabel: index + 1, name: simpleObjects[index]!.product.name })))}`] : []),
       `Original room frame: ${sceneWidth}x${sceneHeight}; composition padding: offset(${padded.offsetX},${padded.offsetY}) in ${padded.paddedWidth}x${padded.paddedHeight}.`,
+      ...(fastRealisticReview ? ["All pixel coordinates and pixel lengths below refer to the padded INPUT room and its identically padded guide, never directly to the output raster. Transfer these positions and lengths proportionally if the generated output resolution differs. Normalized contact coordinates refer to the ORIGINAL ROOM before padding."] : []),
+      ...(fastRealisticReview ? [`ESTIMATED CAMERA POSE AT EACH PRODUCT TOP: ${JSON.stringify(realisticPoses ?? null)}. These angles are approximate room evidence, not calibrated measurements. The geometry guide shows a projected enclosing volume at that height; its top-plane ellipse is only a perspective cue, never a design feature to invent. Use this downward view to expose the physical product's top more strongly when indicated. A rounded horizontal lid or rim must project with the indicated open top-plane proportions rather than collapse into the thin catalogue ellipse. Retain its exact catalogue components. A null angle means unknown: infer from the room instead of assuming a universal tilt.`] : []),
       reference ? `USER HEIGHT REFERENCE (same depth as product contacts): ${JSON.stringify(reference)}. The marked ROOM GUIDE labels101=reference base,102=reference top. The actual vertical height between them is ${reference.realHeightCm}cm. Use this to size physical HEIGHT, not the entire silhouette bounding box (which also includes the projected top/depth). No labels or markers in the result.` : `No measured reference is available. Infer a plausible approximate scale from the real room supports, camera view and the physical product dimensions. The initial size estimate is ${JSON.stringify(scales)}; correct visual contradictions rather than blindly reproducing its bounding box. Do not claim exact metric reconstruction.`,
-      `PRODUCT CONTRACTS, normalized in original room coordinates: ${JSON.stringify(simpleObjects.map((item, index) => ({ index, name: item.product.name, contact: item.placementPoint, kind: item.placementKind, dimensionsCm: { width: item.product.widthCm, height: item.product.heightCm, depth: item.product.depthCm }, ...(fastRealisticReview ? { guideLabel: index + 1, contactPixelInOutput: { x: Math.min(sceneWidth - 1, Math.round(item.placementPoint.x * sceneWidth)) + padded.offsetX, y: Math.min(sceneHeight - 1, Math.round(item.placementPoint.y * sceneHeight)) + padded.offsetY }, projectedPhysicalHeightPx: Math.round(item.product.heightCm * scales[index]!.pixelsPerCm!), approximateProjectedWidthPx: Math.round(item.product.widthCm * scales[index]!.pixelsPerCm!) } : {}) })))}`,
+      `PRODUCT CONTRACTS, normalized in original room coordinates: ${JSON.stringify(simpleObjects.map((item, index) => ({ index, name: item.product.name, contact: item.placementPoint, kind: item.placementKind, dimensionsCm: { width: item.product.widthCm, height: item.product.heightCm, depth: item.product.depthCm }, ...(fastRealisticReview ? { guideLabel: index + 1, contactPixelInPaddedInput: { x: Math.min(sceneWidth - 1, Math.round(item.placementPoint.x * sceneWidth)) + padded.offsetX, y: Math.min(sceneHeight - 1, Math.round(item.placementPoint.y * sceneHeight)) + padded.offsetY }, projectedPhysicalHeightPxInPaddedInput: Math.round(item.product.heightCm * scales[index]!.pixelsPerCm!), approximateProjectedWidthPxInPaddedInput: Math.round(item.product.widthCm * scales[index]!.pixelsPerCm!) } : {}) })))}`,
       fastRealisticReview
         ? "For a standing object, the numbered guide crosshair is the BOTTOM-MIDDLE of the visible physical base, not the centre of its floor footprint or its shadow. Centre that visible bottom edge exactly on the crosshair pixel, without shifting right, left or down. The guide vertical line is approximate physical body height; projected top/depth may extend above it. Its dashed frame is a size hint, not a catalogue silhouette. Preserve physical height/width/depth proportions and reorient the top to the actual room camera. For flat/wall objects use the marked centre. Keep the complete silhouette in frame."
         : "Place each standing object's actual contact base at its requested point. For flat or wall objects keep the requested centre. Keep the entire silhouette complete.",

@@ -10,6 +10,8 @@ vi.mock("../lib/server/config", () => ({ serverConfig: config }));
 import {
   inspectStorefrontScene, parseStorefrontScenePreflight,
   storefrontScenePreflightAllowance,
+  storefrontScenePreflightSchema, storefrontScenePosePreflightSchema,
+  STOREFRONT_SCENE_PREFLIGHT_VERSION, STOREFRONT_POSE_PREFLIGHT_VERSION,
   type StorefrontScenePreflightInput,
 } from "../lib/server/ai/storefront-scene-preflight";
 import { visionObservation } from "../lib/server/ai/openai-vision-cost";
@@ -20,6 +22,131 @@ beforeAll(async () => {
   room = new Uint8Array(await sharp({ create: {
     width: 240, height: 180, channels: 3, background: "#eeeeee",
   } }).webp({ lossless: true }).toBuffer());
+});
+
+function poseAnswer() {
+  return { points: answer().points.map((entry, index) => ({
+    ...entry,
+    cameraElevationDegrees: index === 1 ? null : index === 0 ? 45 : 20,
+    cameraRollDegrees: index === 2 ? null : index === 0 ? 8 : -4,
+    shortposeEvidence: index === 1 ? "Angle du sommet incertain ; montants inclinés visibles." : "Les plateaux et montants montrent une vue plongeante.",
+  })) };
+}
+const productHeightsCm = [40, 75, 20];
+
+describe("opt-in storefront top-camera pose preflight", () => {
+  it("adds ordered nullable pose evidence without changing the v1 schema or output", () => {
+    expect(STOREFRONT_SCENE_PREFLIGHT_VERSION).toBe("storefront-scene-preflight-v1");
+    expect(STOREFRONT_POSE_PREFLIGHT_VERSION).toBe("storefront-scene-pose-v2");
+    expect(parseStorefrontScenePreflight(answer(), points)).not.toHaveProperty("poses");
+    expect(storefrontScenePreflightSchema.safeParse(answer()).success).toBe(true);
+    expect(storefrontScenePreflightSchema.safeParse(poseAnswer()).success).toBe(false);
+    expect(storefrontScenePosePreflightSchema.safeParse(answer()).success).toBe(false);
+    const result = parseStorefrontScenePreflight(poseAnswer(), points, productHeightsCm);
+    expect(result.poses).toEqual([
+      { cameraElevationDegrees: 45, cameraRollDegrees: 8, evidence: "Les plateaux et montants montrent une vue plongeante." },
+      { cameraElevationDegrees: null, cameraRollDegrees: -4, evidence: "Angle du sommet incertain ; montants inclinés visibles." },
+      { cameraElevationDegrees: 20, cameraRollDegrees: null, evidence: "Les plateaux et montants montrent une vue plongeante." },
+    ]);
+    expect(result.spans.every((span) => span.confidence !== "high")).toBe(true);
+  });
+
+  it("keeps completely unknown camera angles as null without inventing a neutral pose", () => {
+    const data = poseAnswer();
+    data.points[0]!.cameraElevationDegrees = null;
+    data.points[0]!.cameraRollDegrees = null;
+    data.points[0]!.shortposeEvidence = "Plans et axe vertical masqués ; pose indéterminée.";
+    expect(parseStorefrontScenePreflight(data, points, productHeightsCm).poses?.[0]).toEqual({
+      cameraElevationDegrees: null, cameraRollDegrees: null,
+      evidence: "Plans et axe vertical masqués ; pose indéterminée.",
+    });
+  });
+
+  it.each(["missing", "duplicate", "reordered", "unexpected"])("rejects %s pose coverage instead of reassigning another target's angle", (defect) => {
+    const data = poseAnswer();
+    if (defect === "missing") data.points.pop();
+    if (defect === "duplicate") data.points[1]!.index = 1;
+    if (defect === "reordered") data.points.reverse();
+    if (defect === "unexpected") data.points[0]!.index = 4;
+    expect(() => parseStorefrontScenePreflight(data, points, productHeightsCm)).toThrow();
+  });
+
+  it.each([
+    { cameraElevationDegrees: -1 }, { cameraElevationDegrees: 86 },
+    { cameraElevationDegrees: NaN }, { cameraElevationDegrees: Infinity },
+    { cameraElevationDegrees: "45" },
+    { cameraRollDegrees: -31 }, { cameraRollDegrees: 31 },
+    { cameraRollDegrees: NaN }, { cameraRollDegrees: "0" },
+    { shortposeEvidence: "" }, { shortposeEvidence: "x".repeat(161) },
+    { confidence: "high" },
+  ])("rejects malformed or fabricated pose evidence (%j)", (invalid) => {
+    const data = poseAnswer();
+    Object.assign(data.points[0]!, invalid);
+    expect(() => parseStorefrontScenePreflight(data, points, productHeightsCm)).toThrow(/incomplète|invalide/);
+  });
+
+  it.each(["cameraElevationDegrees", "cameraRollDegrees", "shortposeEvidence"] as const)(
+    "requires %s and never falls back to the legacy schema", (name) => {
+      const data = poseAnswer();
+      delete (data.points[0]! as Partial<typeof data.points[0]>)[name];
+      expect(() => parseStorefrontScenePreflight(data, points, productHeightsCm)).toThrow();
+      expect(() => parseStorefrontScenePreflight(answer(), points, productHeightsCm)).toThrow();
+    },
+  );
+
+  it.each([[], [40], [40, 75], [40, 75, 20, 10], [0, 75, 20], [-40, 75, 20],
+    [NaN, 75, 20], [Infinity, 75, 20], ["40", 75, 20], null])(
+    "refuses invalid product heights before any provider call (%j)", async (heights) => {
+      const fetcher = vi.fn<typeof globalThis.fetch>();
+      vi.stubGlobal("fetch", fetcher);
+      await expect(inspectStorefrontScene({
+        ...input(), productHeightsCm: heights as number[],
+      })).rejects.toMatchObject({ code: "invalid_input", providerCalled: false });
+      expect(fetcher).not.toHaveBeenCalled();
+      expect(() => parseStorefrontScenePreflight(poseAnswer(), points, heights as number[])).toThrow(/hauteurs/);
+    },
+  );
+
+  it("uses the same single 25s call and 6000-token allowance for heights, scale and top-camera pose", async () => {
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    const fetcher = vi.fn<typeof globalThis.fetch>(async () => Response.json(envelope(poseAnswer())));
+    vi.stubGlobal("fetch", fetcher);
+    const result = await inspectStorefrontScene({ ...input(), productHeightsCm });
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(timeout.mock.calls[0]![0]).toBeLessThanOrEqual(25_000);
+    expect(result.poses).toHaveLength(3);
+    const request = JSON.parse(fetcher.mock.calls[0]![1]!.body as string);
+    expect(request).toMatchObject({
+      reasoning: { effort: "medium" }, max_output_tokens: 6000,
+      text: { format: { name: "storefront_scene_pose_preflight", strict: true } },
+    });
+    expect(storefrontScenePreflightAllowance().estimatedCostUsd).toBe(0.55);
+    const prompt = request.input[0].content[0].text as string;
+    expect(prompt).toContain(JSON.stringify(productHeightsCm));
+    expect(prompt).toContain("TOP of a standing product");
+    expect(prompt).toContain("angle at the product top can differ");
+    expect(prompt).toContain("floor and wall planes, table tops");
+    expect(prompt).toContain("never derive it from a catalogue camera pose");
+    expect(prompt).toContain("low-confidence visual estimate");
+    expect(prompt).toContain("Return null independently for either angle");
+    expect(request.input[0].content.filter((entry: { type: string }) => entry.type === "input_image")).toHaveLength(1);
+    expect(visionObservation(result)?.usage).toEqual(usage);
+  });
+
+  it("retains answered usage and refuses a late pose response without a second call", async () => {
+    const start = Date.now();
+    const fetcher = vi.fn<typeof globalThis.fetch>(async () => {
+      vi.spyOn(Date, "now").mockReturnValue(start + 26_000);
+      return Response.json(envelope(poseAnswer()));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const error = await inspectStorefrontScene({
+      ...input(), deadlineMs: start + 180_000, productHeightsCm,
+    }).catch((reason: unknown) => reason);
+    expect(error).toMatchObject({ code: "deadline", providerCalled: true });
+    expect(visionObservation(error)?.usage).toEqual(usage);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
 });
 const points: StorefrontScenePreflightInput["points"] = [
   { point: { x: 0.4, y: 0.8 }, kind: "standing" },
