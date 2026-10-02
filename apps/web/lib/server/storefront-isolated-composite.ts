@@ -35,30 +35,26 @@ function invalid(message: string): never {
 }
 
 /** Require one complete connected silhouette, retaining its anti-aliased edge. */
-function productBox(data: Buffer, width: number, height: number): AlphaBox {
+function productBox(data: Buffer, width: number, height: number): { box: AlphaBox; coreWidth: number } {
   const area = width * height;
   let first = -1;
   let solid = 0;
   let clear = 0;
-  let left = width, right = -1, top = height, bottom = -1;
   for (let pixel = 0; pixel < area; pixel++) {
+    // Native alpha outputs can carry invisible numerical dust. It must not
+    // enlarge the physical silhouette or copy RGB hidden beneath alpha zero.
+    if (data[pixel * 4 + 3]! <= 2) data[pixel * 4 + 3] = 0;
     const alpha = data[pixel * 4 + 3]!;
     if (alpha === 0) clear++;
     if (alpha >= 128) {
       solid++;
       if (first < 0) first = pixel;
     }
-    if (alpha === 0) continue;
-    const x = pixel % width, y = Math.floor(pixel / width);
-    left = Math.min(left, x); right = Math.max(right, x);
-    top = Math.min(top, y); bottom = Math.max(bottom, y);
   }
   if (clear < Math.max(1, Math.ceil(area * 0.01)))
     invalid("Le produit généré n’a pas un fond réellement transparent.");
   if (first < 0 || solid < Math.max(8, Math.ceil(area * 0.0002)))
     invalid("Une colonne générée ne contient pas de produit visible complet.");
-  if (left === 0 || top === 0 || right === width - 1 || bottom === height - 1)
-    invalid("Le produit généré est tronqué par une frontière de colonne ou de l’image.");
 
   // Connectivity uses actual alpha, so a thin anti-aliased handle is retained.
   // Separate objects, opaque debris and detached shadows cannot be pasted along.
@@ -79,11 +75,32 @@ function productBox(data: Buffer, width: number, height: number): AlphaBox {
       }
     }
   }
+  let detachedAlpha = 0, detachedPeak = 0;
   for (let pixel = 0; pixel < area; pixel++) {
-    if (data[pixel * 4 + 3]! > 0 && !visited[pixel])
-      invalid("La colonne générée contient des éléments séparés du produit.");
+    if (visited[pixel]) continue;
+    const alpha = data[pixel * 4 + 3]!;
+    detachedAlpha += alpha; detachedPeak = Math.max(detachedPeak, alpha);
   }
-  return { left, top, width: right - left + 1, height: bottom - top + 1 };
+  // Removing the <=2 bridges can isolate a few equally faint edge samples.
+  // Never discard a visible component (alpha >=8), or a broad faint region.
+  const noiseBudget = Math.min(512, Math.max(32, solid * 255 * 0.00001));
+  if (detachedPeak >= 8 || detachedAlpha > noiseBudget)
+    invalid("La colonne générée contient des éléments séparés du produit.");
+  let left = width, right = -1, top = height, bottom = -1;
+  let coreLeft = width, coreRight = -1;
+  for (let pixel = 0; pixel < area; pixel++) {
+    if (!visited[pixel]) data[pixel * 4 + 3] = 0;
+    const alpha = data[pixel * 4 + 3]!;
+    if (alpha === 0) continue;
+    const x = pixel % width, y = Math.floor(pixel / width);
+    left = Math.min(left, x); right = Math.max(right, x);
+    top = Math.min(top, y); bottom = Math.max(bottom, y);
+    if (alpha >= 128) { coreLeft = Math.min(coreLeft, x); coreRight = Math.max(coreRight, x); }
+  }
+  if (left === 0 || top === 0 || right === width - 1 || bottom === height - 1)
+    invalid("Le produit généré est tronqué par une frontière de colonne ou de l’image.");
+  return { box: { left, top, width: right - left + 1, height: bottom - top + 1 },
+    coreWidth: coreRight - coreLeft + 1 };
 }
 
 function visibleAnchor(data: Buffer, width: number, height: number, standing: boolean) {
@@ -156,12 +173,13 @@ export async function composeStorefrontIsolatedProducts(input: {
     const column = await sharp(generated.data, { raw: generated.info })
       .extract({ left: start, top: 0, width: columnWidth, height: generated.info.height })
       .raw().toBuffer();
-    const box = productBox(column, columnWidth, generated.info.height);
+    const { box, coreWidth } = productBox(column, columnWidth, generated.info.height);
     // Width is the physical scale anchor. Height follows the generated pose
     // through a single uniform resize, including flat/wall foreshortening.
-    const widthPx = Math.round(object.dimensionsCm.width * object.pixelsPerCm);
+    const physicalWidthPx = Math.round(object.dimensionsCm.width * object.pixelsPerCm);
+    const widthPx = Math.round(box.width * physicalWidthPx / coreWidth);
     const predictedHeight = Math.round(box.height * widthPx / box.width);
-    if (widthPx < 1 || predictedHeight < 1 || widthPx > width || predictedHeight > height)
+    if (physicalWidthPx < 1 || widthPx < 1 || predictedHeight < 1 || widthPx > width || predictedHeight > height)
       invalid("Le produit à cette échelle ne tient pas dans la photographie.");
     const resized = await sharp(column, { raw: { width: columnWidth, height: generated.info.height, channels: 4 } })
       .extract(box).resize({ width: widthPx, kernel: "lanczos3" }).raw().toBuffer({ resolveWithObject: true });

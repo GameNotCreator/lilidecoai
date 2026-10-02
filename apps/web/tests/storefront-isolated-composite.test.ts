@@ -57,7 +57,9 @@ describe("isolated source-alpha product composition", () => {
       { left: 20, top: 20, width: 1, height: 40, color: [240, 10, 20], alpha },
       { left: 39, top: 20, width: 1, height: 40, color: [240, 10, 20], alpha },
     ]);
-    const result = await compose(image);
+    const result = await compose(image, [object({ dimensionsCm: {
+      width: alpha < 128 ? 9 : 10, height: 20, depth: 10,
+    } })]);
     const p = result.placements[0]!;
     const output = await rgb(result.image), original = await rgb(await room());
     const background = pixel(original, p.left, p.top);
@@ -69,6 +71,15 @@ describe("isolated source-alpha product composition", () => {
     const result = await compose(image, [object({ dimensionsCm: { width: 12, height: 4, depth: 12 }, pixelsPerCm: 2,
       pose: { cameraElevationDegrees: 40, cameraRollDegrees: 10 } })]);
     expect(result.placements[0]).toMatchObject({ widthPx: 24, heightPx: 60 });
+  });
+
+  it("uses the visible core for physical width while preserving uniformly scaled edge fringes", async () => {
+    const image = await generated([rectangle,
+      { left: 19, top: 20, width: 1, height: 40, color: [240, 10, 20], alpha: 64 },
+      { left: 40, top: 20, width: 1, height: 40, color: [240, 10, 20], alpha: 64 },
+    ]);
+    const result = await compose(image, [object({ dimensionsCm: { width: 20, height: 40, depth: 20 } })]);
+    expect(result.placements[0]).toMatchObject({ widthPx: 44, heightPx: 80 });
   });
 
   it("anchors the visible bottom midpoint rather than the full-width bounding-box centre", async () => {
@@ -125,6 +136,38 @@ describe("isolated source-alpha product composition", () => {
 
   it("rejects detached garbage instead of pasting it into the customer's room", async () => {
     const image = await generated([rectangle, { left: 60, top: 10, width: 3, height: 3, color: [0, 255, 0] }]);
+    await expect(compose(image)).rejects.toThrow(/séparés/);
+  });
+
+  it.each([1, 2])("tolerates invisible alpha %i noise without extending the product or changing room pixels", async alpha => {
+    const image = await generated([rectangle,
+      { left: 0, top: 0, width: 80, height: 1, color: [0, 255, 0], alpha },
+      { left: 60, top: 10, width: 3, height: 3, color: [0, 255, 0], alpha },
+    ]);
+    const baseline = await compose(await generated([rectangle]));
+    const result = await compose(image);
+    expect(result.placements).toEqual(baseline.placements);
+    expect(await rgb(result.image)).toEqual(await rgb(baseline.image));
+  });
+
+  it("drops only tiny disconnected near-invisible fringes after the alpha floor", async () => {
+    const image = await generated([rectangle,
+      { left: 60, top: 10, width: 2, height: 2, color: [0, 255, 0], alpha: 5 },
+    ]);
+    expect(await rgb((await compose(image)).image)).toEqual(await rgb((await compose(await generated([rectangle]))).image));
+  });
+
+  it.each([8, 16])("continues rejecting disconnected visible alpha %i debris", async alpha => {
+    const image = await generated([rectangle,
+      { left: 60, top: 10, width: 3, height: 3, color: [0, 255, 0], alpha },
+    ]);
+    await expect(compose(image)).rejects.toThrow(/séparés/);
+  });
+
+  it("refuses broad faint disconnected contamination even below alpha eight", async () => {
+    const image = await generated([rectangle,
+      { left: 50, top: 10, width: 20, height: 10, color: [0, 255, 0], alpha: 5 },
+    ]);
     await expect(compose(image)).rejects.toThrow(/séparés/);
   });
 
