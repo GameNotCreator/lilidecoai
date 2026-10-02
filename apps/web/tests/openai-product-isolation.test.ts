@@ -271,3 +271,152 @@ describe("OpenAI catalogue product isolation", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+function cameraFirstRequest(): ImageEditingRequest {
+  return {
+    ...request(), quality: "medium", productIsolation: true, productIsolationCameraFirst: true,
+    references: [reference("product_front", [11]), reference("room_original", [41], "image/jpeg"), reference("spatial_guide", [61], "image/png")],
+  };
+}
+
+describe("OpenAI internal camera-first product isolation", () => {
+  it.each([1, 2, 3])("sends guide, room and %i products in exact catalogue order, preserving repeated bytes", async count => {
+    const fetchMock = successfulFetch();
+    const products = [reference("product_detail", [11, 12]), reference("product_side", [21, 22], "image/png"), reference("product_front", [11, 12])].slice(0, count);
+    const result = await new OpenAIImageProvider().edit({
+      ...cameraFirstRequest(),
+      references: [reference("composition", [91]), products[0]!, reference("room_original", [41], "image/jpeg"),
+        reference("target_mask", [93], "image/png"), ...products.slice(1),
+        reference("intermediate", [92]), reference("spatial_guide", [61], "image/png")],
+    });
+    expect(result.status).toBe("succeeded");
+    const body = postedBody(fetchMock);
+    expect(await postedImages(body)).toEqual([
+      { bytes: [61], mimeType: "image/png" }, { bytes: [41], mimeType: "image/jpeg" },
+      ...products.map(product => ({ bytes: [...product.data], mimeType: product.mimeType })),
+    ]);
+    expect((body.getAll("image[]") as File[]).map(file => file.name)).toEqual([
+      "spatial-guide.png", "room-original.jpg", ...products.map((product, index) => `product-${index + 3}.${product.mimeType === "image/png" ? "png" : "webp"}`),
+    ]);
+    expect(body.get("background")).toBe("transparent");
+    expect(body.get("output_format")).toBe("webp");
+    expect(body.get("output_compression")).toBe("100");
+    expect(body.has("mask")).toBe(false);
+  });
+
+  it.each([
+    ["missing guide", [reference("product_front", [11]), reference("room_original", [41])]],
+    ["missing room", [reference("product_front", [11]), reference("spatial_guide", [61])]],
+    ["multiple guides", [reference("product_front", [11]), reference("room_original", [41]), reference("spatial_guide", [61]), reference("spatial_guide", [62])]],
+    ["multiple rooms", [reference("product_front", [11]), reference("room_original", [41]), reference("room_original", [42]), reference("spatial_guide", [61])]],
+    ["both camera references missing", [reference("product_front", [11]), reference("composition", [91])]],
+    ["product missing", [reference("room_original", [41]), reference("spatial_guide", [61]), reference("composition", [91])]],
+  ] as const)("rejects %s locally, without a provider call or fallback product", async (_name, references) => {
+    const fetchMock = successfulFetch();
+    const result = await new OpenAIImageProvider().edit({ ...cameraFirstRequest(), references: [...references] });
+    expect(result.status).toBe("failed");
+    expect(result.error).toMatchObject({ code: "invalid_input", retryable: false });
+    expect(result.estimatedCostUsd).toBe(0);
+    expect(result.images).toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([false, undefined])("keeps product-first isolation and accepts multiple camera references when camera-first is %s", async productIsolationCameraFirst => {
+    const fetchMock = successfulFetch();
+    await new OpenAIImageProvider().edit({
+      ...cameraFirstRequest(), productIsolationCameraFirst,
+      references: [reference("spatial_guide", [61]), reference("room_original", [41]), reference("product_front", [11]),
+        reference("product_detail", [11]), reference("room_original", [42]), reference("spatial_guide", [62])],
+    });
+    const body = postedBody(fetchMock);
+    expect((await postedImages(body)).map(image => image.bytes)).toEqual([[11], [11], [41], [42], [61], [62]]);
+    expect(body.get("background")).toBe("transparent");
+    expect(body.has("mask")).toBe(false);
+  });
+
+  it.each([false, undefined])("ignores camera-first and keeps opaque legacy order with multiple rooms and guides when isolation is %s", async productIsolation => {
+    const fetchMock = successfulFetch();
+    await new OpenAIImageProvider().edit({
+      ...cameraFirstRequest(), productIsolation,
+      references: [reference("spatial_guide", [61]), reference("room_original", [41]), reference("product_front", [11]),
+        reference("composition", [91]), reference("room_original", [42]), reference("product_detail", [11]), reference("spatial_guide", [62])],
+    });
+    const body = postedBody(fetchMock);
+    expect((await postedImages(body)).map(image => image.bytes)).toEqual([[91], [11], [61], [62], [11]]);
+    expect(body.get("background")).toBe("opaque");
+    expect([...new Uint8Array(await (body.get("mask") as Blob).arrayBuffer())]).toEqual([5]);
+  });
+
+  it.each([false, undefined])("ignores camera-first and keeps composition/cutout fallback without camera references when isolation is %s", async productIsolation => {
+    const fetchMock = successfulFetch();
+    await new OpenAIImageProvider().edit({ ...cameraFirstRequest(), productIsolation, references: undefined, targetMask: undefined });
+    const body = postedBody(fetchMock);
+    expect((await postedImages(body)).map(image => image.bytes)).toEqual([[3], [2]]);
+    expect(body.get("background")).toBe("opaque");
+    expect(body.has("mask")).toBe(false);
+  });
+
+  it("keeps standard generation on the legacy path when only the camera-first flag is present", async () => {
+    const fetchMock = successfulFetch();
+    const input = { ...cameraFirstRequest(), productIsolation: undefined, references: undefined };
+    await new OpenAIImageProvider().generate(input);
+    const body = postedBody(fetchMock);
+    expect((await postedImages(body)).map(image => image.bytes)).toEqual([[3], [2]]);
+    expect(body.get("background")).toBe("opaque");
+  });
+
+  it("preserves medium quality, the 90-second signal and actual usage for camera-first isolation", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    const fetchMock = successfulFetch();
+    const result = await new OpenAIImageProvider().edit(cameraFirstRequest());
+    const body = postedBody(fetchMock);
+    expect(body.get("quality")).toBe("medium");
+    expect(timeout).toHaveBeenCalledTimes(1);
+    expect(timeout.mock.calls[0]![0]).toBe(90_000);
+    expect(fetchMock.mock.calls[0]![1]!.signal).toBeInstanceOf(AbortSignal);
+    expect(result.estimatedCostUsd).toBeCloseTo(0.321);
+    expect(result.usage).toEqual(reportedUsage);
+    expect(result.requestId).toBe("isolation-provider-request");
+    expect(result.attemptCount).toBe(1);
+  });
+
+  it("forwards durable abort through the camera-first call without retrying or claiming zero cost", async () => {
+    const controller = new AbortController();
+    let observedSignal: AbortSignal | undefined;
+    let started!: () => void;
+    const called = new Promise<void>((resolve) => { started = resolve; });
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async (...args) => {
+      observedSignal = args[1]?.signal ?? undefined;
+      started();
+      return new Promise<Response>((_resolve, reject) => {
+        observedSignal!.addEventListener("abort", () => reject(observedSignal!.reason), { once: true });
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const input = cameraFirstRequest();
+    const pending = durableContext.run({ render: { id: "camera-first-render" } as RenderDocument,
+      token: "camera-first-lease", signal: controller.signal }, () => new OpenAIImageProvider().edit(input));
+    await called;
+    expect(observedSignal?.aborted).toBe(false);
+    controller.abort(new DOMException("Storefront deadline reached", "AbortError"));
+    const result = await pending;
+    expect(observedSignal?.aborted).toBe(true);
+    expect(result.status).toBe("failed");
+    expect(result.error?.code).toBe("timeout");
+    expect(result.estimatedCostUsd).toBe(estimateOpenAICost(input.quality, input.size));
+    expect(result.estimatedCostUsd).toBeGreaterThan(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry a camera-first request after a retryable provider failure", async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => Response.json({ error: { code: "provider_unavailable" } }, { status: 503 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const input = cameraFirstRequest();
+    const result = await new OpenAIImageProvider().edit(input);
+    expect(result.error).toMatchObject({ code: "provider_unavailable", retryable: true });
+    expect(result.estimatedCostUsd).toBe(estimateOpenAICost(input.quality, input.size));
+    expect(result.attemptCount).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});

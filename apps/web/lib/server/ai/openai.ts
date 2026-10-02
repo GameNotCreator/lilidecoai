@@ -63,6 +63,8 @@ export class OpenAIImageProvider
     const references = request.references ?? [];
     const productIsolation =
       "productIsolation" in request && request.productIsolation === true;
+    const productIsolationCameraFirst = productIsolation &&
+      "productIsolationCameraFirst" in request && request.productIsolationCameraFirst === true;
     const productReferences = references.filter((reference) =>
       reference.role.startsWith("product_"),
     );
@@ -76,11 +78,20 @@ export class OpenAIImageProvider
           "Une photographie catalogue est requise pour isoler le produit.",
           false,
         );
-      const orderedReferences = [
-        ...productReferences,
-        ...references.filter((reference) => reference.role === "room_original"),
-        ...references.filter((reference) => reference.role === "spatial_guide"),
-      ];
+      const roomReferences = references.filter((reference) => reference.role === "room_original");
+      const guideReferences = references.filter((reference) => reference.role === "spatial_guide");
+      if (productIsolationCameraFirst && (guideReferences.length !== 1 || roomReferences.length !== 1))
+        return failure(
+          this.model,
+          crypto.randomUUID(),
+          Date.now() - startedAt,
+          "invalid_input",
+          "Une seule vue guidée et une seule photographie de la pièce sont requises pour cette isolation.",
+          false,
+        );
+      const orderedReferences = productIsolationCameraFirst
+        ? [...guideReferences, ...roomReferences, ...productReferences]
+        : [...productReferences, ...roomReferences, ...guideReferences];
       for (const [index, reference] of orderedReferences.entries()) {
         const name =
           reference.role === "room_original"

@@ -116,6 +116,8 @@ export interface ImageEditingRequest extends ImageGenerationRequest {
   preserveBackground: boolean;
   /** Internal product-only output: catalog references first, transparent background. */
   productIsolation?: boolean;
+  /** Internal isolation opt-in: one geometry guide, one room, then every catalog reference. */
+  productIsolationCameraFirst?: boolean;
 }
 
 /** @deprecated Prefer ProviderAttemptResult for all new provider code. */

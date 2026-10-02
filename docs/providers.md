@@ -83,8 +83,11 @@ file d’attente comprise. Il ne relance pas automatiquement une image refusée.
 
 `STOREFRONT_IMAGE_MODEL` utilise `gpt-image-2.5-sunburst` par défaut, à qualité
 `medium`, pour produire une vraie transparence WebP sans masque. Les photos
-catalogue sont transmises en premier, une par objet, puis la pièce et le guide
-de géométrie. Un panier de trois objets utilise trois colonnes dans la même
+catalogue restent les références d’identité, une par objet. Les nouvelles
+admissions `storefront-isolated-camera-first-v5` transmettent d’abord le guide
+de caméra, puis la pièce, puis ces photos catalogue. Ce contrat de prompt est
+figé à l’admission ; les anciens rendus gardent leur ordre catalogue en premier.
+Un panier de trois objets utilise trois colonnes dans la même
 génération. Les répétitions d’un produit conservent leur colonne.
 
 Le site extrait les nouvelles silhouettes, les redimensionne uniformément et
@@ -103,7 +106,7 @@ Le contrôle final de l’identité, du placement, de l’échelle et de la coh�
 photographique reste obligatoire. Un candidat refusé est privé et ne devient
 ni un résultat livré ni un crédit de visualisation débité. Le budget utilise
 le modèle effectivement admis ; la production actuelle limite chaque rendu
-à 2 USD d’estimation. Les anciens rendus gardent leur contrat et `OPENAI_MODEL`.
+à 2 USD d’estimation. Les anciens rendus gardent leur contrat et leur modèle admis.
 
 ## Variables serveur
 
