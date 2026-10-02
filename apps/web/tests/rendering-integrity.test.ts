@@ -67,6 +67,7 @@ vi.mock("../lib/server/ai", () => ({
 import { createRender } from "../lib/server/rendering";
 import { getOrEstimateSceneScale } from "../lib/server/scale-estimation";
 import { stopRender } from "../lib/server/render-lifecycle";
+import * as storefrontPlacementReview from "../lib/server/ai/storefront-placement-review";
 
 const db = {} as Db;
 let renders: ReturnType<typeof documentStore>;
@@ -179,13 +180,15 @@ function structuredReview(
 async function runHistoricalStorefrontRender(
   scaleEstimation = "storefront-scene-pose-v3",
   promptVersion = "storefront-realistic-placement-v3",
+  imageQuality: "medium" | "high" = "medium",
 ) {
   const insert = renders.insertOne;
   renders.insertOne = async row => {
     const versions = row.engineVersions as NonNullable<RenderDocument["engineVersions"]>;
     versions.scaleEstimation = scaleEstimation;
     versions.prompt = promptVersion;
-    versions.imageQuality = "medium";
+    versions.imageQuality = imageQuality;
+    versions.quality = "storefront-realistic-placement-v3";
     row.promptVersion = promptVersion;
     return insert(row);
   };
@@ -226,6 +229,7 @@ function cameraGuideWindow(prompt: string) {
 }
 
 beforeEach(async () => {
+  vi.spyOn(storefrontPlacementReview, "reviewStorefrontPlacement");
   renders = documentStore();
   attempts = documentStore();
   products = documentStore();
@@ -395,13 +399,13 @@ beforeEach(async () => {
           ],
         });
       }
-      if (["storefront_placement_review", "storefront_realistic_placement_review"].includes(payload.text?.format?.name)) {
+      if (["storefront_placement_review", "storefront_realistic_placement_review", "storefront_realistic_detail_review"].includes(payload.text?.format?.name)) {
         reviewRequest = payload;
         reviewCalls++;
         if (qualityUnavailable) return new Response("offline", { status: 503 });
         const text = payload.input[1].content[0].text as string;
         const placementData = JSON.parse(text.split("Placement contracts: ")[1]!.split(". ")[0]!) as Array<{ id: string; expectedBox: Record<string, number>; placementPoint?: { x: number; y: number } }>;
-        const realistic = payload.text.format.name === "storefront_realistic_placement_review";
+        const realistic = payload.text.format.name !== "storefront_placement_review";
         const checks = ["present", "identity", "position", "scale", "perspective", "contact", "edges", "occlusion", "noDuplicate"];
         return Response.json({ status: "completed", output: [{ type: "message", status: "completed", content: [{ type: "output_text", text: JSON.stringify({
           accepted: true, score: 0.95, confidence: 0.95, photoUsable: passed(), backgroundPreserved: passed(), noUnrequestedProducts: passed(), feedback: "Placement conforme.",
@@ -452,7 +456,10 @@ beforeEach(async () => {
     }),
   );
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 describe("restricted spatial admission", () => {
   it("does not admit unprofiled v11 products when only solid-base v12 is enabled", async () => {
@@ -531,7 +538,7 @@ describe("simple render orchestration with offline providers", () => {
     expect(scenePreflightNames).toEqual(["storefront_scene_pose_preflight"]);
     expect(scenePreflightTexts[0]).not.toContain("product widths in centimetres");
   });
-  it("freezes the high-quality camera-window contract at admission and maps catalogues to source images 3 onward", async () => {
+  it("freezes high-quality generation and native-detail review at admission with catalogue source order", async () => {
     await scenes.updateOne({ id: "scene" }, { $set: { publicSessionId: "storefront:visitor-1" } });
     request.simplePlacements = request.simplePlacements!.map((item, index) => ({
       ...item, placementPoint: { ...item.placementPoint, y: [0.55, 0.85, 0.7][index]! },
@@ -548,16 +555,17 @@ describe("simple render orchestration with offline providers", () => {
     const insert = renders.insertOne;
     renders.insertOne = async row => {
       // Assert the immutable admission contract before any provider could run.
-      expect(row).toMatchObject({ promptVersion: "storefront-isolated-camera-window-high-v7", engineVersions: {
-        prompt: "storefront-isolated-camera-window-high-v7", imageQuality: "high", composite: "storefront-isolated-product-v4",
-        scaleEstimation: "storefront-scene-width-pose-v4", quality: "storefront-realistic-placement-v3",
+      expect(row).toMatchObject({ promptVersion: "storefront-isolated-camera-detail-v8", engineVersions: {
+        prompt: "storefront-isolated-camera-detail-v8", imageQuality: "high", composite: "storefront-isolated-product-v4",
+        scaleEstimation: "storefront-scene-width-pose-v4", quality: "storefront-realistic-detail-v4",
       } });
       return insert(row);
     };
     const result = await createRender(db, "org", request, "storefront:visitor-1");
-    expect(result).toMatchObject({ status: "succeeded", promptVersion: "storefront-isolated-camera-window-high-v7",
-      engineVersions: { prompt: "storefront-isolated-camera-window-high-v7", imageQuality: "high" } });
-    expect(renders.rows[0]!.promptVersion).toBe("storefront-isolated-camera-window-high-v7");
+    expect(result).toMatchObject({ status: "succeeded", promptVersion: "storefront-isolated-camera-detail-v8",
+      qualityDecision: { version: "storefront-realistic-detail-v4" },
+      engineVersions: { prompt: "storefront-isolated-camera-detail-v8", imageQuality: "high", quality: "storefront-realistic-detail-v4" } });
+    expect(renders.rows[0]!.promptVersion).toBe("storefront-isolated-camera-detail-v8");
     expect(mocks.edit).toHaveBeenCalledTimes(1);
     const imageRequest = mocks.edit.mock.calls[0]![0];
     expect(imageRequest).toMatchObject({ productIsolation: true, productIsolationCameraFirst: true, quality: "high" });
@@ -588,7 +596,34 @@ describe("simple render orchestration with offline providers", () => {
     const { window } = windowContract;
     expect(Math.abs(guideSize.width! * window.height - guideSize.height! * window.width)).toBeLessThanOrEqual(Math.max(window.width, window.height));
     expect(imageRequest.prompt).toContain("Coordinates in the contracts still refer to the full original room");
-    expect(attempts.rows.find(row => row.stage === "generating_final")!.promptVersion).toBe("storefront-isolated-camera-window-high-v7");
+    expect(attempts.rows.find(row => row.stage === "generating_final")!.promptVersion).toBe("storefront-isolated-camera-detail-v8");
+    expect(attempts.rows.filter(row => row.stage === "storefront_placement_review")).toHaveLength(1);
+    expect(attempts.rows.find(row => row.stage === "storefront_placement_review")!.promptVersion).toBe("storefront-realistic-detail-v4");
+    const detailRequest = vi.mocked(storefrontPlacementReview.reviewStorefrontPlacement).mock.calls[0]![0];
+    expect(detailRequest).toMatchObject({ detailReview: true, fastReview: true, generatedProducts: {
+      productIds: ["p1:1", "p2:2", "p0:0"], image: { mimeType: "image/webp" },
+    } });
+    const generated = await mocks.edit.mock.results[0]!.value;
+    expect(Buffer.from(detailRequest.generatedProducts!.image.data)).toEqual(Buffer.from(generated.images[0]!.data));
+    expect(Buffer.from(detailRequest.generatedProducts!.image.data)).not.toEqual(Buffer.from(detailRequest.generated.data));
+    const nativeSize = await sharp(Buffer.from(detailRequest.generatedProducts!.image.data)).metadata();
+    expect(nativeSize).toMatchObject({ width: 600, height: 300, channels: 4 });
+    expect(reviewRequest).toMatchObject({ text: { format: { name: "storefront_realistic_detail_review" } } });
+    const reviewContent = reviewRequest!.input[1]!.content;
+    const detailLabelIndex = reviewContent.findIndex(entry => entry.text?.startsWith("GENERATED PRODUCT VIEW DETAIL WITH COLUMN IDS "));
+    expect(detailLabelIndex).toBeGreaterThan(0);
+    expect(JSON.parse(reviewContent[detailLabelIndex]!.text!.split("GENERATED PRODUCT VIEW DETAIL WITH COLUMN IDS ")[1]!)).toEqual(["p1:1", "p2:2", "p0:0"]);
+    const nativeReviewImage = reviewContent[detailLabelIndex + 1]!;
+    expect(nativeReviewImage.type).toBe("input_image");
+    const transportedNative = Buffer.from(nativeReviewImage.image_url!.split(",")[1]!, "base64");
+    const expectedNativeView = await sharp(Buffer.from(generated.images[0]!.data))
+      .flatten({ background: "#eeeeee" }).webp({ lossless: true }).toBuffer();
+    expect(transportedNative).toEqual(expectedNativeView);
+    expect(await sharp(transportedNative).metadata()).toMatchObject({ width: 600, height: 300, channels: 3 });
+    expect(reviewContent.filter(entry => entry.type === "input_image")).toHaveLength(6);
+    expect(detailRequest.deadlineMs).toBeLessThanOrEqual((renders.rows[0]!.createdAt as Date).getTime() + 180_000);
+    expect(imageRequest.deadlineMs - Date.now()).toBeLessThanOrEqual(135_000);
+    expect(vi.mocked(storefrontPlacementReview.reviewStorefrontPlacement)).toHaveBeenCalledOnce();
     expect(reviewCalls).toBe(1);
   });
   it("uses one local camera guide whose window grows to contain one through three products", async () => {
@@ -624,6 +659,10 @@ describe("simple render orchestration with offline providers", () => {
       expect(Math.abs(guideSize.width! * window.height - guideSize.height! * window.width)).toBeLessThanOrEqual(Math.max(window.width, window.height));
       expect(imageRequest).toMatchObject({ quality: "high", productIsolationCameraFirst: true });
       expect(imageRequest.references.filter((reference: ImageReference) => reference.role.startsWith("product_"))).toHaveLength(count);
+      const detailRequest = vi.mocked(storefrontPlacementReview.reviewStorefrontPlacement).mock.calls.at(-1)![0];
+      const generated = await mocks.edit.mock.results.at(-1)!.value;
+      expect(detailRequest.generatedProducts!.productIds).toEqual(placements.slice(0, count).map((placement, index) => `${placement.productId}:${index}`));
+      expect(Buffer.from(detailRequest.generatedProducts!.image.data)).toEqual(Buffer.from(generated.images[0]!.data));
       windows.push(window);
     }
     expect(windows[0]!.width).toBeLessThan(windows[2]!.width);
@@ -637,8 +676,8 @@ describe("simple render orchestration with offline providers", () => {
     preflightVerticalPixelsPerCm = 4;
     preflightWidthPixelsPerCm = 6;
     const result = await createRender(db, "org", request, "storefront:visitor-1");
-    expect(result).toMatchObject({ status: "succeeded", promptVersion: "storefront-isolated-camera-window-high-v7",
-      engineVersions: { scaleEstimation: "storefront-scene-width-pose-v4", prompt: "storefront-isolated-camera-window-high-v7", imageQuality: "high" } });
+    expect(result).toMatchObject({ status: "succeeded", promptVersion: "storefront-isolated-camera-detail-v8",
+      engineVersions: { scaleEstimation: "storefront-scene-width-pose-v4", prompt: "storefront-isolated-camera-detail-v8", imageQuality: "high" } });
     expect(scenePreflightNames).toEqual(["storefront_scene_width_pose_preflight"]);
     expect(scenePreflightTexts[0]).toContain("product widths in centimetres, in the exact placement order: [10].");
     // Native mock is 40x80: 10 cm horizontal width at 6 px/cm becomes 60x120 uniformly.
@@ -741,6 +780,25 @@ describe("simple render orchestration with offline providers", () => {
     expect(renders.rows[0]!.promptVersion).toBe("storefront-isolated-camera-window-v6");
     expect(attempts.rows.find(row => row.stage === "generating_final")!.promptVersion).toBe("storefront-isolated-camera-window-v6");
     expect(imageRequest.deadlineMs - Date.now()).toBeLessThanOrEqual(135_000);
+    expect(mocks.edit).toHaveBeenCalledTimes(1);
+    expect(reviewCalls).toBe(1);
+  });
+  it("retains high-quality generation with the original final review for an admitted v7 job", async () => {
+    await scenes.updateOne({ id: "scene" }, { $set: { publicSessionId: "storefront:visitor-1" } });
+    const result = await runHistoricalStorefrontRender("storefront-scene-width-pose-v4", "storefront-isolated-camera-window-high-v7", "high");
+    expect(result).toMatchObject({ status: "succeeded", promptVersion: "storefront-isolated-camera-window-high-v7",
+      qualityDecision: { version: "storefront-realistic-placement-v3" },
+      engineVersions: { prompt: "storefront-isolated-camera-window-high-v7", imageQuality: "high", quality: "storefront-realistic-placement-v3" } });
+    const imageRequest = mocks.edit.mock.calls[0]![0];
+    expect(imageRequest).toMatchObject({ quality: "high", productIsolation: true, productIsolationCameraFirst: true });
+    expect(cameraGuideWindow(imageRequest.prompt).originalFrame).toEqual({ width: 400, height: 300 });
+    const finalReview = vi.mocked(storefrontPlacementReview.reviewStorefrontPlacement).mock.calls[0]![0];
+    expect(finalReview).not.toHaveProperty("detailReview");
+    expect(finalReview).not.toHaveProperty("generatedProducts");
+    expect(reviewRequest!.input[1]!.content.filter(entry => entry.type === "input_image")).toHaveLength(5);
+    expect(attempts.rows.find(row => row.stage === "generating_final")!.promptVersion).toBe("storefront-isolated-camera-window-high-v7");
+    expect(attempts.rows.find(row => row.stage === "storefront_placement_review")!.promptVersion).toBe("storefront-realistic-placement-v3");
+    expect(vi.mocked(storefrontPlacementReview.reviewStorefrontPlacement)).toHaveBeenCalledOnce();
     expect(mocks.edit).toHaveBeenCalledTimes(1);
     expect(reviewCalls).toBe(1);
   });

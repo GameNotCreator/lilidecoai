@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import sharp from "sharp";
 vi.mock("server-only", () => ({}));
 const config = vi.hoisted(() => ({
     openaiApiKey: "test-only",
@@ -15,13 +16,15 @@ import {
   STOREFRONT_PLACEMENT_REVIEW_VERSION,
   STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION,
   STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION,
+  STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION,
   storefrontRealisticPlacementReviewSchema,
+  type StorefrontPlacementReviewInput,
   type StorefrontScaleReference,
 } from "../lib/server/ai/storefront-placement-review";
-import type { VisualReviewInput } from "../lib/server/ai/visual-review";
+import { VisualReviewError, type VisualReviewInput } from "../lib/server/ai/visual-review";
 import { durableContext, DurableExecutionError, type DurableContext } from "../lib/server/durable-context";
 import { isProviderRefusal } from "../lib/server/provider-usage";
-import { visionObservation } from "../lib/server/ai/openai-vision-cost";
+import { estimateVisionUsage, visionObservation } from "../lib/server/ai/openai-vision-cost";
 
 const bounds = { xMin: 0.4, yMin: 0.3, xMax: 0.6, yMax: 0.6 };
 const image = {
@@ -666,5 +669,342 @@ describe("storefront fast photographic placement qualification", () => {
       render: {} as DurableContext["render"], token: "test-token", signal: controller.signal,
     }, () => reviewStorefrontPlacement(fastInput()))).rejects.toBe(error);
     expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("storefront native-product detail qualification", () => {
+  const options = { realism: true, detailReview: true };
+  const checkNames = [
+    "present", "identity", "position", "scale", "perspective", "contact",
+    "edges", "occlusion", "noDuplicate", "gravity", "silhouetteComplete",
+    "photographicCoherence", "referenceScale",
+  ] as const;
+
+  async function nativeImage(format: "png" | "webp" = "webp", width = 12, height = 12) {
+    const pixels = Buffer.alloc(width * height * 4);
+    for (let offset = 0; offset < pixels.length; offset += 4) {
+      pixels[offset] = 240;
+      pixels[offset + 1] = 30;
+      pixels[offset + 2] = 220;
+    }
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        const offset = (y * width + x) * 4;
+        pixels[offset] = 40 + x * 5;
+        pixels[offset + 1] = 120;
+        pixels[offset + 2] = 80;
+        pixels[offset + 3] = 255;
+      }
+    }
+    const source = sharp(pixels, { raw: { width, height, channels: 4 } });
+    const data = format === "png" ? await source.png().toBuffer() : await source.webp({ lossless: true }).toBuffer();
+    return { data: new Uint8Array(data), mimeType: `image/${format}` as "image/png" | "image/webp" };
+  }
+
+  async function detailInput(format: "png" | "webp" = "webp"): Promise<StorefrontPlacementReviewInput> {
+    return {
+      ...realisticInput(), detailReview: true,
+      generatedProducts: { image: await nativeImage(format), productIds: [realisticProduct.id] },
+    };
+  }
+
+  function useDetailClock() {
+    vi.useFakeTimers();
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException("Timed out", "TimeoutError")), ms);
+      return controller.signal;
+    });
+  }
+
+  it("versions pure parsing without requiring a native image or fast flag", () => {
+    expect(STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION).toBe("storefront-realistic-detail-v4");
+    expect(parseStorefrontPlacementReview(realisticAccepted(), [realisticProduct], options)).toMatchObject({
+      status: "accepted", version: STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION,
+    });
+    expect(parseStorefrontPlacementReview(realisticAccepted(), [realisticProduct], {
+      ...options, fastReview: true,
+    }).version).toBe(STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION);
+    expect(parseStorefrontPlacementReview(realisticAccepted(true), [realisticProduct], {
+      ...options, scaleReference: measuredReference,
+    }).feedback).toContain("pas une mesure garantie");
+    expect(parseStorefrontPlacementReview(realisticAccepted(), [realisticProduct], {
+      ...options, scaleReference: measuredReference,
+    }).status).toBe("rejected");
+    expect(parseStorefrontPlacementReview(realisticAccepted(true), [realisticProduct], options).status).toBe("rejected");
+  });
+
+  it.each(checkNames)("retains the required %s check and its 0.8 threshold", (name) => {
+    const data = realisticAccepted(true);
+    const withReference = { ...options, scaleReference: measuredReference };
+    data.products[0]!.checks[name] = { passed: false, score: 0.95, reason: "Défaut visible." };
+    expect(parseStorefrontPlacementReview(data, [realisticProduct], withReference).status).toBe("rejected");
+    data.products[0]!.checks[name] = { passed: true, score: 0.79, reason: "Preuve insuffisante." };
+    expect(parseStorefrontPlacementReview(data, [realisticProduct], withReference).status).toBe("rejected");
+    delete (data.products[0]!.checks as Partial<typeof data.products[0]["checks"]>)[name];
+    expect(() => parseStorefrontPlacementReview(data, [realisticProduct], withReference)).toThrow();
+  });
+
+  it("retains scene, confidence, contact and strict-schema gates", () => {
+    for (const name of ["photoUsable", "backgroundPreserved", "noUnrequestedProducts"] as const) {
+      const data = realisticAccepted();
+      data[name].score = 0.79;
+      expect(parseStorefrontPlacementReview(data, [realisticProduct], options).status).toBe("rejected");
+    }
+    const lowConfidence = realisticAccepted();
+    lowConfidence.products[0]!.confidence = 0.79;
+    expect(parseStorefrontPlacementReview(lowConfidence, [realisticProduct], options).status).toBe("rejected");
+    const moved = realisticAccepted();
+    moved.products[0]!.observedContact.x = 0.6;
+    expect(parseStorefrontPlacementReview(moved, [realisticProduct], options).status).toBe("rejected");
+    const occluded = realisticAccepted();
+    occluded.products[0]!.foregroundOccluded = true;
+    occluded.products[0]!.confidence = 0.85;
+    expect(parseStorefrontPlacementReview(occluded, [realisticProduct], options).status).toBe("rejected");
+    const extra = realisticAccepted();
+    Object.assign(extra.products[0]!.checks, { nativeDetailAccepted: pass() });
+    expect(() => parseStorefrontPlacementReview(extra, [realisticProduct], options)).toThrow();
+    expect(() => parseStorefrontPlacementReview(accepted(), [realisticProduct], options)).toThrow();
+  });
+
+  it.each([undefined, false])("requires photographic mode when detailReview is true (%s)", async (realism) => {
+    const fetcher = vi.fn<typeof globalThis.fetch>();
+    vi.stubGlobal("fetch", fetcher);
+    await expect(reviewStorefrontPlacement({ ...await detailInput(), realism })).rejects.toMatchObject({
+      code: "invalid_input", providerCalled: false, retryable: false,
+    });
+    expect(() => parseStorefrontPlacementReview(realisticAccepted(), [realisticProduct], {
+      detailReview: true, realism,
+    })).toThrow();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it.each(["png", "webp"] as const)("validates real native alpha %s and sends its neutral view after all historical images, with LOW/45s and the same schema", async (format) => {
+    const args = await detailInput(format);
+    useDetailClock();
+    const fetcher = vi.fn<typeof globalThis.fetch>(async () => Response.json(envelope(realisticAccepted())));
+    vi.stubGlobal("fetch", fetcher);
+    const detail = await reviewStorefrontPlacement(args);
+    expect(detail.version).toBe(STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION);
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(AbortSignal.timeout).toHaveBeenCalledWith(45_000);
+    const request = JSON.parse(fetcher.mock.calls[0]![1]!.body as string);
+    expect(request).toMatchObject({
+      reasoning: { effort: "low" }, max_output_tokens: 6000,
+      text: { format: { strict: true, name: "storefront_realistic_detail_review" } },
+    });
+    const content = request.input[1].content as { type: string; text?: string; image_url?: string }[];
+    const neutralView = await sharp(args.generatedProducts!.image.data).flatten({ background: "#eeeeee" }).webp({ lossless: true }).toBuffer();
+    expect(content.filter(entry => entry.type === "input_image").map(entry => entry.image_url)).toEqual([
+      `data:image/webp;base64,${Buffer.from(image.data).toString("base64")}`,
+      `data:image/webp;base64,${Buffer.from(image.data).toString("base64")}`,
+      `data:image/webp;base64,${Buffer.from(image.data).toString("base64")}`,
+      `data:image/webp;base64,${neutralView.toString("base64")}`,
+    ]);
+    expect(content.filter(entry => entry.type === "input_text").slice(1).map(entry => entry.text)).toEqual([
+      "ORIGINAL ROOM", "FINAL PLACEMENT TO VERIFY", `ORIGINAL PRODUCT ${product.id}`,
+      `GENERATED PRODUCT VIEW DETAIL WITH COLUMN IDS ${JSON.stringify([product.id])}`,
+    ]);
+    expect(await sharp(args.generatedProducts!.image.data).metadata()).toMatchObject({ format, hasAlpha: true });
+    await reviewStorefrontPlacement(realisticInput());
+    const historical = JSON.parse(fetcher.mock.calls[1]![1]!.body as string);
+    expect(request.text.format.schema).toEqual(historical.text.format.schema);
+    expect(Object.keys(storefrontRealisticPlacementReviewSchema.shape.products.element.shape.checks.shape)).toEqual(checkNames);
+    expect(storefrontPlacementReviewAllowance().estimatedCostUsd).toBe(0.55);
+  });
+
+  it("replaces hidden alpha-zero RGB with neutral grey without resizing or changing the native input", async () => {
+    const args = await detailInput("png");
+    const native = args.generatedProducts!.image.data;
+    const before = new Uint8Array(native);
+    const nativePixels = await sharp(native).raw().toBuffer();
+    expect([...nativePixels.subarray(0, 4)]).toEqual([240, 30, 220, 0]);
+    const fetcher = vi.fn<typeof globalThis.fetch>(async () => Response.json(envelope(realisticAccepted())));
+    vi.stubGlobal("fetch", fetcher);
+    await reviewStorefrontPlacement(args);
+    const request = JSON.parse(fetcher.mock.calls[0]![1]!.body as string);
+    const images = request.input[1].content.filter((entry: { type: string }) => entry.type === "input_image") as { image_url: string }[];
+    const url = images.at(-1)!.image_url;
+    expect(url.startsWith("data:image/webp;base64,")).toBe(true);
+    const submitted = Buffer.from(url.split(",")[1]!, "base64");
+    expect(await sharp(submitted).metadata()).toMatchObject({ format: "webp", width: 12, height: 12, hasAlpha: false });
+    const pixels = await sharp(submitted).raw().toBuffer();
+    expect([...pixels.subarray(0, 3)]).toEqual([238, 238, 238]);
+    const offset = (1 * 12 + 1) * 3;
+    expect([...pixels.subarray(offset, offset + 3)]).toEqual([45, 120, 80]);
+    expect(native).toEqual(before);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("preserves three repeated-SKU placements with unique IDs and an independent native column order", async () => {
+    const products = [0, 1, 2].map(index => ({
+      ...realisticProduct, id: `p1:${index}`, image: { ...image, data: new Uint8Array([index + 10]) },
+    }));
+    const ids = ["p1:2", "p1:0", "p1:1"];
+    const native = await nativeImage();
+    const answer = realisticAccepted();
+    answer.products = products.map(item => ({ ...answer.products[0]!, id: item.id }));
+    const fetcher = vi.fn<typeof globalThis.fetch>(async () => Response.json(envelope(answer)));
+    vi.stubGlobal("fetch", fetcher);
+    expect((await reviewStorefrontPlacement({
+      ...realisticInput(), detailReview: true, products,
+      generatedProducts: { image: native, productIds: ids },
+    })).status).toBe("accepted");
+    expect(fetcher).toHaveBeenCalledOnce();
+    const request = JSON.parse(fetcher.mock.calls[0]![1]!.body as string);
+    const content = request.input[1].content as { type: string; text?: string; image_url?: string }[];
+    expect(content.filter(entry => entry.type === "input_image")).toHaveLength(6);
+    expect(content.filter(entry => entry.type === "input_text").slice(1).map(entry => entry.text)).toEqual([
+      "ORIGINAL ROOM", "FINAL PLACEMENT TO VERIFY", "ORIGINAL PRODUCT p1:0", "ORIGINAL PRODUCT p1:1", "ORIGINAL PRODUCT p1:2",
+      `GENERATED PRODUCT VIEW DETAIL WITH COLUMN IDS ${JSON.stringify(ids)}`,
+    ]);
+    expect(content.filter(entry => entry.type === "input_image").slice(2, 5).map(entry => entry.image_url)).toEqual(
+      products.map(item => `data:image/webp;base64,${Buffer.from(item.image.data).toString("base64")}`),
+    );
+  });
+
+  it.each([
+    { productIds: [] }, { productIds: ["missing"] }, { productIds: ["p1:0", "p1:0"] },
+    { productIds: ["p1:0", "extra"] }, { productIds: [""] }, { productIds: null },
+    { image: { data: new Uint8Array(), mimeType: "image/webp" } },
+    { image: { data: new Uint8Array([1, 2, 3]), mimeType: "image/png" } },
+    { image: { data: new Uint8Array([1]), mimeType: "image/gif" } },
+  ])("refuses malformed native detail before fetch (%j)", async (invalid) => {
+    const args = await detailInput();
+    const fetcher = vi.fn<typeof globalThis.fetch>();
+    vi.stubGlobal("fetch", fetcher);
+    const request = { ...args, generatedProducts: { ...args.generatedProducts, ...invalid } } as unknown as StorefrontPlacementReviewInput;
+    const error = await reviewStorefrontPlacement(request).catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(VisualReviewError);
+    expect(error).toMatchObject({ code: "unavailable", providerCalled: false, retryable: false });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("refuses missing detail, duplicate requested IDs and an incomplete native ID set locally", async () => {
+    const args = await detailInput();
+    const fetcher = vi.fn<typeof globalThis.fetch>();
+    vi.stubGlobal("fetch", fetcher);
+    await expect(reviewStorefrontPlacement({ ...args, generatedProducts: undefined })).rejects.toMatchObject({
+      code: "unavailable", providerCalled: false,
+    });
+    await expect(reviewStorefrontPlacement({ ...args, products: [realisticProduct, realisticProduct] })).rejects.toMatchObject({
+      code: "unavailable", providerCalled: false,
+    });
+    await expect(reviewStorefrontPlacement({ ...args, products: [realisticProduct, { ...realisticProduct, id: "p1:1" }] })).rejects.toMatchObject({
+      code: "unavailable", providerCalled: false,
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("rejects opaque/JPEG or MIME-mismatched native data, too-narrow columns and excessive pixels", async () => {
+    const args = await detailInput();
+    const opaque = sharp({ create: { width: 8, height: 8, channels: 3, background: "#ab9876" } });
+    const cases = [
+      { data: await opaque.clone().png().toBuffer(), mimeType: "image/png" },
+      { data: await opaque.clone().webp().toBuffer(), mimeType: "image/webp" },
+      { data: await opaque.clone().jpeg().toBuffer(), mimeType: "image/jpeg" },
+      { data: await sharp({ create: { width: 8, height: 8, channels: 4, background: "#ab9876" } }).png().toBuffer(), mimeType: "image/png" },
+      { data: await sharp({ create: { width: 8, height: 8, channels: 4, background: "#00000000" } }).png().toBuffer(), mimeType: "image/png" },
+      { ...args.generatedProducts!.image, mimeType: "image/png" },
+    ];
+    const fetcher = vi.fn<typeof globalThis.fetch>();
+    vi.stubGlobal("fetch", fetcher);
+    for (const native of cases) {
+      await expect(reviewStorefrontPlacement({ ...args, generatedProducts: {
+        image: native, productIds: [product.id],
+      } } as StorefrontPlacementReviewInput)).rejects.toMatchObject({ code: "unavailable", providerCalled: false });
+    }
+    await expect(reviewStorefrontPlacement({
+      ...args, products: [realisticProduct, { ...realisticProduct, id: "p1:1" }],
+      generatedProducts: { image: await nativeImage("png", 1, 8), productIds: ["p1:0", "p1:1"] },
+    })).rejects.toMatchObject({ code: "unavailable", providerCalled: false });
+    const huge = await sharp({ create: { width: 4001, height: 4000, channels: 4, background: "#00000000" } }).png().toBuffer();
+    await expect(reviewStorefrontPlacement({ ...args, generatedProducts: {
+      image: { data: huge, mimeType: "image/png" }, productIds: [product.id],
+    } })).rejects.toMatchObject({ code: "unavailable", providerCalled: false });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("counts native detail bytes in the same aggregate image limit before spending", async () => {
+    const args = await detailInput();
+    const fetcher = vi.fn<typeof globalThis.fetch>();
+    vi.stubGlobal("fetch", fetcher);
+    await expect(reviewStorefrontPlacement({
+      ...args, room: { ...image, data: new Uint8Array(32_000_000) },
+    })).rejects.toMatchObject({ providerCalled: false, retryable: false });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { detailReview: undefined, realism: undefined, fastReview: undefined },
+    { detailReview: false, realism: undefined, fastReview: undefined },
+    { detailReview: undefined, realism: true, fastReview: undefined },
+    { detailReview: false, realism: true, fastReview: undefined },
+    { detailReview: undefined, realism: true, fastReview: true },
+    { detailReview: false, realism: true, fastReview: true },
+  ])("ignores native detail and preserves the old request contract when disabled (%j)", async (mode) => {
+    const answer = mode.realism ? realisticAccepted() : accepted();
+    const fetcher = vi.fn<typeof globalThis.fetch>(async () => Response.json(envelope(answer)));
+    vi.stubGlobal("fetch", fetcher);
+    const decision = await reviewStorefrontPlacement({
+      ...realisticInput(), ...mode,
+      generatedProducts: { image, productIds: ["invalid-id"] },
+    });
+    expect(decision.version).toBe(mode.fastReview ? STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION : mode.realism ? STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION : STOREFRONT_PLACEMENT_REVIEW_VERSION);
+    const request = JSON.parse(fetcher.mock.calls[0]![1]!.body as string);
+    expect(request.reasoning).toEqual({ effort: mode.fastReview ? "low" : "medium" });
+    expect(request.text.format.name).toBe(mode.realism ? "storefront_realistic_placement_review" : "storefront_placement_review");
+    expect(request.input[1].content.filter((entry: { type: string }) => entry.type === "input_image")).toHaveLength(3);
+    expect(JSON.stringify(request)).not.toContain("GENERATED PRODUCT VIEW DETAIL");
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("aborts detail review after 45 seconds without retry or a free-cost claim", async () => {
+    const args = await detailInput();
+    useDetailClock();
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const fetcher = vi.fn<typeof globalThis.fetch>(async (_url, init) => {
+      entered();
+      return new Promise<never>((_resolve, reject) => {
+        init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason));
+      });
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const pending = reviewStorefrontPlacement(args).catch((reason: unknown) => reason);
+    await started;
+    await vi.advanceTimersByTimeAsync(45_000);
+    const error = await pending;
+    expect(error).toMatchObject({ code: "timeout", providerCalled: true, retryable: false });
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(isProviderRefusal(error)).toBe(false);
+    expect(visionObservation(error)).toBeUndefined();
+    expect(estimateVisionUsage(visionObservation(error), storefrontPlacementReviewAllowance().estimatedCostUsd).estimatedCostUsd).toBe(0.55);
+  });
+
+  it("retains paid usage on late/truncated evidence and never retries a failed provider", async () => {
+    const args = await detailInput();
+    const usage = { input_tokens: 100, output_tokens: 50 };
+    const fetcher = vi.fn<typeof globalThis.fetch>(async () => Response.json({ ...envelope(realisticAccepted(), "incomplete"), usage }));
+    vi.stubGlobal("fetch", fetcher);
+    const malformed = await reviewStorefrontPlacement(args).catch((reason: unknown) => reason);
+    expect(visionObservation(malformed)?.usage).toEqual(usage);
+    expect(fetcher).toHaveBeenCalledOnce();
+    fetcher.mockClear();
+    fetcher.mockImplementation(async () => Response.json({}, { status: 503 }));
+    const unavailable = await reviewStorefrontPlacement(args).catch((reason: unknown) => reason);
+    expect(unavailable).toMatchObject({ providerCalled: true, retryable: false });
+    expect(isProviderRefusal(unavailable)).toBe(false);
+    expect(fetcher).toHaveBeenCalledOnce();
+    fetcher.mockClear();
+    vi.useFakeTimers();
+    fetcher.mockImplementation(async () => {
+      vi.setSystemTime(Date.now() + 45_000);
+      return Response.json({ ...envelope(realisticAccepted()), usage });
+    });
+    const late = await reviewStorefrontPlacement(args).catch((reason: unknown) => reason);
+    expect(late).toMatchObject({ code: "timeout", providerCalled: true, retryable: false });
+    expect(visionObservation(late)?.usage).toEqual(usage);
+    expect(fetcher).toHaveBeenCalledOnce();
   });
 });

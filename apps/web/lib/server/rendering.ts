@@ -35,7 +35,7 @@ import {
   reviewVisualRender,
   VISUAL_REVIEW_VERSION,
 } from "./ai/visual-review";
-import { reviewStorefrontPlacement, storefrontPlacementReviewAllowance, STOREFRONT_PLACEMENT_REVIEW_VERSION, STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION, type StorefrontPlacementReviewInput } from "./ai/storefront-placement-review";
+import { reviewStorefrontPlacement, storefrontPlacementReviewAllowance, STOREFRONT_PLACEMENT_REVIEW_VERSION, STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION, type StorefrontPlacementReviewInput } from "./ai/storefront-placement-review";
 import { perspectiveEditComposition, restorePerspectiveBackground } from "./storefront-realistic-composite";
 import { buildStorefrontPerspectiveGuide, type StorefrontPerspectiveGuideObject } from "./storefront-perspective-guide";
 import { localiseStorefrontPerspectiveGuide } from "./storefront-perspective-guide-window";
@@ -132,6 +132,7 @@ import {
 const STOREFRONT_CAMERA_FIRST_ISOLATION_PROMPT_VERSION = "storefront-isolated-camera-first-v5";
 const STOREFRONT_CAMERA_WINDOW_ISOLATION_PROMPT_VERSION = "storefront-isolated-camera-window-v6";
 const STOREFRONT_HIGH_QUALITY_ISOLATION_PROMPT_VERSION = "storefront-isolated-camera-window-high-v7";
+const STOREFRONT_DETAIL_ISOLATION_PROMPT_VERSION = "storefront-isolated-camera-detail-v8";
 
 interface NormalizedBox {
   xMin: number;
@@ -512,18 +513,18 @@ export async function createRender(
     ],
     attemptCount: 0,
     estimatedCostUsd: 0,
-    promptVersion: fastStorefront ? STOREFRONT_HIGH_QUALITY_ISOLATION_PROMPT_VERSION : simplePointWorkflow
+    promptVersion: fastStorefront ? STOREFRONT_DETAIL_ISOLATION_PROMPT_VERSION : simplePointWorkflow
       ? SIMPLE_POINT_PROMPT_VERSION
       : PROMPT_VERSION,
     engineVersions: {
       placementGeometry: SIMPLE_PLACEMENT_VERSION,
       composite: fastStorefront ? STOREFRONT_ISOLATED_COMPOSITE_VERSION : simplePointWorkflow ? CONTACT_LIGHT_COMPOSITE_VERSION : SIMPLE_COMPOSITE_VERSION,
       scaleEstimation: fastStorefront ? STOREFRONT_WIDTH_POSE_PREFLIGHT_VERSION : SCALE_ESTIMATION_VERSION,
-      quality: fastStorefront ? STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION : simplePointWorkflow ? VISUAL_REVIEW_VERSION : QUALITY_VERSION,
+      quality: fastStorefront ? STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION : simplePointWorkflow ? VISUAL_REVIEW_VERSION : QUALITY_VERSION,
       // The prompt the model actually receives. simple_point sends the
       // harmonize prompt (SIMPLE_COMPOSITE_PROMPT_VERSION); the "simple point"
       // version is the render's own contract, already on `promptVersion`.
-      prompt: fastStorefront ? STOREFRONT_HIGH_QUALITY_ISOLATION_PROMPT_VERSION : simplePointWorkflow
+      prompt: fastStorefront ? STOREFRONT_DETAIL_ISOLATION_PROMPT_VERSION : simplePointWorkflow
         ? SIMPLE_COMPOSITE_PROMPT_VERSION
         : PROMPT_VERSION,
       // Resolved, never assumed: a missing key turns a run synthetic in
@@ -1026,21 +1027,24 @@ async function runSimplePointRender(
 ) {
   const fastStorefront = render.publicSessionId?.startsWith("storefront:") === true &&
     render.engineVersions?.quality === STOREFRONT_PLACEMENT_REVIEW_VERSION && input.mode !== "replace";
-  const fastRealisticReview = render.engineVersions?.quality === STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION;
+  const detailRealisticReview = render.engineVersions?.quality === STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION;
+  const fastRealisticReview = detailRealisticReview || render.engineVersions?.quality === STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION;
   const isolatedProducts = render.engineVersions?.composite === STOREFRONT_ISOLATED_COMPOSITE_VERSION;
   const widthAnchoredIsolated = isolatedProducts &&
     render.engineVersions?.scaleEstimation === STOREFRONT_WIDTH_POSE_PREFLIGHT_VERSION;
+  const detailIsolation = isolatedProducts &&
+    render.engineVersions?.prompt === STOREFRONT_DETAIL_ISOLATION_PROMPT_VERSION;
   const highQualityIsolation = isolatedProducts &&
-    render.engineVersions?.prompt === STOREFRONT_HIGH_QUALITY_ISOLATION_PROMPT_VERSION;
+    (detailIsolation || render.engineVersions?.prompt === STOREFRONT_HIGH_QUALITY_ISOLATION_PROMPT_VERSION);
   const cameraWindowIsolation = isolatedProducts &&
     (highQualityIsolation || render.engineVersions?.prompt === STOREFRONT_CAMERA_WINDOW_ISOLATION_PROMPT_VERSION);
   const cameraFirstIsolation = isolatedProducts &&
     (cameraWindowIsolation || render.engineVersions?.prompt === STOREFRONT_CAMERA_FIRST_ISOLATION_PROMPT_VERSION);
   const realisticStorefront = render.publicSessionId?.startsWith("storefront:") === true &&
-    [STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION].includes(render.engineVersions?.quality ?? "") && input.mode !== "replace";
-  const realisticReviewVersion = fastRealisticReview ? STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION : STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION;
+    [STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION].includes(render.engineVersions?.quality ?? "") && input.mode !== "replace";
+  const realisticReviewVersion = detailRealisticReview ? STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION : fastRealisticReview ? STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION : STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION;
   const imageEditQuality = highQualityIsolation ? "high" : "medium";
-  const imagePromptVersion = highQualityIsolation ? STOREFRONT_HIGH_QUALITY_ISOLATION_PROMPT_VERSION : cameraWindowIsolation ? STOREFRONT_CAMERA_WINDOW_ISOLATION_PROMPT_VERSION : cameraFirstIsolation ? STOREFRONT_CAMERA_FIRST_ISOLATION_PROMPT_VERSION : realisticReviewVersion;
+  const imagePromptVersion = detailIsolation ? STOREFRONT_DETAIL_ISOLATION_PROMPT_VERSION : highQualityIsolation ? STOREFRONT_HIGH_QUALITY_ISOLATION_PROMPT_VERSION : cameraWindowIsolation ? STOREFRONT_CAMERA_WINDOW_ISOLATION_PROMPT_VERSION : cameraFirstIsolation ? STOREFRONT_CAMERA_FIRST_ISOLATION_PROMPT_VERSION : realisticReviewVersion;
   const boundedStorefront = fastStorefront || realisticStorefront;
   const renderDeadlineMs = Math.min(renderDeadline(startedAt), boundedStorefront ? render.createdAt.getTime() + 180_000 : Infinity);
   if (realisticStorefront && input.scaleReference && simpleObjects.some(item => item.pixelsPerCm === null))
@@ -1656,6 +1660,10 @@ async function runSimplePointRender(
       step: "storefront_placement_review", provider: "openai", model: serverConfig.openaiVisionModel,
       ...storefrontPlacementReviewAllowance(), promptVersion: realisticReviewVersion,
     }, () => reviewStorefrontPlacement({ ...visualInput, realism: true, fastReview: fastRealisticReview, scaleReference: reference,
+      ...(detailRealisticReview ? { detailReview: true, generatedProducts: {
+        image: { data: new Uint8Array(generated), mimeType: "image/webp" as const },
+        productIds: frontToBack.map(index => `${simpleObjects[index]!.product.id}:${index}`),
+      } } : {}),
       generated: { data: finalBuffer, mimeType: "image/webp" },
     }), { maxAttempts: 1, respectRetryable: true });
     await advanceRender(db, render.id, { $set: { qualityDecision: decision, qualityScore: decision.score, updatedAt: new Date() } });

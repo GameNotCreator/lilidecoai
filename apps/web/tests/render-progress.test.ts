@@ -242,4 +242,46 @@ describe("storefront source-photo placement progress", () => {
     expect(result.sourcePixelPlacement).toBe(false);
     expect(result.steps.map(step => step.state)).toEqual(["complete", "complete", "complete", "active"]);
   });
+  it.each([
+    ["estimating_scale", ["active", "pending", "pending", "pending"]],
+    ["compositing", ["complete", "active", "pending", "pending"]],
+    ["generating_final", ["complete", "complete", "active", "pending"]],
+    ["checking_placement", ["complete", "complete", "complete", "active"]],
+    ["complete", ["complete", "complete", "complete", "complete"]],
+  ] as const)("uses the native-detail v4 contract's perspective phases for %s", (stage, states) => {
+    const resolved = { ...engineVersions, quality: "storefront-realistic-detail-v4",
+      prompt: "storefront-isolated-camera-detail-v8", imageQuality: "high" };
+    const result = renderProgress(input({ engineVersions: resolved, placement: { pipelineStage: stage } }));
+    expect(isStorefrontPlacementRender({ engineVersions: resolved })).toBe(true);
+    expect(result.steps.map(step => step.state)).toEqual(states);
+    expect(result.sourcePixelPlacement).toBe(false);
+    expect(result.steps.map(step => step.label)).toEqual([
+      "Lecture de l’intérieur", "Placement des objets", "Adaptation de la perspective", "Vérification du placement",
+    ]);
+    expect(`${result.title} ${result.detail}`).not.toMatch(/lumière|ombres/);
+    if (stage === "generating_final") {
+      expect(result.title).toBe("Adaptation de la perspective");
+      expect(result.detail).toContain("orientation");
+      expect(result.detail).toContain("apparence");
+    }
+  });
+  it("keeps native-detail review pending at the three-minute deadline until the server confirms a terminal state", () => {
+    const start = "2026-10-02T12:00:00Z";
+    const deadline = "2026-10-02T12:03:00Z";
+    const resolved = { ...engineVersions, quality: "storefront-realistic-detail-v4", prompt: "storefront-isolated-camera-detail-v8" };
+    const render = input({ engineVersions: resolved, pipelineState: "quality_check",
+      placement: { pipelineStage: "generating_final" }, compositeUrl: "/api/assets/private-provisional",
+      execution: { version: "v1", deadlineAt: deadline, attempts: 1, retrying: false } });
+    expect(elapsedRenderTime(start, Date.parse(deadline))).toBe("3 min 00 s");
+    const result = renderProgress(render);
+    expect(result.title).toBe("Vérification du placement");
+    expect(result.steps.map(step => step.state)).toEqual(["complete", "complete", "complete", "active"]);
+    expect(renderTerminalAnnouncement(render.status)).toBe("");
+  });
+  it("does not infer native-detail progress from the prompt without its resolved quality contract", () => {
+    const unresolved = { ...engineVersions, quality: "unknown-review", prompt: "storefront-isolated-camera-detail-v8" };
+    expect(isStorefrontPlacementRender({ engineVersions: unresolved })).toBe(false);
+    const result = renderProgress(input({ engineVersions: unresolved, placement: { pipelineStage: "generating_final" } }));
+    expect(result.steps[2]!.label).toBe("Lumière et ombres");
+  });
 });

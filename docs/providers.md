@@ -82,12 +82,12 @@ revue finale indépendante. Le délai total est de 180 secondes depuis la créat
 file d’attente comprise. Il ne relance pas automatiquement une image refusée.
 
 `STOREFRONT_IMAGE_MODEL` utilise `gpt-image-2.5-sunburst` par défaut, à qualité
-`high` pour les nouvelles admissions `storefront-isolated-camera-window-high-v7`,
+`high` pour les nouvelles admissions `storefront-isolated-camera-detail-v8`,
 pour produire une vraie transparence WebP sans masque. La génération reste
 bornée à 90 secondes et ne reçoit aucune relance automatique. Les anciens
 profils v4 à v6 conservent leur qualité `medium`. Les photos
 catalogue restent les références d’identité, une par objet. Les nouvelles
-admissions v6 et v7 transmettent d’abord une
+admissions v6 à v8 transmettent d’abord une
 fenêtre agrandie du guide autour de tous les emplacements, puis la pièce,
 puis ces photos catalogue. Le recadrage conserve la perspective et décrit
 explicitement ses coordonnées dans la photo originale ; il ne change ni les
@@ -114,6 +114,13 @@ photographique reste obligatoire. Un candidat refusé est privé et ne devient
 ni un résultat livré ni un crédit de visualisation débité. Le budget utilise
 le modèle effectivement admis ; la production actuelle limite chaque rendu
 à 2 USD d’estimation. Les anciens rendus gardent leur contrat et leur modèle admis.
+
+Le contrôle `storefront-realistic-detail-v4` des nouvelles admissions reçoit
+également l’image des produits générés avant leur réduction, avec les identifiants
+de colonnes exacts. Il inspecte ainsi les petits détails de perspective, tout en
+gardant la photo finale comme autorité pour la position, l’échelle et l’occlusion.
+Cette vue détaillée ne suffit jamais à accepter un rendu. Les seuils et le nombre
+d’appels de contrôle restent identiques ; un détail manquant ou ambigu est refusé.
 
 ## Variables serveur
 

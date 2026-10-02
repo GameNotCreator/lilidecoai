@@ -26,7 +26,8 @@ export function isStorefrontPlacementRender(
 ): boolean {
   return render.engineVersions?.quality === "storefront-placement-review-v1" ||
     render.engineVersions?.quality === "storefront-realistic-placement-v2" ||
-    render.engineVersions?.quality === "storefront-realistic-placement-v3";
+    render.engineVersions?.quality === "storefront-realistic-placement-v3" ||
+    render.engineVersions?.quality === "storefront-realistic-detail-v4";
 }
 
 export function renderTerminalAnnouncement(
@@ -245,7 +246,8 @@ const perspectiveStageCopy: Record<string, StageCopy> = {
 export function renderProgress(render: ProgressInput) {
   const sourcePixelPlacement = render.engineVersions?.quality === "storefront-placement-review-v1";
   const perspectivePlacement = render.engineVersions?.quality === "storefront-realistic-placement-v2" ||
-    render.engineVersions?.quality === "storefront-realistic-placement-v3";
+    render.engineVersions?.quality === "storefront-realistic-placement-v3" ||
+    render.engineVersions?.quality === "storefront-realistic-detail-v4";
   const copies = perspectivePlacement ? perspectiveStageCopy : sourcePixelPlacement ? placementStageCopy : stageCopy;
   const placementStage =
     typeof render.placement?.pipelineStage === "string"
