@@ -54,6 +54,39 @@ function persistedRender(render: RenderDocument): RenderDocument {
 }
 
 describe("render response contract after MongoDB storage", () => {
+  const imageId = "01a07164-882a-7ca2-9c18-20f2496486e0";
+  function isolatedRender(): RenderDocument {
+    const render = admittedRender("failed");
+    return { ...render, engineVersions: { composite: "storefront-isolated-product-v4", mockMode: false,
+      placementGeometry: "placement-geometry-v2", scaleEstimation: "storefront-scene-pose-v3",
+      quality: "storefront-realistic-placement-v3", prompt: "storefront-realistic-placement-v3",
+      imageQuality: "medium", editModel: "gpt-image-2.5-sunburst", visionModel: "gpt-6-astra" },
+      execution: { version: "render-durable-v2", deadlineAt: new Date(render.createdAt.getTime() + 180000), attempts: 1,
+        steps: { "storefront-perspective-image": { status: "completed", attempts: 1, startedAt: render.createdAt,
+          output: { status: "succeeded", images: [{ data: { __checkpointImage: imageId, buffer: false } }],
+            secret: "must-not-leak", unrelatedAsset: "must-not-leak" } } },
+      } as unknown as RenderDocument["execution"] };
+  }
+  it("references only the existing isolated product checkpoint without delivering a failed render", () => {
+    const payload = renderResponse(persistedRender(isolatedRender()));
+    expect(payload.stages).toEqual({ model_output: imageId });
+    expect(payload.status).toBe("failed");
+    expect(payload.resultUrl).toBeNull();
+    expect(payload.creditCharged).toBe(false);
+    expect(JSON.stringify(payload)).not.toContain("must-not-leak");
+    expect(payload.execution).not.toHaveProperty("steps");
+    expect(renderSchema.safeParse(payload).success).toBe(true);
+  });
+  it.each(["mock", "legacy", "private", "cancelled", "deleted", "unknown", "malformed"])("does not add an isolated checkpoint for %s", mode => {
+    const render = isolatedRender();
+    if (mode === "mock") render.engineVersions!.mockMode = true;
+    if (mode === "legacy") render.engineVersions!.composite = "storefront-guided-perspective-v3";
+    if (mode === "private") render.publicSessionId = "guest:visitor";
+    if (mode === "cancelled" || mode === "deleted") render.status = mode;
+    if (mode === "unknown") render.execution!.steps["storefront-perspective-image"]!.status = "unknown";
+    if (mode === "malformed") render.execution!.steps["storefront-perspective-image"]!.output = { status: "succeeded", images: [{ data: { __checkpointImage: "https://untrusted.example/image" } }] };
+    expect(renderResponse(render).stages).toBeUndefined();
+  });
   it.each(["queued", "processing", "succeeded", "failed", "cancelled", "deleted"] as const)(
     "keeps the admitted %s response readable after a BSON round trip",
     async (status) => {

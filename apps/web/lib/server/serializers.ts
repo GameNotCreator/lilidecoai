@@ -98,6 +98,26 @@ function renderErrorResponse(render: RenderDocument) {
   }
 }
 
+/** Reference the already stored owner-only product checkpoint; copy no photos. */
+function isolatedProductStages(render: RenderDocument) {
+  const existing = render.stages;
+  if (existing?.model_output || render.status === "deleted" || render.status === "cancelled" ||
+      !render.publicSessionId?.startsWith("storefront:") ||
+      render.engineVersions?.composite !== "storefront-isolated-product-v4" ||
+      render.engineVersions?.mockMode !== false) return existing;
+  const step = render.execution?.steps["storefront-perspective-image"];
+  if (step?.status !== "completed" || !step.output || typeof step.output !== "object") return existing;
+  const output = step.output as { status?: unknown; images?: Array<{ data?: unknown }> };
+  if (output.status !== "succeeded" || !Array.isArray(output.images)) return existing;
+  const data = output.images[0]?.data;
+  if (!data || typeof data !== "object") return existing;
+  const id = (data as { __checkpointImage?: unknown }).__checkpointImage;
+  if (typeof id !== "string" || !/^[a-f\d]{8}-(?:[a-f\d]{4}-){3}[a-f\d]{12}$/i.test(id)) return existing;
+  // Asset reads still enforce ownerSessionId. Do not expose the checkpoint
+  // payload, tokens, prompts, execution snapshot or any other asset IDs.
+  return { ...existing, model_output: id };
+}
+
 export function renderResponse(render: RenderDocument) {
   return {
     engine: render.engine ?? "legacy",
@@ -136,8 +156,9 @@ export function renderResponse(render: RenderDocument) {
     // cleanup — without them, and cannot be compared across engine versions.
     engineVersions: render.engineVersions,
     audit: render.audit,
-    // Intermediate images, when the run asked for them. Absent otherwise.
-    stages: render.stages,
+    // Optional captures, plus the existing private isolated-product checkpoint.
+    // A stage reference is never a delivered result or a quality acceptance.
+    stages: isolatedProductStages(render),
     attemptCount: render.attemptCount ?? 0,
     estimatedCostUsd:
       (render.engine === "spatial"
