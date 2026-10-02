@@ -20,7 +20,7 @@ import {
 import type { StorefrontScaleReference } from "./storefront-placement-review";
 
 export const STOREFRONT_SCENE_PREFLIGHT_VERSION = "storefront-scene-preflight-v1";
-export const STOREFRONT_POSE_PREFLIGHT_VERSION = "storefront-scene-pose-v2";
+export const STOREFRONT_POSE_PREFLIGHT_VERSION = "storefront-scene-pose-v3";
 export const STOREFRONT_SCENE_PREFLIGHT_TIMEOUT_MS = 25_000;
 export const STOREFRONT_SCENE_PREFLIGHT_MAX_TOKENS = 6_000;
 
@@ -230,7 +230,7 @@ export async function inspectStorefrontScene(
         model: serverConfig.openaiVisionModel,
         store: false,
         service_tier: serverConfig.openaiServiceTier,
-        reasoning: { effort: "medium" },
+        reasoning: { effort: input.productHeightsCm !== undefined ? "low" : "medium" },
         max_output_tokens: STOREFRONT_SCENE_PREFLIGHT_MAX_TOKENS,
         input: [{ role: "user", content: [
           { type: "input_text", text: [

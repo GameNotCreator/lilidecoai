@@ -37,7 +37,7 @@ const productHeightsCm = [40, 75, 20];
 describe("opt-in storefront top-camera pose preflight", () => {
   it("adds ordered nullable pose evidence without changing the v1 schema or output", () => {
     expect(STOREFRONT_SCENE_PREFLIGHT_VERSION).toBe("storefront-scene-preflight-v1");
-    expect(STOREFRONT_POSE_PREFLIGHT_VERSION).toBe("storefront-scene-pose-v2");
+    expect(STOREFRONT_POSE_PREFLIGHT_VERSION).toBe("storefront-scene-pose-v3");
     expect(parseStorefrontScenePreflight(answer(), points)).not.toHaveProperty("poses");
     expect(storefrontScenePreflightSchema.safeParse(answer()).success).toBe(true);
     expect(storefrontScenePreflightSchema.safeParse(poseAnswer()).success).toBe(false);
@@ -117,7 +117,7 @@ describe("opt-in storefront top-camera pose preflight", () => {
     expect(result.poses).toHaveLength(3);
     const request = JSON.parse(fetcher.mock.calls[0]![1]!.body as string);
     expect(request).toMatchObject({
-      reasoning: { effort: "medium" }, max_output_tokens: 6000,
+      reasoning: { effort: "low" }, max_output_tokens: 6000,
       text: { format: { name: "storefront_scene_pose_preflight", strict: true } },
     });
     expect(storefrontScenePreflightAllowance().estimatedCostUsd).toBe(0.55);

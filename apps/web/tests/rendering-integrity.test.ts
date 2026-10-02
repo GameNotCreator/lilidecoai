@@ -422,7 +422,7 @@ describe("simple render orchestration with offline providers", () => {
     const result = await createRender(db, "org", request, "storefront:visitor-1");
     expect(result).toMatchObject({ status: "succeeded", provider: "openai", attemptCount: 1,
       qualityDecision: { status: "accepted", version: "storefront-realistic-placement-v3" },
-      engineVersions: { quality: "storefront-realistic-placement-v3", composite: "storefront-guided-perspective-v3", editModel: "test-image", imageQuality: "medium", scaleEstimation: "storefront-scene-pose-v2" } });
+      engineVersions: { quality: "storefront-realistic-placement-v3", composite: "storefront-guided-perspective-v3", editModel: "test-image", imageQuality: "medium", scaleEstimation: "storefront-scene-pose-v3" } });
     expect(mocks.edit).toHaveBeenCalledTimes(1);
     const imageRequest = mocks.edit.mock.calls[0]![0];
     expect(imageRequest).toMatchObject({ quality: "medium", preserveBackground: true });
