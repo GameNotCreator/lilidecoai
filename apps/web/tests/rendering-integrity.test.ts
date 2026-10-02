@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import sharp from "sharp";
+import type { ImageReference } from "@lili/ai-router";
 import type { Db } from "mongodb";
 import type { RenderDocument } from "../lib/server/types";
 import type { RenderInput } from "../lib/server/render-request";
@@ -419,11 +420,24 @@ describe("simple render orchestration with offline providers", () => {
     const result = await createRender(db, "org", request, "storefront:visitor-1");
     expect(result).toMatchObject({ status: "succeeded", provider: "openai", attemptCount: 1,
       qualityDecision: { status: "accepted", version: "storefront-realistic-placement-v3" },
-      engineVersions: { quality: "storefront-realistic-placement-v3", editModel: "test-image", imageQuality: "medium", scaleEstimation: "storefront-scene-preflight-v1" } });
+      engineVersions: { quality: "storefront-realistic-placement-v3", composite: "storefront-guided-perspective-v2", editModel: "test-image", imageQuality: "medium", scaleEstimation: "storefront-scene-preflight-v1" } });
     expect(mocks.edit).toHaveBeenCalledTimes(1);
     const imageRequest = mocks.edit.mock.calls[0]![0];
     expect(imageRequest).toMatchObject({ quality: "medium", preserveBackground: true });
-    expect(imageRequest.prompt).toContain("camera looks down");
+    expect(imageRequest.prompt).toContain("image1 is the untouched room");
+    expect(imageRequest.prompt).toContain("BOTTOM-MIDDLE");
+    const cleanRoomPixels = await sharp(Buffer.from(imageRequest.scene)).removeAlpha().raw().toBuffer();
+    // The scene fixture is gray; a brown pasted product must not bias image1.
+    for (let index = 0; index < cleanRoomPixels.length; index += 3) {
+      expect(cleanRoomPixels[index]).toBe(cleanRoomPixels[index + 1]);
+      expect(cleanRoomPixels[index + 1]).toBe(cleanRoomPixels[index + 2]);
+    }
+    const guide = imageRequest.references.find((reference: ImageReference) => reference.role === "spatial_guide");
+    expect(guide).toBeDefined();
+    expect(Buffer.from(guide.data)).not.toEqual(Buffer.from(imageRequest.scene));
+    const sceneSize = await sharp(Buffer.from(imageRequest.scene)).metadata();
+    const guideSize = await sharp(Buffer.from(guide.data)).metadata();
+    expect([guideSize.width, guideSize.height]).toEqual([sceneSize.width, sceneSize.height]);
     expect(imageRequest.deadlineMs - Date.now()).toBeLessThanOrEqual(135_000);
     expect(reviewCalls).toBe(1);
     expect(preflightRequest).toBeNull();
