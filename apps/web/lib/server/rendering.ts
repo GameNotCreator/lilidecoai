@@ -131,6 +131,7 @@ import {
 
 const STOREFRONT_CAMERA_FIRST_ISOLATION_PROMPT_VERSION = "storefront-isolated-camera-first-v5";
 const STOREFRONT_CAMERA_WINDOW_ISOLATION_PROMPT_VERSION = "storefront-isolated-camera-window-v6";
+const STOREFRONT_HIGH_QUALITY_ISOLATION_PROMPT_VERSION = "storefront-isolated-camera-window-high-v7";
 
 interface NormalizedBox {
   xMin: number;
@@ -511,7 +512,7 @@ export async function createRender(
     ],
     attemptCount: 0,
     estimatedCostUsd: 0,
-    promptVersion: fastStorefront ? STOREFRONT_CAMERA_WINDOW_ISOLATION_PROMPT_VERSION : simplePointWorkflow
+    promptVersion: fastStorefront ? STOREFRONT_HIGH_QUALITY_ISOLATION_PROMPT_VERSION : simplePointWorkflow
       ? SIMPLE_POINT_PROMPT_VERSION
       : PROMPT_VERSION,
     engineVersions: {
@@ -522,7 +523,7 @@ export async function createRender(
       // The prompt the model actually receives. simple_point sends the
       // harmonize prompt (SIMPLE_COMPOSITE_PROMPT_VERSION); the "simple point"
       // version is the render's own contract, already on `promptVersion`.
-      prompt: fastStorefront ? STOREFRONT_CAMERA_WINDOW_ISOLATION_PROMPT_VERSION : simplePointWorkflow
+      prompt: fastStorefront ? STOREFRONT_HIGH_QUALITY_ISOLATION_PROMPT_VERSION : simplePointWorkflow
         ? SIMPLE_COMPOSITE_PROMPT_VERSION
         : PROMPT_VERSION,
       // Resolved, never assumed: a missing key turns a run synthetic in
@@ -535,7 +536,7 @@ export async function createRender(
         selectedProvider.route.provider === "openai"
           ? imageQualityForModel(
               selectedProvider.provider.model,
-              fastStorefront ? "medium" : serverConfig.openaiQuality,
+              fastStorefront ? "high" : serverConfig.openaiQuality,
             )
           : "n/a",
       visionModel:
@@ -1029,13 +1030,17 @@ async function runSimplePointRender(
   const isolatedProducts = render.engineVersions?.composite === STOREFRONT_ISOLATED_COMPOSITE_VERSION;
   const widthAnchoredIsolated = isolatedProducts &&
     render.engineVersions?.scaleEstimation === STOREFRONT_WIDTH_POSE_PREFLIGHT_VERSION;
+  const highQualityIsolation = isolatedProducts &&
+    render.engineVersions?.prompt === STOREFRONT_HIGH_QUALITY_ISOLATION_PROMPT_VERSION;
   const cameraWindowIsolation = isolatedProducts &&
-    render.engineVersions?.prompt === STOREFRONT_CAMERA_WINDOW_ISOLATION_PROMPT_VERSION;
+    (highQualityIsolation || render.engineVersions?.prompt === STOREFRONT_CAMERA_WINDOW_ISOLATION_PROMPT_VERSION);
   const cameraFirstIsolation = isolatedProducts &&
     (cameraWindowIsolation || render.engineVersions?.prompt === STOREFRONT_CAMERA_FIRST_ISOLATION_PROMPT_VERSION);
   const realisticStorefront = render.publicSessionId?.startsWith("storefront:") === true &&
     [STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION].includes(render.engineVersions?.quality ?? "") && input.mode !== "replace";
   const realisticReviewVersion = fastRealisticReview ? STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION : STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION;
+  const imageEditQuality = highQualityIsolation ? "high" : "medium";
+  const imagePromptVersion = highQualityIsolation ? STOREFRONT_HIGH_QUALITY_ISOLATION_PROMPT_VERSION : cameraWindowIsolation ? STOREFRONT_CAMERA_WINDOW_ISOLATION_PROMPT_VERSION : cameraFirstIsolation ? STOREFRONT_CAMERA_FIRST_ISOLATION_PROMPT_VERSION : realisticReviewVersion;
   const boundedStorefront = fastStorefront || realisticStorefront;
   const renderDeadlineMs = Math.min(renderDeadline(startedAt), boundedStorefront ? render.createdAt.getTime() + 180_000 : Infinity);
   if (realisticStorefront && input.scaleReference && simpleObjects.some(item => item.pixelsPerCm === null))
@@ -1579,12 +1584,12 @@ async function runSimplePointRender(
     ].join("\n");
     await setStage("generating_final", "adapting_perspective");
     const result = await durableStep(db, "storefront-perspective-image", "image", async () => {
-      await assertRenderBudget(db, render.id, estimatedImageEditCost(requestedSize, "medium", provider.model) + storefrontPlacementReviewAllowance().estimatedCostUsd);
+      await assertRenderBudget(db, render.id, estimatedImageEditCost(requestedSize, imageEditQuality, provider.model) + storefrontPlacementReviewAllowance().estimatedCostUsd);
       const result = await provider.edit({
         scene: compositionData, productCutout: orderedReferences[0]?.data ?? productReference.data,
         composition: compositionData, protectionMask: new Uint8Array(),
         ...(isolatedProducts ? { productIsolation: true, ...(cameraFirstIsolation ? { productIsolationCameraFirst: true } : {}) } : { targetMask: { data: new Uint8Array(padded.maskPng), mimeType: "image/png" as const, role: "target_mask" as const } }),
-        prompt: isolatedProducts ? isolatedPrompt : perspectivePrompt, quality: "medium", size: requestedSize,
+        prompt: isolatedProducts ? isolatedPrompt : perspectivePrompt, quality: imageEditQuality, size: requestedSize,
         lighting: { direction: "automatic", temperature: "neutral", hardness: "balanced" },
         placement: { x: simpleObjects[0]!.placementPoint.x, y: simpleObjects[0]!.placementPoint.y, operation: "place", objectCount: simpleObjects.length },
         idempotencyKey: `${input.idempotencyKey}:storefront-perspective`,
@@ -1598,7 +1603,7 @@ async function runSimplePointRender(
         ],
         mode, outputQuality: "final", preserveBackground: true,
       });
-      await recordProviderAttempt(db, render, result, "generating_final", cameraWindowIsolation ? STOREFRONT_CAMERA_WINDOW_ISOLATION_PROMPT_VERSION : cameraFirstIsolation ? STOREFRONT_CAMERA_FIRST_ISOLATION_PROMPT_VERSION : realisticReviewVersion, route.degradedMode, 1);
+      await recordProviderAttempt(db, render, result, "generating_final", imagePromptVersion, route.degradedMode, 1);
       if (durableContext.getStore() && result.status === "failed") {
         const code = result.error?.code ?? "";
         if (result.estimatedCostUsd > 0 || ["timeout", "network_error", "empty_image_response"].includes(code))
@@ -1664,7 +1669,7 @@ async function runSimplePointRender(
       provider: route.provider, model: provider.model, resultAssetId: resultAsset.id, compositeAssetId: candidateAsset.id,
       qualityScore: decision.score, qualityChecks: decision.checks, qualityDecision: decision,
       estimatedCostUsd: usageTotals.estimatedCostUsd, attemptCount: result.attemptCount,
-      latencyMs: Date.now() - startedAt, promptVersion: cameraWindowIsolation ? STOREFRONT_CAMERA_WINDOW_ISOLATION_PROMPT_VERSION : cameraFirstIsolation ? STOREFRONT_CAMERA_FIRST_ISOLATION_PROMPT_VERSION : realisticReviewVersion,
+      latencyMs: Date.now() - startedAt, promptVersion: imagePromptVersion,
       modelChain: [{ provider: route.provider, model: provider.model, role: "perspective_edit" },
         { provider: "openai", model: serverConfig.openaiVisionModel, role: "reference_scale_and_realism_review" }],
       audit: { scaleSources: scales.map(scale => scale.scaleSource), scaleFallbackFired: scales.some(scale => scale.scaleSource === "assumed_room_width"),

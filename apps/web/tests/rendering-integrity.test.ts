@@ -185,6 +185,7 @@ async function runHistoricalStorefrontRender(
     const versions = row.engineVersions as NonNullable<RenderDocument["engineVersions"]>;
     versions.scaleEstimation = scaleEstimation;
     versions.prompt = promptVersion;
+    versions.imageQuality = "medium";
     row.promptVersion = promptVersion;
     return insert(row);
   };
@@ -530,7 +531,7 @@ describe("simple render orchestration with offline providers", () => {
     expect(scenePreflightNames).toEqual(["storefront_scene_pose_preflight"]);
     expect(scenePreflightTexts[0]).not.toContain("product widths in centimetres");
   });
-  it("freezes the new camera-window contract at admission and maps catalogues to source images 3 onward", async () => {
+  it("freezes the high-quality camera-window contract at admission and maps catalogues to source images 3 onward", async () => {
     await scenes.updateOne({ id: "scene" }, { $set: { publicSessionId: "storefront:visitor-1" } });
     request.simplePlacements = request.simplePlacements!.map((item, index) => ({
       ...item, placementPoint: { ...item.placementPoint, y: [0.55, 0.85, 0.7][index]! },
@@ -547,19 +548,19 @@ describe("simple render orchestration with offline providers", () => {
     const insert = renders.insertOne;
     renders.insertOne = async row => {
       // Assert the immutable admission contract before any provider could run.
-      expect(row).toMatchObject({ promptVersion: "storefront-isolated-camera-window-v6", engineVersions: {
-        prompt: "storefront-isolated-camera-window-v6", composite: "storefront-isolated-product-v4",
+      expect(row).toMatchObject({ promptVersion: "storefront-isolated-camera-window-high-v7", engineVersions: {
+        prompt: "storefront-isolated-camera-window-high-v7", imageQuality: "high", composite: "storefront-isolated-product-v4",
         scaleEstimation: "storefront-scene-width-pose-v4", quality: "storefront-realistic-placement-v3",
       } });
       return insert(row);
     };
     const result = await createRender(db, "org", request, "storefront:visitor-1");
-    expect(result).toMatchObject({ status: "succeeded", promptVersion: "storefront-isolated-camera-window-v6",
-      engineVersions: { prompt: "storefront-isolated-camera-window-v6" } });
-    expect(renders.rows[0]!.promptVersion).toBe("storefront-isolated-camera-window-v6");
+    expect(result).toMatchObject({ status: "succeeded", promptVersion: "storefront-isolated-camera-window-high-v7",
+      engineVersions: { prompt: "storefront-isolated-camera-window-high-v7", imageQuality: "high" } });
+    expect(renders.rows[0]!.promptVersion).toBe("storefront-isolated-camera-window-high-v7");
     expect(mocks.edit).toHaveBeenCalledTimes(1);
     const imageRequest = mocks.edit.mock.calls[0]![0];
-    expect(imageRequest).toMatchObject({ productIsolation: true, productIsolationCameraFirst: true, quality: "medium" });
+    expect(imageRequest).toMatchObject({ productIsolation: true, productIsolationCameraFirst: true, quality: "high" });
     expect(imageRequest.prompt).toContain("image1 is the annotated room geometry guide");
     expect(imageRequest.prompt).toContain("image2 is the unmarked room CAMERA");
     expect(imageRequest.prompt).toContain("images3..5 are the original catalogue identity photographs");
@@ -587,7 +588,7 @@ describe("simple render orchestration with offline providers", () => {
     const { window } = windowContract;
     expect(Math.abs(guideSize.width! * window.height - guideSize.height! * window.width)).toBeLessThanOrEqual(Math.max(window.width, window.height));
     expect(imageRequest.prompt).toContain("Coordinates in the contracts still refer to the full original room");
-    expect(attempts.rows.find(row => row.stage === "generating_final")!.promptVersion).toBe("storefront-isolated-camera-window-v6");
+    expect(attempts.rows.find(row => row.stage === "generating_final")!.promptVersion).toBe("storefront-isolated-camera-window-high-v7");
     expect(reviewCalls).toBe(1);
   });
   it("uses one local camera guide whose window grows to contain one through three products", async () => {
@@ -621,7 +622,7 @@ describe("simple render orchestration with offline providers", () => {
       expect(Math.max(guideSize.width!, guideSize.height!)).toBeLessThanOrEqual(1024);
       // Uniform enlargement may round by one pixel, but cannot warp the crop.
       expect(Math.abs(guideSize.width! * window.height - guideSize.height! * window.width)).toBeLessThanOrEqual(Math.max(window.width, window.height));
-      expect(imageRequest).toMatchObject({ quality: "medium", productIsolationCameraFirst: true });
+      expect(imageRequest).toMatchObject({ quality: "high", productIsolationCameraFirst: true });
       expect(imageRequest.references.filter((reference: ImageReference) => reference.role.startsWith("product_"))).toHaveLength(count);
       windows.push(window);
     }
@@ -636,8 +637,8 @@ describe("simple render orchestration with offline providers", () => {
     preflightVerticalPixelsPerCm = 4;
     preflightWidthPixelsPerCm = 6;
     const result = await createRender(db, "org", request, "storefront:visitor-1");
-    expect(result).toMatchObject({ status: "succeeded", promptVersion: "storefront-isolated-camera-window-v6",
-      engineVersions: { scaleEstimation: "storefront-scene-width-pose-v4", prompt: "storefront-isolated-camera-window-v6" } });
+    expect(result).toMatchObject({ status: "succeeded", promptVersion: "storefront-isolated-camera-window-high-v7",
+      engineVersions: { scaleEstimation: "storefront-scene-width-pose-v4", prompt: "storefront-isolated-camera-window-high-v7", imageQuality: "high" } });
     expect(scenePreflightNames).toEqual(["storefront_scene_width_pose_preflight"]);
     expect(scenePreflightTexts[0]).toContain("product widths in centimetres, in the exact placement order: [10].");
     // Native mock is 40x80: 10 cm horizontal width at 6 px/cm becomes 60x120 uniformly.
@@ -646,6 +647,7 @@ describe("simple render orchestration with offline providers", () => {
     expect(Math.abs(box.left + (box.width - 1) / 2 - 80)).toBeLessThanOrEqual(0.5);
     expect(mocks.edit).toHaveBeenCalledTimes(1);
     expect(mocks.edit.mock.calls[0]![0].productIsolationCameraFirst).toBe(true);
+    expect(mocks.edit.mock.calls[0]![0].quality).toBe("high");
     expect(reviewCalls).toBe(1);
     expect(mocks.edit.mock.calls[0]![0].deadlineMs - Date.now()).toBeLessThanOrEqual(135_000);
     expect(attempts.rows.filter(row => row.stage === "storefront_scene_preflight")).toHaveLength(1);
@@ -687,8 +689,9 @@ describe("simple render orchestration with offline providers", () => {
     await scenes.updateOne({ id: "scene" }, { $set: { publicSessionId: "storefront:visitor-1" } });
     const result = await runHistoricalStorefrontRender("storefront-scene-width-pose-v4");
     expect(result).toMatchObject({ status: "succeeded", promptVersion: "storefront-realistic-placement-v3",
-      engineVersions: { prompt: "storefront-realistic-placement-v3", scaleEstimation: "storefront-scene-width-pose-v4" } });
+      engineVersions: { prompt: "storefront-realistic-placement-v3", scaleEstimation: "storefront-scene-width-pose-v4", imageQuality: "medium" } });
     const imageRequest = mocks.edit.mock.calls[0]![0];
+    expect(imageRequest.quality).toBe("medium");
     expect(imageRequest).not.toHaveProperty("productIsolationCameraFirst");
     expect(imageRequest.prompt).toContain("images1..3 are the original catalogue identity photographs");
     expect(imageRequest.prompt).toContain("image4 is the unmarked room CAMERA AND LIGHT REFERENCE ONLY");
@@ -705,7 +708,7 @@ describe("simple render orchestration with offline providers", () => {
     await scenes.updateOne({ id: "scene" }, { $set: { publicSessionId: "storefront:visitor-1" } });
     const result = await runHistoricalStorefrontRender("storefront-scene-width-pose-v4", "storefront-isolated-camera-first-v5");
     expect(result).toMatchObject({ status: "succeeded", promptVersion: "storefront-isolated-camera-first-v5",
-      engineVersions: { prompt: "storefront-isolated-camera-first-v5", scaleEstimation: "storefront-scene-width-pose-v4" } });
+      engineVersions: { prompt: "storefront-isolated-camera-first-v5", scaleEstimation: "storefront-scene-width-pose-v4", imageQuality: "medium" } });
     const imageRequest = mocks.edit.mock.calls[0]![0];
     expect(imageRequest).toMatchObject({ quality: "medium", productIsolation: true, productIsolationCameraFirst: true });
     expect(imageRequest.prompt).toContain("image1 is the annotated room geometry guide");
@@ -722,6 +725,50 @@ describe("simple render orchestration with offline providers", () => {
     expect(attempts.rows.find(row => row.stage === "generating_final")!.promptVersion).toBe("storefront-isolated-camera-first-v5");
     expect(mocks.edit).toHaveBeenCalledTimes(1);
     expect(reviewCalls).toBe(1);
+  });
+  it("retains a medium-quality local camera guide for an admitted v6 job", async () => {
+    await scenes.updateOne({ id: "scene" }, { $set: { publicSessionId: "storefront:visitor-1" } });
+    request.simplePlacements = [request.simplePlacements![0]!];
+    const result = await runHistoricalStorefrontRender("storefront-scene-width-pose-v4", "storefront-isolated-camera-window-v6");
+    expect(result).toMatchObject({ status: "succeeded", promptVersion: "storefront-isolated-camera-window-v6",
+      engineVersions: { prompt: "storefront-isolated-camera-window-v6", scaleEstimation: "storefront-scene-width-pose-v4", imageQuality: "medium" } });
+    const imageRequest = mocks.edit.mock.calls[0]![0];
+    expect(imageRequest).toMatchObject({ quality: "medium", productIsolation: true, productIsolationCameraFirst: true });
+    const { originalFrame, window } = cameraGuideWindow(imageRequest.prompt);
+    expect(originalFrame).toEqual({ width: 400, height: 300 });
+    expect(window.width * window.height).toBeLessThan(400 * 300);
+    expect(imageRequest.references.filter((reference: ImageReference) => reference.role === "spatial_guide")).toHaveLength(1);
+    expect(renders.rows[0]!.promptVersion).toBe("storefront-isolated-camera-window-v6");
+    expect(attempts.rows.find(row => row.stage === "generating_final")!.promptVersion).toBe("storefront-isolated-camera-window-v6");
+    expect(imageRequest.deadlineMs - Date.now()).toBeLessThanOrEqual(135_000);
+    expect(mocks.edit).toHaveBeenCalledTimes(1);
+    expect(reviewCalls).toBe(1);
+  });
+  it("reserves high-quality image and review costs with the actual model before generating a storefront product", async () => {
+    await scenes.updateOne({ id: "scene" }, { $set: { publicSessionId: "storefront:visitor-1" } });
+    request.simplePlacements = [request.simplePlacements![0]!];
+    const config = { ...mocks.config };
+    Object.assign(mocks.config, { storefrontImageModel: "gpt-image-2.5-sunburst", openaiVisionModel: "gpt-6-astra", openaiServiceTier: "default" });
+    vi.stubEnv("RENDER_MAX_COST_USD", "2");
+    try {
+      // Missing provider token usage conservatively records the real preflight
+      // allowance ($0.55). Sunburst high ($1) plus review ($0.55) exceeds $2;
+      // medium quality or the unrelated default image model would wrongly fit.
+      await expect(createRender(db, "org", request, "storefront:visitor-1")).rejects.toThrow(/Budget du rendu atteint/);
+      expect(scenePreflightNames).toEqual(["storefront_scene_width_pose_preflight"]);
+      expect(attempts.rows.filter(row => row.stage === "storefront_scene_preflight")).toHaveLength(1);
+      expect(attempts.rows.find(row => row.stage === "storefront_scene_preflight")!.estimatedCostUsd).toBeCloseTo(0.55);
+      expect(renders.rows[0]).toMatchObject({ status: "failed", creditCharged: false, engineVersions: { imageQuality: "high", editModel: "gpt-image-2.5-sunburst" } });
+      expect(mocks.edit).not.toHaveBeenCalled();
+      expect(reviewCalls).toBe(0);
+      expect(mocks.capture).not.toHaveBeenCalled();
+      expect(mocks.release).toHaveBeenCalled();
+      expect(attempts.rows.some(row => row.stage === "generating_final")).toBe(false);
+    } finally {
+      Object.assign(mocks.config, config);
+      delete (mocks.config as Record<string, unknown>).openaiServiceTier;
+      vi.unstubAllEnvs();
+    }
   });
   it("rejects an opaque generated product before review, completion or a paid retry", async () => {
     await scenes.updateOne({ id: "scene" }, { $set: { publicSessionId: "storefront:visitor-1" } });

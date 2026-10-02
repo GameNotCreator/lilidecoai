@@ -82,9 +82,12 @@ revue finale indépendante. Le délai total est de 180 secondes depuis la créat
 file d’attente comprise. Il ne relance pas automatiquement une image refusée.
 
 `STOREFRONT_IMAGE_MODEL` utilise `gpt-image-2.5-sunburst` par défaut, à qualité
-`medium`, pour produire une vraie transparence WebP sans masque. Les photos
+`high` pour les nouvelles admissions `storefront-isolated-camera-window-high-v7`,
+pour produire une vraie transparence WebP sans masque. La génération reste
+bornée à 90 secondes et ne reçoit aucune relance automatique. Les anciens
+profils v4 à v6 conservent leur qualité `medium`. Les photos
 catalogue restent les références d’identité, une par objet. Les nouvelles
-admissions `storefront-isolated-camera-window-v6` transmettent d’abord une
+admissions v6 et v7 transmettent d’abord une
 fenêtre agrandie du guide autour de tous les emplacements, puis la pièce,
 puis ces photos catalogue. Le recadrage conserve la perspective et décrit
 explicitement ses coordonnées dans la photo originale ; il ne change ni les
