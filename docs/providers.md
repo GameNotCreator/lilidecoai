@@ -93,6 +93,11 @@ hors de leur alpha, y compris les espaces entre les poignées. La perspective
 provient du nouvel objet généré ; le détourage catalogue n’est pas recollé dans
 le résultat final. Fonds opaques, silhouettes coupées et débordements sont
 refusés. L’échelle sans référence mesurée reste une estimation visuelle.
+Les nouvelles admissions `storefront-scene-width-pose-v4` estiment séparément
+la largeur projetée et la hauteur verticale dans ce même appel d’analyse.
+La silhouette finale utilise la largeur ; le guide garde la hauteur. Cela
+évite de confondre ces deux axes lorsque la caméra est inclinée. Une largeur
+inconnue est refusée avant la génération. Les anciens profils restent inchangés.
 
 Le contrôle final de l’identité, du placement, de l’échelle et de la cohérence
 photographique reste obligatoire. Un candidat refusé est privé et ne devient

@@ -39,7 +39,7 @@ import { reviewStorefrontPlacement, storefrontPlacementReviewAllowance, STOREFRO
 import { perspectiveEditComposition, restorePerspectiveBackground } from "./storefront-realistic-composite";
 import { buildStorefrontPerspectiveGuide } from "./storefront-perspective-guide";
 import { composeStorefrontIsolatedProducts, STOREFRONT_ISOLATED_COMPOSITE_VERSION } from "./storefront-isolated-composite";
-import { inspectStorefrontScene, storefrontScenePreflightAllowance, STOREFRONT_SCENE_PREFLIGHT_VERSION, STOREFRONT_POSE_PREFLIGHT_VERSION, type StorefrontScenePose } from "./ai/storefront-scene-preflight";
+import { inspectStorefrontScene, storefrontScenePreflightAllowance, STOREFRONT_SCENE_PREFLIGHT_VERSION, STOREFRONT_POSE_PREFLIGHT_VERSION, STOREFRONT_WIDTH_POSE_PREFLIGHT_VERSION, type StorefrontScenePose } from "./ai/storefront-scene-preflight";
 import { captureStage } from "./render-capture";
 import { cutoutTrust } from "./cutout-identity";
 import { privateVisibility, readAsset, storeAsset } from "./assets";
@@ -513,7 +513,7 @@ export async function createRender(
     engineVersions: {
       placementGeometry: SIMPLE_PLACEMENT_VERSION,
       composite: fastStorefront ? STOREFRONT_ISOLATED_COMPOSITE_VERSION : simplePointWorkflow ? CONTACT_LIGHT_COMPOSITE_VERSION : SIMPLE_COMPOSITE_VERSION,
-      scaleEstimation: fastStorefront ? input.scaleReference ? "storefront-manual-reference-v1" : STOREFRONT_POSE_PREFLIGHT_VERSION : SCALE_ESTIMATION_VERSION,
+      scaleEstimation: fastStorefront ? STOREFRONT_WIDTH_POSE_PREFLIGHT_VERSION : SCALE_ESTIMATION_VERSION,
       quality: fastStorefront ? STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION : simplePointWorkflow ? VISUAL_REVIEW_VERSION : QUALITY_VERSION,
       // The prompt the model actually receives. simple_point sends the
       // harmonize prompt (SIMPLE_COMPOSITE_PROMPT_VERSION); the "simple point"
@@ -1023,6 +1023,8 @@ async function runSimplePointRender(
     render.engineVersions?.quality === STOREFRONT_PLACEMENT_REVIEW_VERSION && input.mode !== "replace";
   const fastRealisticReview = render.engineVersions?.quality === STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION;
   const isolatedProducts = render.engineVersions?.composite === STOREFRONT_ISOLATED_COMPOSITE_VERSION;
+  const widthAnchoredIsolated = isolatedProducts &&
+    render.engineVersions?.scaleEstimation === STOREFRONT_WIDTH_POSE_PREFLIGHT_VERSION;
   const realisticStorefront = render.publicSessionId?.startsWith("storefront:") === true &&
     [STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION].includes(render.engineVersions?.quality ?? "") && input.mode !== "replace";
   const realisticReviewVersion = fastRealisticReview ? STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION : STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION;
@@ -1133,13 +1135,15 @@ async function runSimplePointRender(
     if (serverConfig.aiMockMode) return { spans: [], lighting: null, cached: true };
     const result = await measureProviderCall(db, render, {
       step: "storefront_scene_preflight", provider: "openai", model: serverConfig.openaiVisionModel,
-      ...storefrontScenePreflightAllowance(), promptVersion: fastRealisticReview ? STOREFRONT_POSE_PREFLIGHT_VERSION : STOREFRONT_SCENE_PREFLIGHT_VERSION,
+      ...storefrontScenePreflightAllowance(), promptVersion: widthAnchoredIsolated ? STOREFRONT_WIDTH_POSE_PREFLIGHT_VERSION : fastRealisticReview ? STOREFRONT_POSE_PREFLIGHT_VERSION : STOREFRONT_SCENE_PREFLIGHT_VERSION,
     }, () => inspectStorefrontScene({ room: { data: sceneImage, mimeType: "image/webp" },
       points: simpleObjects.map(item => ({ point: item.placementPoint, kind: item.placementKind })),
       deadlineMs: Math.min(renderDeadlineMs - 125_000, Date.now() + 25_000), reference: input.scaleReference,
       ...(fastRealisticReview ? { productHeightsCm: simpleObjects.map(item => item.product.heightCm) } : {}),
+      ...(widthAnchoredIsolated ? { productWidthsCm: simpleObjects.map(item => item.product.widthCm) } : {}),
     }), { maxAttempts: 1, respectRetryable: true });
-    return { spans: result.spans, inspections: result.inspections, poses: result.poses, lighting: null, cached: false };
+    return { spans: result.spans, inspections: result.inspections, poses: result.poses,
+      ...(widthAnchoredIsolated ? { widthPixelsPerCm: result.widthPixelsPerCm } : {}), lighting: null, cached: false };
   }) : await durableStep(
     db,
     "scene-scale",
@@ -1197,6 +1201,16 @@ async function runSimplePointRender(
   });
   if (realisticStorefront && scales.some(scale => scale.pixelsPerCm === null))
     throw new RenderError("La taille ne peut pas être estimée sur cette photo. Choisissez une vue plus lisible, ou ajoutez un repère de hauteur.", 422);
+  // A projected upright centimetre and a projected horizontal centimetre
+  // differ under camera pitch. Only new isolated jobs use the width estimate;
+  // the historical height-based guide and admitted v3 jobs remain unchanged.
+  const widthScales = widthAnchoredIsolated && !serverConfig.aiMockMode && "widthPixelsPerCm" in scaleResult
+    ? (scaleResult as SceneScaleResult & { widthPixelsPerCm?: Array<number | null> }).widthPixelsPerCm
+    : undefined;
+  if (widthAnchoredIsolated && !serverConfig.aiMockMode &&
+      (!widthScales || widthScales.length !== simpleObjects.length ||
+        widthScales.some(value => value === null || !Number.isFinite(value) || value <= 0)))
+    throw new RenderError("La largeur du produit ne peut pas être estimée à cet emplacement. Choisissez une zone de sol ou de support plus lisible.", 422);
 
   // Pre-flight before any image is generated: an object that cannot be shown
   // at its point, or two objects fighting for the same spot on a surface,
@@ -1578,7 +1592,7 @@ async function runSimplePointRender(
           objects: frontToBack.map(index => ({
             index, point: simpleObjects[index]!.placementPoint, kind: simpleObjects[index]!.placementKind,
             dimensionsCm: { width: simpleObjects[index]!.product.widthCm, height: simpleObjects[index]!.product.heightCm, depth: simpleObjects[index]!.product.depthCm },
-            pixelsPerCm: scales[index]!.pixelsPerCm!, pose: realisticPoses?.[index],
+            pixelsPerCm: widthAnchoredIsolated && !serverConfig.aiMockMode ? widthScales![index]! : scales[index]!.pixelsPerCm!, pose: realisticPoses?.[index],
           })),
         });
         finalBuffer = isolated.image;

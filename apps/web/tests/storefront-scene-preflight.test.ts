@@ -10,8 +10,8 @@ vi.mock("../lib/server/config", () => ({ serverConfig: config }));
 import {
   inspectStorefrontScene, parseStorefrontScenePreflight,
   storefrontScenePreflightAllowance,
-  storefrontScenePreflightSchema, storefrontScenePosePreflightSchema,
-  STOREFRONT_SCENE_PREFLIGHT_VERSION, STOREFRONT_POSE_PREFLIGHT_VERSION,
+  storefrontScenePreflightSchema, storefrontScenePosePreflightSchema, storefrontSceneWidthPosePreflightSchema,
+  STOREFRONT_SCENE_PREFLIGHT_VERSION, STOREFRONT_POSE_PREFLIGHT_VERSION, STOREFRONT_WIDTH_POSE_PREFLIGHT_VERSION,
   type StorefrontScenePreflightInput,
 } from "../lib/server/ai/storefront-scene-preflight";
 import { visionObservation } from "../lib/server/ai/openai-vision-cost";
@@ -33,6 +33,163 @@ function poseAnswer() {
   })) };
 }
 const productHeightsCm = [40, 75, 20];
+const productWidthsCm = [40, 35, 60];
+function widthPoseAnswer() {
+  return { points: poseAnswer().points.map((entry, index) => ({
+    ...entry, widthPixelsPerCm: index === 2 ? null : index === 0 ? 6 : 8,
+  })) };
+}
+
+describe("opt-in storefront independent width and pose preflight", () => {
+  it("retains different width/height scales and nullable widths in exact object order", () => {
+    expect(STOREFRONT_WIDTH_POSE_PREFLIGHT_VERSION).toBe("storefront-scene-width-pose-v4");
+    const result = parseStorefrontScenePreflight(widthPoseAnswer(), points, productHeightsCm, productWidthsCm);
+    expect(result.widthPixelsPerCm).toEqual([6, 8, null]);
+    expect(result.spans.map((entry) => entry.pixelsPerCm)).toEqual([4, 4, null]);
+    expect(result.poses).toEqual(parseStorefrontScenePreflight(poseAnswer(), points, productHeightsCm).poses);
+    expect(result.spans.every((entry) => entry.confidence !== "high")).toBe(true);
+    expect(productWidthsCm).toEqual([40, 35, 60]);
+  });
+
+  it("keeps existing v1/v3 schemas and results unchanged instead of activating width implicitly", () => {
+    expect(STOREFRONT_SCENE_PREFLIGHT_VERSION).toBe("storefront-scene-preflight-v1");
+    expect(STOREFRONT_POSE_PREFLIGHT_VERSION).toBe("storefront-scene-pose-v3");
+    expect(parseStorefrontScenePreflight(answer(), points)).not.toHaveProperty("widthPixelsPerCm");
+    expect(parseStorefrontScenePreflight(poseAnswer(), points, productHeightsCm)).not.toHaveProperty("widthPixelsPerCm");
+    expect(storefrontScenePreflightSchema.safeParse(widthPoseAnswer()).success).toBe(false);
+    expect(storefrontScenePosePreflightSchema.safeParse(widthPoseAnswer()).success).toBe(false);
+    expect(storefrontSceneWidthPosePreflightSchema.safeParse(answer()).success).toBe(false);
+    expect(storefrontSceneWidthPosePreflightSchema.safeParse(poseAnswer()).success).toBe(false);
+    expect(() => parseStorefrontScenePreflight(widthPoseAnswer(), points, productHeightsCm)).toThrow();
+  });
+
+  it.each([1, 2, 3])("supports %i points and repeated product dimensions without deduplicating", (count) => {
+    const data = widthPoseAnswer(); data.points = data.points.slice(0, count);
+    const result = parseStorefrontScenePreflight(data, points.slice(0, count), Array(count).fill(40), Array(count).fill(40));
+    expect(result.widthPixelsPerCm).toEqual([6, 8, null].slice(0, count));
+    expect(result.inspections).toHaveLength(count);
+    expect(result.poses).toHaveLength(count);
+  });
+
+  it("leaves an unknown horizontal width null even when height scale and pose are known", () => {
+    const data = widthPoseAnswer(); data.points[0]!.widthPixelsPerCm = null;
+    const result = parseStorefrontScenePreflight(data, points, productHeightsCm, productWidthsCm);
+    expect(result.widthPixelsPerCm?.[0]).toBeNull();
+    expect(result.spans[0]!.pixelsPerCm).toBe(4);
+    expect(result.poses?.[0]!.cameraElevationDegrees).toBe(45);
+  });
+
+  it.each([0.2, 200])("accepts width scale bound %s without coercion", (scale) => {
+    const data = widthPoseAnswer(); data.points[0]!.widthPixelsPerCm = scale;
+    expect(parseStorefrontScenePreflight(data, points, productHeightsCm, productWidthsCm).widthPixelsPerCm?.[0]).toBe(scale);
+  });
+
+  it.each([0, 0.19, 200.01, NaN, Infinity, "6", undefined])("rejects malformed width %s instead of using height", (scale) => {
+    const data = widthPoseAnswer(); Object.assign(data.points[0]!, { widthPixelsPerCm: scale });
+    expect(() => parseStorefrontScenePreflight(data, points, productHeightsCm, productWidthsCm)).toThrow(/incomplète|invalide/);
+  });
+
+  it.each(["widthPixelsPerCm", "cameraElevationDegrees", "cameraRollDegrees", "shortposeEvidence"] as const)(
+    "requires the complete opt-in schema including %s", (name) => {
+      const data = widthPoseAnswer();
+      delete (data.points[0]! as Partial<typeof data.points[0]>)[name];
+      expect(() => parseStorefrontScenePreflight(data, points, productHeightsCm, productWidthsCm)).toThrow();
+    },
+  );
+
+  it.each(["missing", "duplicate", "reordered", "unexpected"])("refuses %s width coverage without remapping a product", (defect) => {
+    const data = widthPoseAnswer();
+    if (defect === "missing") data.points.pop();
+    if (defect === "duplicate") data.points[1]!.index = 1;
+    if (defect === "reordered") data.points.reverse();
+    if (defect === "unexpected") data.points[0]!.index = 4;
+    expect(() => parseStorefrontScenePreflight(data, points, productHeightsCm, productWidthsCm)).toThrow();
+  });
+
+  it.each([[], [40], [40, 35], [40, 35, 60, 10], [0, 35, 60], [-40, 35, 60],
+    [NaN, 35, 60], [Infinity, 35, 60], ["40", 35, 60], null])(
+    "refuses invalid widths before calling the provider (%j)", async (widths) => {
+      const fetcher = vi.fn<typeof globalThis.fetch>(); vi.stubGlobal("fetch", fetcher);
+      await expect(inspectStorefrontScene({
+        ...input(), productHeightsCm, productWidthsCm: widths as number[],
+      })).rejects.toMatchObject({ code: "invalid_input", providerCalled: false });
+      expect(fetcher).not.toHaveBeenCalled();
+      expect(() => parseStorefrontScenePreflight(widthPoseAnswer(), points, productHeightsCm, widths as number[])).toThrow(/largeurs/);
+    },
+  );
+
+  it("requires product heights for the complete width/pose opt-in before spending", async () => {
+    const fetcher = vi.fn<typeof globalThis.fetch>(); vi.stubGlobal("fetch", fetcher);
+    await expect(inspectStorefrontScene({ ...input(), productWidthsCm })).rejects.toMatchObject({
+      code: "invalid_input", providerCalled: false,
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(() => parseStorefrontScenePreflight(widthPoseAnswer(), points, undefined, productWidthsCm)).toThrow(/largeurs/);
+  });
+
+  it("requests width, height and pose together in one low-reasoning 25s/6000-token call", async () => {
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    const fetcher = vi.fn<typeof globalThis.fetch>(async () => Response.json(envelope(widthPoseAnswer())));
+    vi.stubGlobal("fetch", fetcher);
+    const result = await inspectStorefrontScene({ ...input(), reference, productHeightsCm, productWidthsCm });
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(timeout.mock.calls[0]![0]).toBeLessThanOrEqual(25_000);
+    expect(result.widthPixelsPerCm).toEqual([6, 8, null]);
+    expect(visionObservation(result)?.usage).toEqual(usage);
+    const request = JSON.parse(fetcher.mock.calls[0]![1]!.body as string);
+    expect(request).toMatchObject({ reasoning: { effort: "low" }, max_output_tokens: 6000,
+      text: { format: { name: "storefront_scene_width_pose_preflight", strict: true } } });
+    expect(request.text.format.schema.properties.points.items.required).toContain("widthPixelsPerCm");
+    const prompt = request.input[0].content[0].text as string;
+    expect(prompt).toContain(JSON.stringify(productWidthsCm));
+    expect(prompt).toContain(JSON.stringify(productHeightsCm));
+    expect(prompt).toContain("horizontal image-x extent");
+    expect(prompt).toContain("includes all visible opaque parts, including handles");
+    expect(prompt).toContain("not a semantic body mask");
+    expect(prompt).toContain("do not copy the height scale");
+    expect(prompt).toContain("height reference constrains height only");
+    expect(prompt).toContain("Return null for an unsupported width");
+    expect(request.input[0].content.filter((entry: { type: string }) => entry.type === "input_image")).toHaveLength(1);
+    expect(storefrontScenePreflightAllowance().estimatedCostUsd).toBe(0.55);
+  });
+
+  it("retains observed usage and refuses a late width response without another call", async () => {
+    const start = Date.now();
+    const fetcher = vi.fn<typeof globalThis.fetch>(async () => {
+      vi.spyOn(Date, "now").mockReturnValue(start + 26_000);
+      return Response.json(envelope(widthPoseAnswer()));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const error = await inspectStorefrontScene({
+      ...input(), deadlineMs: start + 180_000, productHeightsCm, productWidthsCm,
+    }).catch((reason: unknown) => reason);
+    expect(error).toMatchObject({ code: "deadline", providerCalled: true });
+    expect(visionObservation(error)?.usage).toEqual(usage);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("retains usage for incomplete width output and never retries or falls back to height", async () => {
+    const fetcher = vi.fn<typeof globalThis.fetch>(async () => Response.json(envelope(poseAnswer())));
+    vi.stubGlobal("fetch", fetcher);
+    const error = await inspectStorefrontScene({ ...input(), productHeightsCm, productWidthsCm }).catch((reason: unknown) => reason);
+    expect(error).toMatchObject({ code: "malformed", providerCalled: true });
+    expect(visionObservation(error)?.usage).toEqual(usage);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("does not retry a width request after network failure or swallow durable cancellation", async () => {
+    const fetcher = vi.fn<typeof globalThis.fetch>(async () => { throw new Error("offline"); });
+    vi.stubGlobal("fetch", fetcher);
+    await expect(inspectStorefrontScene({ ...input(), productHeightsCm, productWidthsCm })).rejects.toMatchObject({
+      code: "unavailable", providerCalled: true,
+    });
+    expect(fetcher).toHaveBeenCalledOnce(); fetcher.mockClear();
+    const failure = new DurableExecutionError("Lease perdue", "lease_lost");
+    fetcher.mockImplementation(async () => { throw failure; });
+    await expect(inspectStorefrontScene({ ...input(), productHeightsCm, productWidthsCm })).rejects.toBe(failure);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+});
 
 describe("opt-in storefront top-camera pose preflight", () => {
   it("adds ordered nullable pose evidence without changing the v1 schema or output", () => {

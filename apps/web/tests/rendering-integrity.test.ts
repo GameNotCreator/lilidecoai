@@ -83,6 +83,10 @@ let preflightRequest: typeof reviewRequest;
 let reviewCalls: number;
 let inspectionFailure: boolean;
 let obstacle: boolean;
+let preflightVerticalPixelsPerCm: number;
+let preflightWidthPixelsPerCm: number | null;
+let scenePreflightNames: string[];
+let scenePreflightTexts: string[];
 let reviewRequest: {
   input: Array<{
     content: Array<{ type: string; image_url?: string; text?: string }>;
@@ -169,6 +173,40 @@ function structuredReview(
   };
   if (reviewPayload.missingCheck) delete final.backgroundPreserved;
   return final;
+}
+
+/** Inject a historical admitted contract at the fixture's storage boundary. */
+async function runHistoricalStorefrontRender() {
+  const insert = renders.insertOne;
+  renders.insertOne = async row => {
+    (row.engineVersions as NonNullable<RenderDocument["engineVersions"]>).scaleEstimation = "storefront-scene-pose-v3";
+    return insert(row);
+  };
+  try {
+    return await createRender(db, "org", request, "storefront:visitor-1");
+  } finally {
+    renders.insertOne = insert;
+  }
+}
+
+/** Inspect actual delivered pixels rather than only the request's scale field. */
+async function deliveredProductBox() {
+  const roomAsset = await mocks.read(db, "room");
+  const delivered = mocks.store.mock.calls.at(-1)![1];
+  const decode = (buffer: Buffer) => sharp(buffer).removeAlpha().toColourspace("srgb").raw().toBuffer({ resolveWithObject: true });
+  const [room, result] = await Promise.all([decode(roomAsset.buffer), decode(delivered.buffer)]);
+  expect(result.info).toMatchObject({ width: room.info.width, height: room.info.height, channels: 3 });
+  let left = room.info.width, right = -1, top = room.info.height, bottom = -1;
+  for (let y = 0; y < room.info.height; y++) {
+    for (let x = 0; x < room.info.width; x++) {
+      const pixel = (y * room.info.width + x) * 3;
+      if ([0, 1, 2].some(channel => result.data[pixel + channel] !== room.data[pixel + channel])) {
+        left = Math.min(left, x); right = Math.max(right, x);
+        top = Math.min(top, y); bottom = Math.max(bottom, y);
+      }
+    }
+  }
+  return { left, top, bottom, width: right - left + 1, height: bottom - top + 1 };
 }
 
 beforeEach(async () => {
@@ -287,6 +325,10 @@ beforeEach(async () => {
   reviewCalls = 0;
   inspectionFailure = false;
   obstacle = false;
+  preflightVerticalPixelsPerCm = 2.5;
+  preflightWidthPixelsPerCm = 2.5;
+  scenePreflightNames = [];
+  scenePreflightTexts = [];
   reviewRequest = null;
   vi.stubGlobal(
     "fetch",
@@ -294,14 +336,19 @@ beforeEach(async () => {
       if (init.body instanceof FormData)
         return new Response("cleanup unavailable", { status: 502 });
       const payload = JSON.parse(String(init.body));
-      if (["storefront_scene_preflight", "storefront_scene_pose_preflight"].includes(payload.text?.format?.name)) {
+      if (["storefront_scene_preflight", "storefront_scene_pose_preflight", "storefront_scene_width_pose_preflight"].includes(payload.text?.format?.name)) {
         if (inspectionFailure) throw new Error("offline");
+        scenePreflightNames.push(payload.text.format.name);
+        scenePreflightTexts.push(payload.input[0].content[0].text);
+        const withPose = payload.text.format.name !== "storefront_scene_preflight";
+        const withWidth = payload.text.format.name === "storefront_scene_width_pose_preflight";
         return Response.json({ status: "completed", output: [{ type: "message", status: "completed", content: [{ type: "output_text", text: JSON.stringify({
-          points: request.simplePlacements!.map((_, index) => ({ index: index + 1, pixelsPerCm: 2.5,
+          points: request.simplePlacements!.map((_, index) => ({ index: index + 1, pixelsPerCm: preflightVerticalPixelsPerCm,
             supportKind: "floor", imageClear: true, clarityScore: 1, targetVisible: true, supportVisible: true,
             obstacleAtPoint: obstacle, obstacleName: obstacle ? "old vase" : null,
             obstacleBox: obstacle ? { xMin: 0, yMin: 0, xMax: 1, yMax: 1 } : null, evidence: "Sol libre et perspective lisible.",
-            ...(payload.text.format.name === "storefront_scene_pose_preflight" ? { cameraElevationDegrees: 25, cameraRollDegrees: 0, shortposeEvidence: "Dessus des meubles visible." } : {}),
+            ...(withPose ? { cameraElevationDegrees: 25, cameraRollDegrees: 0, shortposeEvidence: "Dessus des meubles visible." } : {}),
+            ...(withWidth ? { widthPixelsPerCm: preflightWidthPixelsPerCm } : {}),
           })),
         }) }] }] });
       }
@@ -424,7 +471,7 @@ describe("restricted spatial admission", () => {
 describe("simple render orchestration with offline providers", () => {
   it("qualifies a storefront perspective edit once with an optional reference and no second image generation", async () => {
     await scenes.updateOne({ id: "scene" }, { $set: { publicSessionId: "storefront:visitor-1" } });
-    const result = await createRender(db, "org", request, "storefront:visitor-1");
+    const result = await runHistoricalStorefrontRender();
     expect(result).toMatchObject({ status: "succeeded", provider: "openai", attemptCount: 1,
       qualityDecision: { status: "accepted", version: "storefront-realistic-placement-v3" },
       engineVersions: { quality: "storefront-realistic-placement-v3", composite: "storefront-isolated-product-v4", editModel: "test-isolated-image", imageQuality: "medium", scaleEstimation: "storefront-scene-pose-v3" } });
@@ -464,6 +511,59 @@ describe("simple render orchestration with offline providers", () => {
     expect(result.qualityChecks.every(check => !check.name.includes("lighting"))).toBe(true);
     expect(result.resultUrl).toBe(result.compositeUrl);
     expect(reviewRequest!.input[1]!.content.filter(entry => entry.type === "input_image")).toHaveLength(5);
+    expect(scenePreflightNames).toEqual(["storefront_scene_pose_preflight"]);
+    expect(scenePreflightTexts[0]).not.toContain("product widths in centimetres");
+  });
+  it("sizes a newly admitted isolated product from horizontal 6 rather than vertical 4 pixels per centimetre", async () => {
+    await scenes.updateOne({ id: "scene" }, { $set: { publicSessionId: "storefront:visitor-1" } });
+    request.simplePlacements = [request.simplePlacements![0]!];
+    preflightVerticalPixelsPerCm = 4;
+    preflightWidthPixelsPerCm = 6;
+    const result = await createRender(db, "org", request, "storefront:visitor-1");
+    expect(result).toMatchObject({ status: "succeeded", engineVersions: { scaleEstimation: "storefront-scene-width-pose-v4" } });
+    expect(scenePreflightNames).toEqual(["storefront_scene_width_pose_preflight"]);
+    expect(scenePreflightTexts[0]).toContain("product widths in centimetres, in the exact placement order: [10].");
+    // Native mock is 40x80: 10 cm horizontal width at 6 px/cm becomes 60x120 uniformly.
+    const box = await deliveredProductBox();
+    expect(box).toEqual({ left: 51, top: 121, bottom: 240, width: 60, height: 120 });
+    expect(Math.abs(box.left + (box.width - 1) / 2 - 80)).toBeLessThanOrEqual(0.5);
+    expect(mocks.edit).toHaveBeenCalledTimes(1);
+    expect(reviewCalls).toBe(1);
+    expect(mocks.edit.mock.calls[0]![0].deadlineMs - Date.now()).toBeLessThanOrEqual(135_000);
+    expect(attempts.rows.filter(row => row.stage === "storefront_scene_preflight")).toHaveLength(1);
+    expect(attempts.rows.filter(row => row.stage === "generating_final")).toHaveLength(1);
+    expect(attempts.rows.filter(row => row.stage === "storefront_placement_review")).toHaveLength(1);
+    expect(attempts.rows.every(row => typeof row.estimatedCostUsd === "number")).toBe(true);
+    expect(result.resultUrl).toBe(result.compositeUrl);
+    expect(mocks.capture).toHaveBeenCalledOnce();
+  });
+  it("rejects an unknown horizontal scale before image generation even when vertical scale is known", async () => {
+    await scenes.updateOne({ id: "scene" }, { $set: { publicSessionId: "storefront:visitor-1" } });
+    request.simplePlacements = [request.simplePlacements![0]!];
+    preflightVerticalPixelsPerCm = 4;
+    preflightWidthPixelsPerCm = null;
+    await expect(createRender(db, "org", request, "storefront:visitor-1")).rejects.toThrow(/largeur/);
+    expect(scenePreflightNames).toEqual(["storefront_scene_width_pose_preflight"]);
+    expect(mocks.edit).not.toHaveBeenCalled();
+    expect(reviewCalls).toBe(0);
+    expect(mocks.capture).not.toHaveBeenCalled();
+    expect(mocks.release).toHaveBeenCalled();
+    expect(attempts.rows.filter(row => row.stage === "storefront_scene_preflight")).toHaveLength(1);
+    expect(attempts.rows.some(row => row.stage === "generating_final")).toBe(false);
+    expect(renders.rows[0]).toMatchObject({ status: "failed", creditCharged: false });
+    expect(renders.rows[0]!.resultAssetId).toBeUndefined();
+  });
+  it("retains the admitted v3 vertical scale instead of applying the new horizontal scale contract", async () => {
+    await scenes.updateOne({ id: "scene" }, { $set: { publicSessionId: "storefront:visitor-1" } });
+    request.simplePlacements = [request.simplePlacements![0]!];
+    preflightVerticalPixelsPerCm = 4;
+    preflightWidthPixelsPerCm = 6;
+    const result = await runHistoricalStorefrontRender();
+    expect(result).toMatchObject({ status: "succeeded", engineVersions: { scaleEstimation: "storefront-scene-pose-v3" } });
+    expect(scenePreflightNames).toEqual(["storefront_scene_pose_preflight"]);
+    expect(scenePreflightTexts[0]).not.toContain("product widths in centimetres");
+    expect(await deliveredProductBox()).toEqual({ left: 61, top: 161, bottom: 240, width: 40, height: 80 });
+    expect(mocks.edit).toHaveBeenCalledTimes(1);
   });
   it("rejects an opaque generated product before review, completion or a paid retry", async () => {
     await scenes.updateOne({ id: "scene" }, { $set: { publicSessionId: "storefront:visitor-1" } });
@@ -507,7 +607,7 @@ describe("simple render orchestration with offline providers", () => {
       topPoint: { x: 0.15, y: 0.633333 }, sameDepthConfirmed: true };
     const result = await createRender(db, "org", request, "storefront:visitor-1");
     expect(result.status).toBe("succeeded");
-    expect(result.engineVersions?.scaleEstimation).toBe("storefront-manual-reference-v1");
+    expect(result.engineVersions?.scaleEstimation).toBe("storefront-scene-width-pose-v4");
     expect(mocks.edit).toHaveBeenCalledTimes(1);
     expect(mocks.edit.mock.calls[0]![0].references.some((reference: { role: string }) => reference.role === "spatial_guide")).toBe(true);
     expect(renders.rows[0]!.requestSnapshot).toMatchObject({ input: { scaleReference: request.scaleReference } });
