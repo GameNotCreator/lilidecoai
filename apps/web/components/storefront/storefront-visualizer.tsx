@@ -920,8 +920,8 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
                         : "Touchez maintenant le sommet de cet objet, puis indiquez sa hauteur."
                       : productPlacementKind(activeProduct) === "standing"
                         ? useMeasurement
-                          ? "Touchez le point où la base de cet article touchera le sol ou le meuble, à la même profondeur que votre référence."
-                          : "Touchez le point où la base de cet article touchera le sol ou le meuble."
+                          ? "Touchez l’endroit où le bord inférieur visible de l’article doit rencontrer le sol ou le meuble, à la même profondeur que votre référence."
+                          : "Touchez l’endroit où le bord inférieur visible de l’article doit rencontrer le sol ou le meuble."
                         : "Touchez le centre de l’emplacement souhaité."}
                   </p>
                 </div>
