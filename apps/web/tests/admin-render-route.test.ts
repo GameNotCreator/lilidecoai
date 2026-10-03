@@ -168,6 +168,16 @@ describe("merchant render diagnostics", () => {
       "execution.steps.preflight-v6.output.widthPixelsPerCm",
       "execution.steps.preflight-v6.output.poses.cameraElevationDegrees",
       "execution.steps.preflight-v6.output.poses.cameraRollDegrees",
+      "execution.steps.preflight-v7.status",
+      "execution.steps.preflight-v7.output.spans.pixelsPerCm",
+      "execution.steps.preflight-v7.output.widthPixelsPerCm",
+      "execution.steps.preflight-v7.output.poses.cameraElevationDegrees",
+      "execution.steps.preflight-v7.output.poses.cameraRollDegrees",
+      "execution.steps.preflight-v8.status",
+      "execution.steps.preflight-v8.output.spans.pixelsPerCm",
+      "execution.steps.preflight-v8.output.widthPixelsPerCm",
+      "execution.steps.preflight-v8.output.poses.cameraElevationDegrees",
+      "execution.steps.preflight-v8.output.poses.cameraRollDegrees",
     ].sort());
   });
 
@@ -274,6 +284,60 @@ describe("merchant render diagnostics", () => {
     const body = await (await GET(request, context)).json();
     expect(body.sceneProjection).toEqual([{ index: 1, heightPixelsPerCm: 11, widthPixelsPerCm: null, cameraElevationDegrees: null, cameraRollDegrees: null }]);
     expect(JSON.stringify(body)).not.toMatch(/private|placementGuide|checkpoint|prompt/);
+  });
+
+  it("prefers v7 numeric evidence without exposing the annotated image or clean reference", async () => {
+    const render = realRender();
+    render.execution.steps["preflight-v6"] = { status: "completed", output: completeOutput };
+    render.execution.steps["preflight-v7"] = { status: "completed", output: { spans: [{ pixelsPerCm: 12 }],
+      annotatedInput: { __checkpointImage: "private base with guide" }, cleanNativeReference: "private PNG", prompt: "private prompt" } };
+    mocks.findOne.mockResolvedValue(render);
+    const body = await (await GET(request, context)).json();
+    expect(body.sceneProjection).toEqual([{ index: 1, heightPixelsPerCm: 12, widthPixelsPerCm: null, cameraElevationDegrees: null, cameraRollDegrees: null }]);
+    expect(JSON.stringify(body)).not.toMatch(/private|annotatedInput|cleanNativeReference|checkpoint|prompt/);
+  });
+
+  it("prefers v8 numeric evidence without exposing Responses inputs or earlier geometry", async () => {
+    const render = realRender();
+    render.execution.steps["preflight-v7"] = { status: "completed", output: completeOutput };
+    render.execution.steps["preflight-v8"] = { status: "completed", output: { spans: [{ pixelsPerCm: 13 }],
+      responseInput: { __checkpointImage: "private native image" }, mask: "private mask", prompt: "private request" } };
+    mocks.findOne.mockResolvedValue(render);
+    const body = await (await GET(request, context)).json();
+    expect(body.sceneProjection).toEqual([{ index: 1, heightPixelsPerCm: 13, widthPixelsPerCm: null, cameraElevationDegrees: null, cameraRollDegrees: null }]);
+    expect(JSON.stringify(body)).not.toMatch(/private|responseInput|checkpoint|mask|prompt/);
+  });
+
+  it.each(["running", "unknown", "failed", "retry"])("does not fall back to v7 when the v8 preflight is %s", async status => {
+    const render = realRender();
+    render.execution.steps["preflight-v7"] = { status: "completed", output: completeOutput };
+    render.execution.steps["preflight-v8"] = { status, output: completeOutput };
+    mocks.findOne.mockResolvedValue(render);
+    expect((await (await GET(request, context)).json()).sceneProjection).toBeNull();
+  });
+
+  it("fails closed when a v8 checkpoint contains only private image data", async () => {
+    const render = realRender();
+    render.execution.steps["preflight-v7"] = { status: "completed", output: completeOutput };
+    render.execution.steps["preflight-v8"] = { status: "completed", output: { __checkpointImage: "private image" } };
+    mocks.findOne.mockResolvedValue(render);
+    expect((await (await GET(request, context)).json()).sceneProjection).toBeNull();
+  });
+
+  it.each(["running", "unknown", "failed", "retry"])("does not fall back to v6 when the v7 preflight is %s", async status => {
+    const render = realRender();
+    render.execution.steps["preflight-v6"] = { status: "completed", output: completeOutput };
+    render.execution.steps["preflight-v7"] = { status, output: completeOutput };
+    mocks.findOne.mockResolvedValue(render);
+    expect((await (await GET(request, context)).json()).sceneProjection).toBeNull();
+  });
+
+  it("does not substitute an older projection when v7 only contains private images", async () => {
+    const render = realRender();
+    render.execution.steps["preflight-v6"] = { status: "completed", output: completeOutput };
+    render.execution.steps["preflight-v7"] = { status: "completed", output: { __checkpointImage: "private annotated input" } };
+    mocks.findOne.mockResolvedValue(render);
+    expect((await (await GET(request, context)).json()).sceneProjection).toBeNull();
   });
 
   it.each(["running", "unknown", "failed", "retry"])("does not fall back to v5 when the v6 preflight is %s", async status => {

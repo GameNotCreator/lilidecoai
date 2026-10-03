@@ -32,12 +32,18 @@ function successfulFetch() {
 }
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
-describe.each([false, true])("single opaque OpenAI refinement with native contact guide = %s", contactGuide => {
+describe.each(["legacy", "contact", "guided"] as const)("single opaque OpenAI refinement with native contact guide = %s", mode => {
+  const contactGuide = mode !== "legacy";
   const request = (): ImageEditingRequest => {
     const input = baselineRequest();
     if (contactGuide) {
       input.storefrontRoomRefinementContactGuide = true;
       input.references!.splice(2, 0, reference("placement_guide", [41, 42]));
+    }
+    if (mode === "guided") {
+      input.storefrontRoomRefinementGuideFirst = true;
+      input.references = [reference("composition", [41, 42]), reference("product_front", [11, 12]),
+        reference("composition_clean", [31, 32]), reference("spatial_guide", [21, 22])];
     }
     return input;
   };
@@ -51,7 +57,8 @@ describe.each([false, true])("single opaque OpenAI refinement with native contac
     const body = mock.mock.calls[0]![1]!.body as FormData;
     expect(body).toBeInstanceOf(FormData);
     const images = await Promise.all(body.getAll("image[]").map(async image => [...new Uint8Array(await (image as Blob).arrayBuffer())]));
-    expect(images).toEqual(contactGuide ? [[31, 32], [11, 12], [41, 42], [21, 22]] : [[31, 32], [11, 12], [21, 22]]);
+    expect(images).toEqual(mode === "guided" ? [[41, 42], [11, 12], [31, 32], [21, 22]]
+      : contactGuide ? [[31, 32], [11, 12], [41, 42], [21, 22]] : [[31, 32], [11, 12], [21, 22]]);
     expect([...new Uint8Array(await (body.get("mask") as Blob).arrayBuffer())]).toEqual([5]);
     expect(body.get("background")).toBe("opaque");
     expect(body.get("model")).toBe(model);
@@ -106,12 +113,25 @@ describe.each([false, true])("single opaque OpenAI refinement with native contac
     "refuses invalid native placement evidence (%s) before a paid call", async defect => {
       const mock = successfulFetch();
       const input = request();
-      const guide = input.references!.find(item => item.role === "placement_guide")!;
+      const guide = input.references!.find(item => item.role === (mode === "guided" ? "composition_clean" : "placement_guide"))!;
       if (defect === "missing") input.references = input.references!.filter(item => item !== guide);
       if (defect === "empty") guide.data = new Uint8Array();
       if (defect === "wrong-format") guide.mimeType = "image/webp";
       if (defect === "duplicate") input.references!.push({ ...guide });
       if (defect === "disabled-room-refinement") input.storefrontRoomRefinement = false;
+      const result = await new OpenAIImageProvider(model).edit(input);
+      expect(mock).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ status: "failed", estimatedCostUsd: 0, error: { code: "invalid_input", retryable: false } });
+    },
+  );
+
+  if (mode === "guided") it.each(["missing-contact-flag", "missing-first-flag", "conflicting-secondary-guide"])(
+    "refuses a contradictory guide-first strategy (%s) without another provider path", async defect => {
+      const mock = successfulFetch();
+      const input = request();
+      if (defect === "missing-contact-flag") input.storefrontRoomRefinementContactGuide = false;
+      if (defect === "missing-first-flag") input.storefrontRoomRefinementGuideFirst = false;
+      if (defect === "conflicting-secondary-guide") input.references!.push(reference("placement_guide", [71, 72]));
       const result = await new OpenAIImageProvider(model).edit(input);
       expect(mock).not.toHaveBeenCalled();
       expect(result).toMatchObject({ status: "failed", estimatedCostUsd: 0, error: { code: "invalid_input", retryable: false } });

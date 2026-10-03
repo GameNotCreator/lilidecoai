@@ -50,6 +50,7 @@ export interface ImageReference {
     | "target_mask"
     | "intermediate"
     | "placement_guide"
+    | "composition_clean"
     | "spatial_guide";
 }
 
@@ -93,6 +94,13 @@ export interface ProviderAttemptResult {
     imageGeneration: { model: string; modelSource: "requested"; callId?: string; action: "generate";
       cost: { method: "allowance"; estimatedCostUsd: number; invoice: false; reason: string } };
   };
+  /** Safe accounting for the one Responses room edit; image and mainline costs stay separate. */
+  roomRefinementUsage?: {
+    mainline: { model: string; modelSource: "response" | "requested"; usage?: Record<string, unknown>;
+      cost: Record<string, unknown> & { estimatedCostUsd: number } };
+    imageGeneration: { model: string; modelSource: "requested"; callId?: string; action: "edit";
+      cost: { method: "allowance"; estimatedCostUsd: number; invoice: false; reason: string } };
+  };
   degradedMode?: boolean;
 }
 
@@ -134,6 +142,10 @@ export interface ImageEditingRequest extends ImageGenerationRequest {
   storefrontRoomRefinement?: boolean;
   /** V6 adds an annotated native contact/width reference before the full room. */
   storefrontRoomRefinementContactGuide?: boolean;
+  /** Edit the annotated native canvas first; retain its clean copy as image3. */
+  storefrontRoomRefinementGuideFirst?: boolean;
+  /** One Astra Responses call interpreting the four references before a masked opaque edit. */
+  storefrontRoomRefinementResponses?: boolean;
 }
 
 /** @deprecated Prefer ProviderAttemptResult for all new provider code. */

@@ -34,7 +34,9 @@ function sceneProjection(render: RenderDocument) {
   const steps = render.execution?.steps;
   // The current contract is authoritative when present, even while incomplete.
   // Never fill gaps in a newer result from an older checkpoint.
-  const step = steps && Object.hasOwn(steps, "preflight-v6") ? steps["preflight-v6"]
+  const step = steps && Object.hasOwn(steps, "preflight-v8") ? steps["preflight-v8"]
+    : steps && Object.hasOwn(steps, "preflight-v7") ? steps["preflight-v7"]
+    : steps && Object.hasOwn(steps, "preflight-v6") ? steps["preflight-v6"]
     : steps && Object.hasOwn(steps, "preflight-v5") ? steps["preflight-v5"]
     : steps && Object.hasOwn(steps, "preflight-v4") ? steps["preflight-v4"]
     : steps && Object.hasOwn(steps, "preflight-v3") ? steps["preflight-v3"]
@@ -106,6 +108,16 @@ export async function GET(
         "execution.steps.preflight-v6.output.widthPixelsPerCm": 1,
         "execution.steps.preflight-v6.output.poses.cameraElevationDegrees": 1,
         "execution.steps.preflight-v6.output.poses.cameraRollDegrees": 1,
+        "execution.steps.preflight-v7.status": 1,
+        "execution.steps.preflight-v7.output.spans.pixelsPerCm": 1,
+        "execution.steps.preflight-v7.output.widthPixelsPerCm": 1,
+        "execution.steps.preflight-v7.output.poses.cameraElevationDegrees": 1,
+        "execution.steps.preflight-v7.output.poses.cameraRollDegrees": 1,
+        "execution.steps.preflight-v8.status": 1,
+        "execution.steps.preflight-v8.output.spans.pixelsPerCm": 1,
+        "execution.steps.preflight-v8.output.widthPixelsPerCm": 1,
+        "execution.steps.preflight-v8.output.poses.cameraElevationDegrees": 1,
+        "execution.steps.preflight-v8.output.poses.cameraRollDegrees": 1,
       } },
     );
     const headers = { "Cache-Control": "no-store" };

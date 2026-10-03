@@ -28,7 +28,7 @@ import {
 import type { Db } from "mongodb";
 import sharp from "sharp";
 
-import { estimateOpenAICost, estimateOpenAIProductViewCost } from "./ai/openai";
+import { estimateOpenAICost, estimateOpenAIProductViewCost, estimateOpenAIRoomRefinementCost } from "./ai/openai";
 import { spatialVisionAdmissionPolicy } from "./ai/openai-vision-cost";
 import { imageQualityForModel } from "./ai/openai-image-settings";
 import {
@@ -43,7 +43,7 @@ import { localiseStorefrontPerspectiveGuide } from "./storefront-perspective-gui
 import { composeStorefrontIsolatedProducts, harmonizeStorefrontIsolatedProducts, STOREFRONT_ISOLATED_COMPOSITE_VERSION, type StorefrontIsolatedComposition } from "./storefront-isolated-composite";
 import { roomIntegrationEditComposition, roomRefinementEditComposition, prepareRoomRefinementBase, prepareNativeRoomRefinementFrame, buildNativeRoomRefinementGuide, localiseRoomIntegration, restoreRoomIntegrationBackground, restoreLocalRoomIntegrationBackground, STOREFRONT_ROOM_INTEGRATION_COMPOSITE_VERSION, STOREFRONT_LOCAL_ROOM_INTEGRATION_COMPOSITE_VERSION } from "./storefront-room-integration";
 import { inspectStorefrontScene, storefrontScenePreflightAllowance, STOREFRONT_SCENE_PREFLIGHT_VERSION, STOREFRONT_POSE_PREFLIGHT_VERSION, STOREFRONT_WIDTH_POSE_PREFLIGHT_VERSION, type StorefrontScenePose } from "./ai/storefront-scene-preflight";
-import { buildStorefrontHybridPosePrompt, buildStorefrontHybridPrompt, buildStorefrontRoomRefinementPrompt, buildStorefrontNativeRoomRefinementPrompt, buildStorefrontContactRoomRefinementPrompt, storefrontRoomRefinementRequired, STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ALPHA_HYBRID_PROMPT_VERSION, STOREFRONT_LEGACY_HYBRID_PROMPT_VERSION } from "./storefront-hybrid";
+import { buildStorefrontHybridPosePrompt, buildStorefrontHybridPrompt, buildStorefrontRoomRefinementPrompt, buildStorefrontNativeRoomRefinementPrompt, buildStorefrontContactRoomRefinementPrompt, buildStorefrontGuidedCanvasRoomRefinementPrompt, storefrontRoomRefinementRequired, STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_GUIDED_CANVAS_HYBRID_PROMPT_VERSION, STOREFRONT_CONTACT_GUIDE_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ALPHA_HYBRID_PROMPT_VERSION, STOREFRONT_LEGACY_HYBRID_PROMPT_VERSION } from "./storefront-hybrid";
 import { captureStage } from "./render-capture";
 import { cutoutTrust } from "./cutout-identity";
 import {
@@ -709,7 +709,7 @@ export async function createRender(
   if (simplePointWorkflow) {
     if (!serverConfig.aiMockMode && deferTask) {
       const update = {
-        ...([STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ALPHA_HYBRID_PROMPT_VERSION].includes(render.engineVersions?.prompt ?? "") && render.engineVersions?.editProvider === "myarchitectai"
+        ...([STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_GUIDED_CANVAS_HYBRID_PROMPT_VERSION, STOREFRONT_CONTACT_GUIDE_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ALPHA_HYBRID_PROMPT_VERSION].includes(render.engineVersions?.prompt ?? "") && render.engineVersions?.editProvider === "myarchitectai"
           ? { provider: null, model: null }
           : { provider: selectedProvider.route.provider, model: selectedProvider.provider.model }),
         pipelineState: "generating_final" as const,
@@ -1090,14 +1090,16 @@ async function runSimplePointRender(
   const fastStorefront = render.publicSessionId?.startsWith("storefront:") === true &&
     render.engineVersions?.quality === STOREFRONT_PLACEMENT_REVIEW_VERSION && input.mode !== "replace";
   const detailRealisticReview = render.engineVersions?.quality === STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION;
-  const hybridRoomIntegration = [STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ALPHA_HYBRID_PROMPT_VERSION, STOREFRONT_LEGACY_HYBRID_PROMPT_VERSION].includes(render.engineVersions?.prompt ?? "") && render.engineVersions?.editProvider === "myarchitectai";
-  const hybridContactAnchoring = hybridRoomIntegration && render.engineVersions?.prompt === STOREFRONT_HYBRID_PROMPT_VERSION;
+  const hybridRoomIntegration = [STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_GUIDED_CANVAS_HYBRID_PROMPT_VERSION, STOREFRONT_CONTACT_GUIDE_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ALPHA_HYBRID_PROMPT_VERSION, STOREFRONT_LEGACY_HYBRID_PROMPT_VERSION].includes(render.engineVersions?.prompt ?? "") && render.engineVersions?.editProvider === "myarchitectai";
+  const hybridResponsesRoom = hybridRoomIntegration && render.engineVersions?.prompt === STOREFRONT_HYBRID_PROMPT_VERSION;
+  const hybridGuideFirst = hybridResponsesRoom || hybridRoomIntegration && render.engineVersions?.prompt === STOREFRONT_GUIDED_CANVAS_HYBRID_PROMPT_VERSION;
+  const hybridContactAnchoring = hybridGuideFirst || hybridRoomIntegration && render.engineVersions?.prompt === STOREFRONT_CONTACT_GUIDE_HYBRID_PROMPT_VERSION;
   const hybridNativeRoomFrame = hybridContactAnchoring || hybridRoomIntegration && render.engineVersions?.prompt === STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION;
   const replacementPreflightBudget = hybridContactAnchoring && input.replaceExisting === true;
   const hybridAdaptiveRoom = hybridNativeRoomFrame || hybridRoomIntegration && render.engineVersions?.prompt === STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION;
   const hybridResponsesPose = hybridAdaptiveRoom || hybridRoomIntegration && render.engineVersions?.prompt === STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION;
   const hybridPosePipeline = hybridResponsesPose || hybridRoomIntegration && render.engineVersions?.prompt === STOREFRONT_NATIVE_ALPHA_HYBRID_PROMPT_VERSION;
-  const hybridStepVersion = hybridContactAnchoring ? "v6" : hybridNativeRoomFrame ? "v5" : hybridAdaptiveRoom ? "v4" : hybridResponsesPose ? "v3" : "v2";
+  const hybridStepVersion = hybridResponsesRoom ? "v8" : hybridGuideFirst ? "v7" : hybridContactAnchoring ? "v6" : hybridNativeRoomFrame ? "v5" : hybridAdaptiveRoom ? "v4" : hybridResponsesPose ? "v3" : "v2";
   const localRoomIntegration = render.engineVersions?.composite === STOREFRONT_LOCAL_ROOM_INTEGRATION_COMPOSITE_VERSION;
   const roomIntegration = localRoomIntegration || render.engineVersions?.composite === STOREFRONT_ROOM_INTEGRATION_COMPOSITE_VERSION;
   const roomIntegrationReview = render.engineVersions?.quality === STOREFRONT_ROOM_INTEGRATION_REVIEW_VERSION;
@@ -1905,11 +1907,14 @@ async function runSimplePointRender(
     const roomRefinementModel = hybridLocalRefinement ? render.engineVersions?.repairImageModel : undefined;
     if (hybridLocalRefinement && (!roomRefinementModel || !localRoom || !fullRoomGuide))
       throw new DurableExecutionError("Le contrat de composition locale est incomplet.", "permanent");
+    const roomRefinementAllowance = hybridLocalRefinement
+      ? hybridResponsesRoom ? estimateOpenAIRoomRefinementCost() : estimatedImageEditCost(requestedSize, "high", roomRefinementModel!)
+      : 0;
     await setStage("generating_final", hybridIsolatedInsertion ? "harmonizing_lighting" : "adapting_perspective");
     const imageStep = hybridPosePipeline ? hybridIsolatedInsertion ? `harmonize-${hybridStepVersion}` : `room-image-${hybridStepVersion}` : "storefront-perspective-image";
     const result = await durableStep(db, imageStep, "image", async () => {
       await assertRenderBudget(db, render.id, (hybridRoomIntegration ? serverConfig.myArchitectAIEditCostUsd : estimatedImageEditCost(requestedSize, imageEditQuality, provider.model)) +
-        (hybridLocalRefinement ? estimatedImageEditCost(requestedSize, "high", roomRefinementModel!) : 0) + storefrontPlacementReviewAllowance().estimatedCostUsd);
+        roomRefinementAllowance + storefrontPlacementReviewAllowance().estimatedCostUsd);
       const result = await provider.edit({
         ...(hybridRoomIntegration ? { operation: "storefront_integration" as const } : {}),
         scene: hybridInput, productCutout: orderedReferences[0]?.data ?? productReference.data,
@@ -1978,17 +1983,23 @@ async function runSimplePointRender(
         physicalWidthPx: nativeContract!.physicalWidthPx, kind: hybridPlacement.kind,
       }) : undefined;
       if (contactGuide) await captureStage(db, render, "hybrid_room_refinement_guide", contactGuide, "image/png", scene.expiresAt);
+      // V7 binds the edit mask to the annotated canvas itself. The clean
+      // native copy remains image3; the original room still restores exterior pixels.
+      const editableRefinementBase = hybridGuideFirst ? new Uint8Array(contactGuide!) : refinementBase;
       await setStage("generating_final", "adapting_perspective");
       const refinementStep = `room-refine-${hybridStepVersion}`;
       roomRefinementResult = await durableStep(db, refinementStep, "image", async () => {
-        await assertRenderBudget(db, render.id, estimatedImageEditCost(requestedSize, "high", roomRefinementModel!) + storefrontPlacementReviewAllowance().estimatedCostUsd);
+        await assertRenderBudget(db, render.id, roomRefinementAllowance + storefrontPlacementReviewAllowance().estimatedCostUsd);
         const refined = await refinementProvider.edit({
           storefrontRoomRefinement: true,
           ...(contactGuide ? { storefrontRoomRefinementContactGuide: true } : {}),
-          scene: refinementBase, composition: refinementBase, productCutout: orderedReferences[0]!.data,
+          ...(hybridGuideFirst ? { storefrontRoomRefinementGuideFirst: true } : {}),
+          ...(hybridResponsesRoom ? { storefrontRoomRefinementResponses: true } : {}),
+          scene: editableRefinementBase, composition: editableRefinementBase, productCutout: orderedReferences[0]!.data,
           protectionMask: new Uint8Array(),
           targetMask: { data: new Uint8Array(nativeFrame?.maskPng ?? hybridInputFrame.maskPng), mimeType: "image/png", role: "target_mask" },
-          prompt: nativeContract ? (contactGuide ? buildStorefrontContactRoomRefinementPrompt(nativeContract)
+          prompt: nativeContract ? (hybridGuideFirst ? buildStorefrontGuidedCanvasRoomRefinementPrompt(nativeContract)
+            : contactGuide ? buildStorefrontContactRoomRefinementPrompt(nativeContract)
             : buildStorefrontNativeRoomRefinementPrompt(nativeContract)) : buildStorefrontRoomRefinementPrompt({ ...hybridPlacement,
             originalFrame: { width: sceneWidth, height: sceneHeight }, window: hybridWindow!,
             padding: { x: hybridInputFrame.offsetX, y: hybridInputFrame.offsetY },
@@ -1998,8 +2009,9 @@ async function runSimplePointRender(
           lighting: { direction: "automatic", temperature: "neutral", hardness: "balanced" },
           placement: { x: hybridItem.placementPoint.x, y: hybridItem.placementPoint.y, operation: "place", objectCount: 1 },
           idempotencyKey: `${input.idempotencyKey}:${refinementStep}`, deadlineMs: renderDeadlineMs,
-          references: [{ data: refinementBase, mimeType: "image/png", role: "composition" }, orderedReferences[0]!,
-            ...(contactGuide ? [{ data: new Uint8Array(contactGuide), mimeType: "image/png" as const, role: "placement_guide" as const }] : []),
+          references: [{ data: editableRefinementBase, mimeType: "image/png", role: "composition" }, orderedReferences[0]!,
+            ...(hybridGuideFirst ? [{ data: refinementBase, mimeType: "image/png" as const, role: "composition_clean" as const }]
+              : contactGuide ? [{ data: new Uint8Array(contactGuide), mimeType: "image/png" as const, role: "placement_guide" as const }] : []),
             { data: new Uint8Array(fullRoomGuide!), mimeType: "image/webp", role: "spatial_guide" }],
           mode, outputQuality: "final", preserveBackground: true,
         });
@@ -2007,7 +2019,7 @@ async function runSimplePointRender(
         await advanceRender(db, render.id, { $set: {
           provider: refined.provider, model: refined.model, attemptCount: 2,
           modelChain: [{ provider: result.provider, model: result.model, role: "perspective_edit" },
-            { provider: refined.provider, model: refined.model, role: "room_refinement" }], updatedAt: new Date(),
+            ...roomRefinementModelChain(refined)], updatedAt: new Date(),
         } });
         if (refined.status !== "succeeded" || !refined.images[0]) {
           const uncertain = refined.estimatedCostUsd > 0 || ["timeout", "network_error", "empty_image_response"].includes(refined.error?.code ?? "");
@@ -2087,7 +2099,7 @@ async function runSimplePointRender(
     const finalModelChain = [
       ...(poseResult ? productPoseModelChain(poseResult) : []),
       { provider: result.provider, model: result.model, role: hybridIsolatedInsertion ? "contact_lighting" : "perspective_edit" },
-      ...(roomRefinementResult ? [{ provider: roomRefinementResult.provider, model: roomRefinementResult.model, role: "room_refinement" }] : []),
+      ...(roomRefinementResult ? roomRefinementModelChain(roomRefinementResult) : []),
     ];
     // A bounded second provider can repair a visually rejected MyArchitectAI
     // candidate. Reuse original room/reference evidence, never a rejected image
@@ -2160,7 +2172,7 @@ async function runSimplePointRender(
       status: "succeeded" as const, pipelineState: "completed" as const,
       provider: deliveredResult.provider, model: deliveredResult.model, resultAssetId: resultAsset.id, compositeAssetId: candidateAsset.id,
       qualityScore: decision.score, qualityChecks: decision.checks, qualityDecision: decision,
-      estimatedCostUsd: usageTotals.estimatedCostUsd, attemptCount: finalModelChain.filter(item => item.role !== "product_view_reasoning").length,
+      estimatedCostUsd: usageTotals.estimatedCostUsd, attemptCount: finalModelChain.filter(item => !["product_view_reasoning", "room_refinement_reasoning"].includes(item.role)).length,
       latencyMs: Date.now() - startedAt, promptVersion: imagePromptVersion,
       modelChain: [...finalModelChain,
         { provider: "openai", model: serverConfig.openaiVisionModel, role: "reference_scale_and_realism_review" }],
@@ -5182,6 +5194,14 @@ function productPoseModelChain(result: ProviderAttemptResult) {
   ];
 }
 
+function roomRefinementModelChain(result: ProviderAttemptResult) {
+  const mainline = result.roomRefinementUsage?.mainline;
+  return [
+    ...(mainline?.modelSource === "response" ? [{ provider: "openai", model: mainline.model, role: "room_refinement_reasoning" }] : []),
+    { provider: result.provider, model: result.model, role: "room_refinement" },
+  ];
+}
+
 async function recordProviderAttempt(
   db: Db,
   render: RenderDocument,
@@ -5215,8 +5235,9 @@ async function recordProviderAttempt(
     promptVersion,
     degradedMode,
     ...(result.requestId ? { requestId: result.requestId } : {}),
-    ...(result.safety || result.productViewUsage
-      ? { usage: { ...result.safety, ...(result.productViewUsage ? { providerUsage: result.productViewUsage } : {}) } }
+    ...(result.safety || result.productViewUsage || result.roomRefinementUsage
+      ? { usage: { ...result.safety, ...((result.productViewUsage ?? result.roomRefinementUsage)
+        ? { providerUsage: result.productViewUsage ?? result.roomRefinementUsage } : {}) } }
       : {}),
     ...(result.error
       ? {

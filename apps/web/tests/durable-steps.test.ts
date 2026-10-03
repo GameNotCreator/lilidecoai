@@ -55,7 +55,7 @@ const run = <T>(call: () => Promise<T>, token = "first") =>
   durableContext.run({ render, token }, call);
 
 describe("durable checkpoint recovery", () => {
-  it.each(["v4", "v5", "v6"])("reuses both completed %s local images after lease recovery without replaying the historical v3 pose", async version => {
+  it.each(["v4", "v5", "v6", "v7", "v8"])("reuses both completed %s local images after lease recovery without replaying the historical v3 pose", async version => {
     const historicalPose = vi.fn().mockResolvedValue({ requestId: "v3-pose", imageAssetId: "private-v3-pose" });
     const myarchitect = vi.fn().mockResolvedValue({ requestId: "v4-draft", imageAssetId: "private-v4-draft" });
     const openai = vi.fn().mockResolvedValue({ requestId: "v4-refinement", imageAssetId: "private-v4-refinement" });
@@ -70,7 +70,7 @@ describe("durable checkpoint recovery", () => {
     expect(openai).toHaveBeenCalledOnce();
   });
 
-  it.each(["room-image-v4", "room-refine-v4", "room-image-v5", "room-refine-v5", "room-image-v6", "room-refine-v6"].flatMap(key => ["running", "unknown"].map(status => [key, status])))
+  it.each(["room-image-v4", "room-refine-v4", "room-image-v5", "room-refine-v5", "room-image-v6", "room-refine-v6", "room-image-v7", "room-refine-v7", "room-image-v8", "room-refine-v8"].flatMap(key => ["running", "unknown"].map(status => [key, status])))
     ("refuses to replay an uncertain paid checkpoint %s/%s", async (key, status) => {
       await renders.updateOne({ id: "r" }, { $set: { [`execution.steps.${key}`]: { status, attempts: 1, startedAt: new Date() } } });
       const image = vi.fn();

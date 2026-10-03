@@ -76,12 +76,17 @@ locale, la silhouette alpha et le contact intégrés.
 OpenAI contrôle ensuite l’identité, la perspective, l’échelle et l’intégration.
 Avant toute génération, les petites projections (largeur et hauteur projetées
 inférieures à 64 pixels) et les remplacements confirmés sont dirigés vers un autre
-parcours : MyArchitectAI compose la pièce, puis une unique édition locale opaque
-OpenAI reprend ce résultat avec le catalogue et la pièce entière comme références.
+parcours : MyArchitectAI compose la pièce, puis Astra interprète les références
+et commande une unique édition locale opaque via l’outil image de Responses.
+Le catalogue et la pièce entière restent les références d’identité et de caméra.
 Cette édition conserve la résolution native du premier résultat et emploie un
 masque ainsi que des coordonnées exprimés dans le même cadre.
-Un guide distinct indique le contact et la largeur attendus, sans dessiner de
-silhouette ; l’image de base reste sans annotation.
+L’image éditée porte directement le repère de contact et de largeur, sans dessiner
+de silhouette ; une copie native propre sert à conserver le fond et à retirer
+toutes les annotations. Le contact désigne le milieu du bas visible du produit,
+hors ombre, et non un centre d’appui 3D caché.
+La réserve inclut séparément l’analyse Astra et l’image ; elle ne relève pas le
+plafond de coût du rendu et ne permet aucune relance automatique.
 L’objet et son appui sont générés ensemble dans une région bornée ; le fond extérieur
 est restauré à l’identique. Un seul contrôle final applique les mêmes exigences,
 sans nouvelle tentative après un refus. Les sélections de plusieurs produits utilisent OpenAI.

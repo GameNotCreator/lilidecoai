@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
     aiMockMode: false,
     openaiApiKey: "test-only",
     openaiVisionModel: "test-vision",
+    openaiServiceTier: "default",
     openaiModel: "test-image",
     storefrontImageModel: "test-repair-image",
     openaiBaseUrl: "https://invalid.test/v1",
@@ -99,6 +100,8 @@ import { selectEditingProvider } from "../lib/server/ai";
 import { stopRender } from "../lib/server/render-lifecycle";
 import { markPoints } from "../lib/server/scale-estimation";
 import { durableStep } from "../lib/server/durable-steps";
+import { estimateOpenAIRoomRefinementCost } from "../lib/server/ai/openai";
+import { storefrontPlacementReviewAllowance } from "../lib/server/ai/storefront-placement-review";
 
 const db = {} as Db;
 let renders: ReturnType<typeof documentStore>;
@@ -244,6 +247,7 @@ beforeEach(async () => {
   vi.mocked(durableStep).mockClear();
   vi.mocked(selectEditingProvider).mockClear();
   mocks.config.openaiApiKey = "test-only";
+  mocks.config.openaiVisionModel = "test-vision";
   mocks.config.openAIImageEnabled = true;
   mocks.config.googleApiKey = undefined;
   mocks.config.simplePointImageProvider = "openai";
@@ -457,7 +461,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-async function runHybridVersion(version: "v1" | "v2" | "v3" | "v4" | "v5" | "v6") {
+async function runHybridVersion(version: "v1" | "v2" | "v3" | "v4" | "v5" | "v6" | "v7" | "v8") {
   const insert = renders.insertOne;
   renders.insertOne = async row => {
     const prompt = `storefront-myarchitect-room-${version}`;
@@ -900,7 +904,8 @@ describe.each(["v2", "v3"] as const)("public hybrid %s camera-first insertion", 
   });
 });
 
-describe.each(["v4", "v5", "v6"] as const)("public hybrid %s local opaque refinement selected before either paid image", version => {
+describe.each(["v4", "v5", "v6", "v7", "v8"] as const)("public hybrid %s local opaque refinement selected before either paid image", version => {
+  const guidedCanvas = version === "v7" || version === "v8";
   let myArchitectImage: Buffer;
   let pose: Buffer;
   beforeEach(async () => {
@@ -914,6 +919,8 @@ describe.each(["v4", "v5", "v6"] as const)("public hybrid %s local opaque refine
       const openai = input.productIsolation || input.storefrontRoomRefinement;
       let image = input.composition;
       if (input.productIsolation) image = pose;
+      else if (input.storefrontRoomRefinementGuideFirst)
+        image = input.references.find((ref: { role: string }) => ref.role === "composition_clean").data;
       else if (!openai) {
         // A distinct provider output proves that OpenAI receives the generated
         // room, not a newly composed cutout or the original scene.
@@ -962,16 +969,20 @@ describe.each(["v4", "v5", "v6"] as const)("public hybrid %s local opaque refine
     expect(refinement.generateProductView).toBeUndefined();
     expect(refinement.deadlineMs).toBe(started + 180_000);
     const refs = refinement.references;
-    expect(refs.map((ref: { role: string }) => ref.role)).toEqual(version === "v6"
-      ? ["composition", "product_front", "placement_guide", "spatial_guide"] : ["composition", "product_front", "spatial_guide"]);
-    expect(refinement.storefrontRoomRefinementContactGuide === true).toBe(version === "v6");
+    expect(refs.map((ref: { role: string }) => ref.role)).toEqual(guidedCanvas
+      ? ["composition", "product_front", "composition_clean", "spatial_guide"] : version === "v6"
+        ? ["composition", "product_front", "placement_guide", "spatial_guide"] : ["composition", "product_front", "spatial_guide"]);
+    expect(refinement.storefrontRoomRefinementContactGuide === true).toBe(version === "v6" || guidedCanvas);
+    expect(refinement.storefrontRoomRefinementGuideFirst === true).toBe(guidedCanvas);
+    expect(refinement.storefrontRoomRefinementResponses === true).toBe(version === "v8");
     expect(refs[0].mimeType).toBe("image/png");
-    expect(await sharp(Buffer.from(refs[0].data)).removeAlpha().raw().toBuffer())
+    expect(Buffer.from(refinement.composition).equals(Buffer.from(refs[0].data))).toBe(true);
+    expect(await sharp(Buffer.from(refs[guidedCanvas ? 2 : 0].data)).removeAlpha().raw().toBuffer())
       .toEqual(await sharp(myArchitectImage).removeAlpha().raw().toBuffer());
     expect(Buffer.from(refs[1].data)).toEqual((await mocks.read(db, "original-0")).buffer);
     expect(await sharp(Buffer.from(refs.at(-1).data)).metadata()).toMatchObject({ width: 400, height: 300 });
     const base = await sharp(Buffer.from(refs[0].data)).metadata();
-    if (version === "v6") {
+    if (version === "v6" || guidedCanvas) {
       expect(refs[2].mimeType).toBe("image/png");
       expect(await sharp(Buffer.from(refs[2].data)).metadata()).toMatchObject({ format: "png", width: base.width, height: base.height });
       expect(Buffer.from(refs[2].data).equals(Buffer.from(refs[0].data))).toBe(false);
@@ -1002,6 +1013,7 @@ describe.each(["v4", "v5", "v6"] as const)("public hybrid %s local opaque refine
       expect(first.productIsolation === true).toBe(!local);
       expect(second.storefrontRoomRefinement === true).toBe(local);
       expect(first.generateProductView === true).toBe(!local);
+      expect(second.storefrontRoomRefinementResponses === true).toBe(local && version === "v8");
       expect(reviewCalls).toBe(1);
       expect(mocks.edit).toHaveBeenCalledTimes(2);
       if (!local) {
@@ -1032,7 +1044,7 @@ describe.each(["v4", "v5", "v6"] as const)("public hybrid %s local opaque refine
     const mask = await sharp(Buffer.from(refinement.targetMask.data)).ensureAlpha().extractChannel(3).raw().toBuffer();
     expect(new Set(mask)).toEqual(new Set([0, 255]));
     if (version !== "v4") {
-      expect(await sharp(Buffer.from(image.data)).removeAlpha().raw().toBuffer())
+      expect(await sharp(Buffer.from(guidedCanvas ? refinement.references[2].data : image.data)).removeAlpha().raw().toBuffer())
         .toEqual(await sharp(myArchitectImage).removeAlpha().raw().toBuffer());
       const initialContract = JSON.parse(draft.prompt.split("scale proportionally if output size differs): ")[1].split("}.\n")[0] + "}");
       const nativeContract = JSON.parse(refinement.prompt.split("NATIVE IMAGE1 CONTRACT: ")[1].split(". All contactPixel")[0]);
@@ -1046,7 +1058,7 @@ describe.each(["v4", "v5", "v6"] as const)("public hybrid %s local opaque refine
       expect(normalized.contact.x).toBeCloseTo(initialContract.contactPixel.x / oldFrame.width!);
       expect(normalized.contact.y).toBeCloseTo(initialContract.contactPixel.y / oldFrame.height!);
       expect(normalized.productWidth).toBeCloseTo(initialContract.physicalWidthPx / oldFrame.width!);
-      expect(refinement.prompt).toContain(version === "v6" ? "sole output canvas" : "sole output-canvas authority");
+      expect(refinement.prompt).toContain("CANVAS = IMAGE1");
     } else {
       expect(refinement.prompt).toContain("INPUT FRAME AND PLACEMENT CONTRACT:");
       expect(refinement.prompt).not.toContain("NATIVE IMAGE1 CONTRACT:");
@@ -1093,11 +1105,12 @@ describe.each(["v4", "v5", "v6"] as const)("public hybrid %s local opaque refine
     expect(point.y).toBeCloseTo((456 - nativeContract.window.top) * scale + nativeContract.padding.y, 9);
     expect(await sharp(Buffer.from(refinement.references[0].data)).metadata()).toMatchObject({ format: "png", width: 1024, height: 1024 });
     expect(await sharp(Buffer.from(refinement.targetMask.data)).metadata()).toMatchObject({ format: "png", width: 1024, height: 1024 });
-    const sentPixels = await sharp(Buffer.from(refinement.references[0].data)).removeAlpha().raw().toBuffer();
+    const sentPixels = await sharp(Buffer.from(refinement.references[guidedCanvas ? 2 : 0].data)).removeAlpha().raw().toBuffer();
     const nativePixels = await sharp(native).removeAlpha().raw().toBuffer();
     expect(sentPixels.equals(nativePixels)).toBe(true);
-    if (version === "v6") {
-      const guide = refinement.references.find((item: { role: string }) => item.role === "placement_guide");
+    if (version === "v6" || guidedCanvas) {
+      const guide = guidedCanvas ? refinement.references[0]
+        : refinement.references.find((item: { role: string }) => item.role === "placement_guide");
       const pixels = await sharp(Buffer.from(guide.data)).removeAlpha().raw().toBuffer();
       const sample = (x: number, y: number) => [...pixels.subarray((Math.round(y) * 1024 + Math.round(x)) * 3, (Math.round(y) * 1024 + Math.round(x)) * 3 + 3)];
       const red = sample(point.x, point.y);
@@ -1131,8 +1144,8 @@ describe.each(["v4", "v5", "v6"] as const)("public hybrid %s local opaque refine
     request.replaceExisting = true;
     await setObstacle();
     await run();
-    expect(mocks.storefrontPreflight.mock.calls[0]![0].deadlineMs).toBe(started + (version === "v6" ? 45_000 : version === "v5" ? 35_000 : 25_000));
-    expect(mocks.storefrontPreflight.mock.calls[0]![0].timeoutMs).toBe(version === "v6" ? 45_000 : version === "v5" ? 35_000 : undefined);
+    expect(mocks.storefrontPreflight.mock.calls[0]![0].deadlineMs).toBe(started + (version === "v6" || guidedCanvas ? 45_000 : version === "v5" ? 35_000 : 25_000));
+    expect(mocks.storefrontPreflight.mock.calls[0]![0].timeoutMs).toBe(version === "v6" || guidedCanvas ? 45_000 : version === "v5" ? 35_000 : undefined);
     expect(mocks.edit.mock.calls[0]![0].productIsolation).toBeUndefined();
     expect(mocks.edit.mock.calls[1]![0].storefrontRoomRefinement).toBe(true);
     expect(reviewCalls).toBe(1);
@@ -1162,6 +1175,23 @@ describe.each(["v4", "v5", "v6"] as const)("public hybrid %s local opaque refine
 
   it("rejects a physical base shifted by ten room pixels even if all visual scores pass", async () => {
     reviewPayload.contactShiftY = 10 / 300;
+    await expect(run()).rejects.toThrow();
+    expect(mocks.edit).toHaveBeenCalledTimes(2);
+    expect(reviewCalls).toBe(1);
+    expect(renders.rows[0]!.qualityDecision).toMatchObject({ status: "rejected" });
+    expect(renders.rows[0]!.resultAssetId).toBeUndefined();
+    expect(mocks.capture).not.toHaveBeenCalled();
+    expect(mocks.release).toHaveBeenCalledOnce();
+  });
+
+  if (guidedCanvas) it("withholds an annotated provider output when the final photographic review rejects its remaining guide marks", async () => {
+    const edit = mocks.edit.getMockImplementation()!;
+    mocks.edit.mockImplementation(async input => {
+      const result = await edit(input);
+      return input.storefrontRoomRefinementGuideFirst
+        ? { ...result, images: [{ data: input.composition, mimeType: "image/png" }] } : result;
+    });
+    reviewPayload.gateFailure = "photographicCoherence";
     await expect(run()).rejects.toThrow();
     expect(mocks.edit).toHaveBeenCalledTimes(2);
     expect(reviewCalls).toBe(1);
@@ -1242,6 +1272,56 @@ describe.each(["v4", "v5", "v6"] as const)("public hybrid %s local opaque refine
     await expect(run()).rejects.toThrow(/Budget/);
     expect(mocks.edit).not.toHaveBeenCalled();
     expect(mocks.capture).not.toHaveBeenCalled();
+  });
+
+  if (version === "v8") it("reserves the additional Astra reasoning allowance before the first image", async () => {
+    mocks.config.storefrontImageModel = "gpt-image-2.5-sunburst-2026-09-08";
+    mocks.config.openaiVisionModel = "gpt-6-astra";
+    expect(estimateOpenAIRoomRefinementCost()).toBeCloseTo(1.3524, 10);
+    expect(storefrontPlacementReviewAllowance().estimatedCostUsd).toBeCloseTo(0.55, 10);
+    expect(mocks.config.myArchitectAIEditCostUsd + estimateOpenAIRoomRefinementCost()
+      + storefrontPlacementReviewAllowance().estimatedCostUsd).toBeCloseTo(1.9324, 10);
+    vi.stubEnv("RENDER_MAX_COST_USD", "1.9");
+    await expect(run()).rejects.toThrow(/Budget/);
+    expect(mocks.edit).not.toHaveBeenCalled();
+    expect(mocks.capture).not.toHaveBeenCalled();
+  });
+
+  if (version === "v8") it("rechecks Astra plus image plus QA before Responses rather than only the image allowance", async () => {
+    mocks.config.storefrontImageModel = "gpt-image-2.5-sunburst-2026-09-08";
+    mocks.config.openaiVisionModel = "gpt-6-astra";
+    const edit = mocks.edit.getMockImplementation()!;
+    mocks.edit.mockImplementation(async input => {
+      const result = await edit(input);
+      if (!input.storefrontRoomRefinement) vi.stubEnv("RENDER_MAX_COST_USD", "1.9");
+      return result;
+    });
+    await expect(run()).rejects.toThrow(/Budget/);
+    expect(mocks.edit).toHaveBeenCalledOnce();
+    expect(reviewCalls).toBe(0);
+    expect(mocks.capture).not.toHaveBeenCalled();
+  });
+
+  if (version === "v8") it.each(["response", "requested"])("journals separate reasoning and image costs with truthful %s model provenance", async modelSource => {
+    const edit = mocks.edit.getMockImplementation()!;
+    const usage = { mainline: { model: "gpt-6-astra", modelSource,
+      usage: { input_tokens: 1000, output_tokens: 100 }, cost: { method: "reported", estimatedCostUsd: 0.015 } },
+      imageGeneration: { model: "test-repair-image", modelSource: "requested", callId: "ig_refinement", action: "edit",
+        cost: { method: "allowance", estimatedCostUsd: 1 } } };
+    mocks.edit.mockImplementation(async input => {
+      const result = await edit(input);
+      return input.storefrontRoomRefinementResponses ? { ...result, estimatedCostUsd: 1.015, roomRefinementUsage: usage } : result;
+    });
+    await run();
+    expect(mocks.edit).toHaveBeenCalledTimes(2);
+    expect(renders.rows[0]).toMatchObject({ attemptCount: 2, provider: "openai", model: "test-repair-image" });
+    const chain = renders.rows[0]!.modelChain as Array<{ role: string; model: string }>;
+    expect(chain.some(item => item.role === "room_refinement_reasoning" && item.model === "gpt-6-astra")).toBe(modelSource === "response");
+    expect(chain.some(item => item.role === "product_view_reasoning")).toBe(false);
+    const entry = attempts.rows.find(row => (row.usage as { providerUsage?: { imageGeneration?: { callId?: string } } } | undefined)
+      ?.providerUsage?.imageGeneration?.callId === "ig_refinement");
+    expect(entry).toMatchObject({ estimatedCostUsd: 1.015, usage: { providerUsage: usage } });
+    expect(mocks.capture).toHaveBeenCalledOnce();
   });
 
   it("never publishes or captures a credit for a review completed after 180 seconds", async () => {
