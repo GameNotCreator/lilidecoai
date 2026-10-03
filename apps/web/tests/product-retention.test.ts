@@ -11,21 +11,25 @@ vi.mock("../lib/server/config", () => ({ serverConfig: mocks.config }));
 vi.mock("../lib/server/assets", () => ({
   CUTOUT_VERSION: "cutout-v2",
   assetUrl: (id?: string) => (id ? `/api/assets/${id}` : null),
-  deleteAsset: vi.fn(),
+  deleteAsset: vi.fn(async () => undefined),
 }));
 
 import {
   archiveExpiry,
   productImageAssetIds,
   setProductStatus,
+  deleteProduct,
 } from "../lib/server/admin-products";
+import { assetRequiredByPreparedWork } from "../lib/server/prepared-view-retention";
 import type { ProductDocument } from "../lib/server/types";
 import { mongoStore } from "./helpers/mongo-store";
 
-const db = {} as Db;
+let db: Db;
 
 let products: ReturnType<typeof mongoStore>;
 let assets: ReturnType<typeof mongoStore>;
+let preparedViews: ReturnType<typeof mongoStore>;
+let preparedTasks: ReturnType<typeof mongoStore>;
 
 const product = {
   id: "p1",
@@ -44,6 +48,10 @@ const product = {
 beforeEach(() => {
   products = mongoStore();
   assets = mongoStore();
+  preparedViews = mongoStore();
+  preparedTasks = mongoStore();
+  const stores = { assets, prepared_product_views: preparedViews, prepared_view_tasks: preparedTasks };
+  db = { collection: (name: keyof typeof stores) => stores[name] } as unknown as Db;
   products.rows.push({ ...product });
   for (const id of ["a-main", "a-cutout", "a-side"]) {
     assets.rows.push({ id, organizationId: "org", kind: "product" });
@@ -100,5 +108,58 @@ describe("archived product retention", () => {
     const hours = (expiry.getTime() - Date.now()) / 3_600_000;
     expect(hours).toBeGreaterThan(23.9);
     expect(hours).toBeLessThan(24.1);
+  });
+
+  it("retires prepared views without approving them again on product restoration", async () => {
+    preparedViews.rows.push({ id: "prepared", organizationId: "org", productId: "p1", state: "approved", image: { assetId: "prepared-image" }, alpha: { assetId: "prepared-alpha" } });
+    preparedViews.rows.push({ id: "incident", organizationId: "org", productId: "p1", state: "revoked", revocation: { kind: "identity_incident" } });
+    preparedTasks.rows.push({ id: "task", organizationId: "org", productId: "p1", state: "needs_review" });
+    for (const id of ["prepared-image", "prepared-alpha"]) assets.rows.push({ id, organizationId: "org", visibility: "public" });
+
+    const archived = await setProductStatus(db, product, "archived");
+    expect(preparedViews.rows[0]!.state).toBe("stale");
+    expect(preparedViews.rows[1]!.state).toBe("revoked");
+    expect(preparedTasks.rows[0]!.state).toBe("failed");
+    const candidates = assets.rows.filter(row => String(row.id).startsWith("prepared-"));
+    expect(candidates.every(row => row.visibility === "private" && row.expiresAt instanceof Date)).toBe(true);
+
+    await setProductStatus(db, archived, "ready");
+    expect(preparedViews.rows[0]!.state).toBe("stale");
+    expect(candidates.every(row => row.expiresAt instanceof Date)).toBe(true);
+  });
+  it("fences queued and running workers while retaining unknown expenses and sources", async () => {
+    for (const [id, state, providerState] of [["queued", "queued", "not_sent"], ["running", "preparing", "succeeded"],
+      ["sent", "preparing", "sent"], ["unknown", "unknown", "unknown"]] as const) {
+      preparedViews.rows.push({ id, organizationId: "org", productId: "p1", state: state === "unknown" ? "failed" : state,
+        revision: 2, preparationLeaseToken: "old-worker", sources: [{ assetId: `source-${id}` }],
+        reviewHistory: [{ actorId: "human-evidence" }] });
+      preparedTasks.rows.push({ id, organizationId: "org", productId: "p1", state,
+        lease: { token: "old-worker", expiresAt: new Date(Date.now() + 60_000) },
+        sources: [{ assetId: `source-${id}` }], sourceAssetId: `source-${id}`,
+        provider: { state: providerState, reservedUsd: 0.03, costUsd: providerState === "succeeded" ? 0.03 : 0 },
+        checkpoint: { rawAssetId: `raw-${id}`, imageAssetId: `image-${id}`, alphaAssetId: `alpha-${id}` } });
+      assets.rows.push({ id: `raw-${id}`, organizationId: "org", visibility: "private" });
+    }
+    await setProductStatus(db, product, "archived");
+    expect(preparedTasks.rows.map(t => t.state)).toEqual(["failed", "failed", "unknown", "unknown"]);
+    expect(preparedTasks.rows.every(t => t.lease === undefined)).toBe(true);
+    expect(preparedTasks.rows[2]!.provider).toMatchObject({ state: "unknown", reservedUsd: 0.03 });
+    expect(preparedTasks.rows[1]!.provider).toMatchObject({ state: "succeeded", costUsd: 0.03 });
+    expect(preparedViews.rows.slice(0, 3).every(v => v.state === "stale" && v.preparationLeaseToken === undefined)).toBe(true);
+    expect(preparedViews.rows[0]!.reviewHistory).toEqual([{ actorId: "human-evidence" }]);
+    expect(await assetRequiredByPreparedWork(db, "source-sent")).toBe(true);
+    expect(await assetRequiredByPreparedWork(db, "raw-unknown")).toBe(true);
+    expect(await assetRequiredByPreparedWork(db, "raw-running")).toBe(false);
+  });
+  it("archives the product before retiring preparation records, including deletion", async () => {
+    const readTasks = preparedTasks.find.bind(preparedTasks);
+    preparedTasks.find = vi.fn(filter => {
+      expect(products.rows[0]!.status).toBe("archived");
+      return readTasks(filter);
+    });
+    await setProductStatus(db, product, "archived");
+    products.rows[0]!.status = "ready";
+    await deleteProduct(db, product);
+    expect(products.rows).toHaveLength(0);
   });
 });

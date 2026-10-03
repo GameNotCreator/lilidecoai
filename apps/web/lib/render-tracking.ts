@@ -52,11 +52,13 @@ export function startRenderTracking({
   fetchRender,
   onRender,
   onInterrupted,
+  onRefreshing,
 }: {
   renderId: string;
   fetchRender: (id: string, signal: AbortSignal) => Promise<Render>;
   onRender: (render: Render) => void;
   onInterrupted: (issue: RenderTrackingIssue | null) => void;
+  onRefreshing?: (refreshing: boolean) => void;
 }) {
   let stopped = false;
   let finished = false;
@@ -70,6 +72,7 @@ export function startRenderTracking({
     if (stopped || finished || inFlight) return;
     clearTimeout(timer);
     inFlight = true;
+    onRefreshing?.(true);
     const request = new AbortController();
     activeRequest = request;
     // Abort the actual fetch: a lost connection cannot hold the single-flight
@@ -97,6 +100,7 @@ export function startRenderTracking({
       clearTimeout(timeout);
       activeRequest = null;
       inFlight = false;
+      if (!stopped) onRefreshing?.(false);
       if (!stopped && delay !== null)
         timer = setTimeout(() => void poll(), delay);
     }

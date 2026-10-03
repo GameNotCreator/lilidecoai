@@ -34,7 +34,7 @@ const completeOutput = {
   checkpoint: { __checkpointImage: "private checkpoint photo" },
 };
 
-function realRender(output: unknown = completeOutput) {
+function realRender(output: unknown = completeOutput, checkpoint = "storefront-scene-preflight") {
   return {
     id, status: "succeeded", publicSessionId: "storefront:private-session",
     createdAt: now, updatedAt: now,
@@ -44,7 +44,7 @@ function realRender(output: unknown = completeOutput) {
     execution: {
       token: "private lease token", workerId: "private worker", sourceAssetIds: ["private source photo"],
       deadlineAt: now, attempts: 1,
-      steps: { "storefront-scene-preflight": { status: "completed", output } },
+      steps: { [checkpoint]: { status: "completed", output } },
     },
   };
 }
@@ -117,8 +117,10 @@ describe("merchant render diagnostics", () => {
     expect(body.sceneProjection).toBeNull();
   });
 
-  it.each(["storefront-isolated-product-v4", "storefront-room-integration-v5", "storefront-room-local-integration-v6"])("exposes only bounded numeric projection evidence from a completed real %s checkpoint", async composite => {
-    const render = realRender();
+  it.each(["storefront-isolated-product-v4", "storefront-room-integration-v5", "storefront-room-local-integration-v6"].flatMap(composite =>
+    ["storefront-scene-preflight", "preflight-v2", "preflight-v3", "preflight-v4", "preflight-v5"].map(checkpoint => [composite, checkpoint] as const),
+  ))("exposes only bounded numeric projection evidence from a completed real %s/%s checkpoint", async (composite, checkpoint) => {
+    const render = realRender(completeOutput, checkpoint);
     render.engineVersions!.composite = composite;
     mocks.findOne.mockResolvedValue(render);
     const response = await GET(request, context);
@@ -141,6 +143,31 @@ describe("merchant render diagnostics", () => {
       "execution.steps.storefront-scene-preflight.output.widthPixelsPerCm",
       "execution.steps.storefront-scene-preflight.output.poses.cameraElevationDegrees",
       "execution.steps.storefront-scene-preflight.output.poses.cameraRollDegrees",
+      "execution.steps.preflight-v2.status",
+      "execution.steps.preflight-v2.output.spans.pixelsPerCm",
+      "execution.steps.preflight-v2.output.widthPixelsPerCm",
+      "execution.steps.preflight-v2.output.poses.cameraElevationDegrees",
+      "execution.steps.preflight-v2.output.poses.cameraRollDegrees",
+      "execution.steps.preflight-v3.status",
+      "execution.steps.preflight-v3.output.spans.pixelsPerCm",
+      "execution.steps.preflight-v3.output.widthPixelsPerCm",
+      "execution.steps.preflight-v3.output.poses.cameraElevationDegrees",
+      "execution.steps.preflight-v3.output.poses.cameraRollDegrees",
+      "execution.steps.preflight-v4.status",
+      "execution.steps.preflight-v4.output.spans.pixelsPerCm",
+      "execution.steps.preflight-v4.output.widthPixelsPerCm",
+      "execution.steps.preflight-v4.output.poses.cameraElevationDegrees",
+      "execution.steps.preflight-v4.output.poses.cameraRollDegrees",
+      "execution.steps.preflight-v5.status",
+      "execution.steps.preflight-v5.output.spans.pixelsPerCm",
+      "execution.steps.preflight-v5.output.widthPixelsPerCm",
+      "execution.steps.preflight-v5.output.poses.cameraElevationDegrees",
+      "execution.steps.preflight-v5.output.poses.cameraRollDegrees",
+      "execution.steps.preflight-v6.status",
+      "execution.steps.preflight-v6.output.spans.pixelsPerCm",
+      "execution.steps.preflight-v6.output.widthPixelsPerCm",
+      "execution.steps.preflight-v6.output.poses.cameraElevationDegrees",
+      "execution.steps.preflight-v6.output.poses.cameraRollDegrees",
     ].sort());
   });
 
@@ -196,6 +223,142 @@ describe("merchant render diagnostics", () => {
     ]);
   });
 
+  it("prefers v2 numeric evidence and never merges it with a historical checkpoint", async () => {
+    const render = realRender();
+    render.execution.steps["preflight-v2"] = { status: "completed", output: { spans: [{ pixelsPerCm: 7 }] } };
+    mocks.findOne.mockResolvedValue(render);
+    expect((await (await GET(request, context)).json()).sceneProjection).toEqual([
+      { index: 1, heightPixelsPerCm: 7, widthPixelsPerCm: null, cameraElevationDegrees: null, cameraRollDegrees: null },
+    ]);
+  });
+
+  it("prefers v3 evidence without mixing earlier contracts or exposing free-form provider data", async () => {
+    const render = realRender();
+    render.execution.steps["preflight-v2"] = { status: "completed", output: completeOutput };
+    render.execution.steps["preflight-v3"] = { status: "completed", output: { spans: [{ pixelsPerCm: 8 }],
+      evidence: "private provider explanation", checkpoint: { __checkpointImage: "private generated view" } } };
+    mocks.findOne.mockResolvedValue(render);
+    const body = await (await GET(request, context)).json();
+    expect(body.sceneProjection).toEqual([{ index: 1, heightPixelsPerCm: 8, widthPixelsPerCm: null, cameraElevationDegrees: null, cameraRollDegrees: null }]);
+    expect(JSON.stringify(body)).not.toMatch(/private|checkpoint|evidence|prompt/);
+  });
+
+  it("prefers v4 numeric evidence without exposing its generated images or merging v3 estimates", async () => {
+    const render = realRender();
+    render.execution.steps["preflight-v3"] = { status: "completed", output: completeOutput };
+    render.execution.steps["preflight-v4"] = { status: "completed", output: { spans: [{ pixelsPerCm: 9 }],
+      evidence: "private explanation", roomImage: { __checkpointImage: "private generated room" } } };
+    mocks.findOne.mockResolvedValue(render);
+    const body = await (await GET(request, context)).json();
+    expect(body.sceneProjection).toEqual([{ index: 1, heightPixelsPerCm: 9, widthPixelsPerCm: null, cameraElevationDegrees: null, cameraRollDegrees: null }]);
+    expect(JSON.stringify(body)).not.toMatch(/private|checkpoint|evidence|roomImage/);
+  });
+
+  it("prefers v5 projection evidence and exposes no native images, crop or prompt data", async () => {
+    const render = realRender();
+    render.execution.steps["preflight-v4"] = { status: "completed", output: completeOutput };
+    render.execution.steps["preflight-v5"] = { status: "completed", output: { spans: [{ pixelsPerCm: 10 }],
+      nativeFrame: { __checkpointImage: "private PNG" }, prompt: "private prompt" } };
+    mocks.findOne.mockResolvedValue(render);
+    const body = await (await GET(request, context)).json();
+    expect(body.sceneProjection).toEqual([{ index: 1, heightPixelsPerCm: 10, widthPixelsPerCm: null, cameraElevationDegrees: null, cameraRollDegrees: null }]);
+    expect(JSON.stringify(body)).not.toMatch(/private|nativeFrame|prompt/);
+  });
+
+  it("prefers v6 numeric evidence without exposing its placement guide or earlier projection", async () => {
+    const render = realRender();
+    render.execution.steps["preflight-v5"] = { status: "completed", output: completeOutput };
+    render.execution.steps["preflight-v6"] = { status: "completed", output: { spans: [{ pixelsPerCm: 11 }],
+      placementGuide: { __checkpointImage: "private native contact guide" }, prompt: "private guide prompt" } };
+    mocks.findOne.mockResolvedValue(render);
+    const body = await (await GET(request, context)).json();
+    expect(body.sceneProjection).toEqual([{ index: 1, heightPixelsPerCm: 11, widthPixelsPerCm: null, cameraElevationDegrees: null, cameraRollDegrees: null }]);
+    expect(JSON.stringify(body)).not.toMatch(/private|placementGuide|checkpoint|prompt/);
+  });
+
+  it.each(["running", "unknown", "failed", "retry"])("does not fall back to v5 when the v6 preflight is %s", async status => {
+    const render = realRender();
+    render.execution.steps["preflight-v5"] = { status: "completed", output: completeOutput };
+    render.execution.steps["preflight-v6"] = { status, output: completeOutput };
+    mocks.findOne.mockResolvedValue(render);
+    expect((await (await GET(request, context)).json()).sceneProjection).toBeNull();
+  });
+
+  it("does not substitute older evidence when a v6 projection contains only private images", async () => {
+    const render = realRender();
+    render.execution.steps["preflight-v5"] = { status: "completed", output: completeOutput };
+    render.execution.steps["preflight-v6"] = { status: "completed", output: { __checkpointImage: "private contact guide" } };
+    mocks.findOne.mockResolvedValue(render);
+    expect((await (await GET(request, context)).json()).sceneProjection).toBeNull();
+  });
+
+  it.each(["running", "unknown", "failed", "retry"])("does not fall back to v4 when the v5 preflight is %s", async status => {
+    const render = realRender();
+    render.execution.steps["preflight-v4"] = { status: "completed", output: completeOutput };
+    render.execution.steps["preflight-v5"] = { status, output: completeOutput };
+    mocks.findOne.mockResolvedValue(render);
+    expect((await (await GET(request, context)).json()).sceneProjection).toBeNull();
+  });
+
+  it("does not substitute v4 evidence for a malformed v5 preflight", async () => {
+    const render = realRender();
+    render.execution.steps["preflight-v4"] = { status: "completed", output: completeOutput };
+    render.execution.steps["preflight-v5"] = { status: "completed", output: { __checkpointImage: "private native frame" } };
+    mocks.findOne.mockResolvedValue(render);
+    expect((await (await GET(request, context)).json()).sceneProjection).toBeNull();
+  });
+
+  it.each(["running", "unknown", "failed", "retry"])("does not fall back to a completed v3 checkpoint when v4 is %s", async status => {
+    const render = realRender();
+    render.execution.steps["preflight-v3"] = { status: "completed", output: completeOutput };
+    render.execution.steps["preflight-v4"] = { status, output: completeOutput };
+    mocks.findOne.mockResolvedValue(render);
+    expect((await (await GET(request, context)).json()).sceneProjection).toBeNull();
+  });
+
+  it("does not substitute v3 evidence for a malformed v4 projection", async () => {
+    const render = realRender();
+    render.execution.steps["preflight-v3"] = { status: "completed", output: completeOutput };
+    render.execution.steps["preflight-v4"] = { status: "completed", output: { __checkpointImage: "private generated room" } };
+    mocks.findOne.mockResolvedValue(render);
+    expect((await (await GET(request, context)).json()).sceneProjection).toBeNull();
+  });
+
+  it.each(["running", "unknown", "failed", "retry"])("does not fall back to older evidence when v3 is %s", async status => {
+    const render = realRender();
+    render.execution.steps["preflight-v2"] = { status: "completed", output: completeOutput };
+    render.execution.steps["preflight-v3"] = { status, output: completeOutput };
+    mocks.findOne.mockResolvedValue(render);
+    expect((await (await GET(request, context)).json()).sceneProjection).toBeNull();
+  });
+
+  it("fails closed on a malformed v3 checkpoint even if earlier versions contain valid evidence", async () => {
+    const render = realRender();
+    render.execution.steps["preflight-v2"] = { status: "completed", output: completeOutput };
+    render.execution.steps["preflight-v3"] = { status: "completed", output: { __checkpointImage: "private photo" } };
+    mocks.findOne.mockResolvedValue(render);
+    expect((await (await GET(request, context)).json()).sceneProjection).toBeNull();
+  });
+
+  it.each(["running", "retry", "unknown", "failed"])("does not expose old evidence when a v2 checkpoint is %s", async status => {
+    const render = realRender();
+    render.execution.steps["preflight-v2"] = { status, output: completeOutput };
+    mocks.findOne.mockResolvedValue(render);
+    expect((await (await GET(request, context)).json()).sceneProjection).toBeNull();
+  });
+
+  it("does not expose malformed v2 fields, checkpoint assets or free-form evidence", async () => {
+    mocks.findOne.mockResolvedValue(realRender({
+      ...completeOutput, spans: [{ pixelsPerCm: "4" }], widthPixelsPerCm: [{ __checkpointImage: "private photo" }],
+      poses: [{ cameraElevationDegrees: 86, cameraRollDegrees: -31, evidence: "private scene" }],
+    }, "preflight-v2"));
+    const body = await (await GET(request, context)).json();
+    expect(body.sceneProjection).toEqual([
+      { index: 1, heightPixelsPerCm: null, widthPixelsPerCm: null, cameraElevationDegrees: null, cameraRollDegrees: null },
+    ]);
+    expect(JSON.stringify(body)).not.toMatch(/private|checkpoint|evidence|prompt/);
+  });
+
   it.each([
     null, "private raw output", [], {}, { spans: [] }, { spans: "private output" },
     { spans: Array.from({ length: 4 }, () => ({ pixelsPerCm: 4 })) },
@@ -210,7 +373,7 @@ describe("merchant render diagnostics", () => {
 
   it.each(["running", "retry", "unknown", "failed"])("hides an unfinished %s checkpoint", async status => {
     const render = realRender();
-    render.execution.steps["storefront-scene-preflight"].status = status;
+    render.execution.steps["storefront-scene-preflight"]!.status = status;
     mocks.findOne.mockResolvedValue(render);
     expect((await (await GET(request, context)).json()).sceneProjection).toBeNull();
   });

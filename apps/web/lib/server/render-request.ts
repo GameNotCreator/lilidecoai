@@ -25,9 +25,13 @@ export interface PlacementInput {
 }
 
 export interface RenderInput {
-  engine?: "legacy" | "spatial";
+  engine?: "legacy" | "spatial" | "oriented";
+  orientedVariantId?: string | null;
+  orientedYawDegrees?: number;
+  orientedPlanFingerprint?: string;
   spatialReference?: import("@lili/types").SpatialReference;
   scaleReference?: import("@lili/types").StorefrontScaleReference;
+  replaceExisting?: boolean;
   workflow?: "standard" | "simple_point";
   placement: PlacementInput;
   idempotencyKey: string;
@@ -97,6 +101,12 @@ export function buildRetryInput(
     );
   const idempotencyKey =
     providedKey ?? `retry:${render.id}:${crypto.randomUUID()}`;
+  if (render.engine === "oriented") {
+    if (render.execution?.errorCode === "provider_unknown" || (render.usageTotals?.unknownOutcomeCalls ?? 0) > 0)
+      throw new RenderRequestError("L’issue fournisseur est inconnue. Une vérification de la dépense est nécessaire avant une nouvelle génération.");
+    if (render.requestSnapshot?.input.engine !== "oriented")
+      throw new RenderRequestError("Les paramètres du rendu orienté sont incomplets.");
+  }
   if (
     render.engine === "spatial" &&
     render.requestSnapshot?.input.engine !== "spatial"

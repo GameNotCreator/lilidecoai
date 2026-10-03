@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { renderEngineSchema, renderEvidenceSchema, spatialProductMetadataSchema, spatialReferenceSchema } from "./spatial";
 export * from "./spatial";
+export * from "./oriented";
 
 export const placementModeSchema = z.enum(["quick", "wall", "surface"]);
 export const renderModeSchema = z.enum(["insert", "replace"]);
@@ -127,8 +128,12 @@ const legacySurfaceSchema = z.enum([
 export const renderRequestSchema = z
   .object({
     engine: renderEngineSchema.optional(),
+    orientedVariantId: z.string().min(1).max(160).nullable().optional(),
+    orientedYawDegrees: z.number().finite().min(-180).max(180).optional(),
+    orientedPlanFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
     spatialReference: spatialReferenceSchema.optional(),
     scaleReference: storefrontScaleReferenceSchema.optional(),
+    replaceExisting: z.boolean().optional(),
     workflow: z.enum(["standard", "simple_point"]).default("standard"),
     mode: renderModeSchema.default("insert"),
     placement: z.object({
@@ -357,6 +362,10 @@ export type QualityDecision = z.infer<typeof qualityDecisionSchema>;
 export const renderSchema = z.object({
   engine: renderEngineSchema.optional(),
   spatialEvidence: renderEvidenceSchema.optional(),
+  orientedEvidence: z.object({
+    version: z.literal("oriented-v1"), selectedViewId: z.string(), snapshotFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+    origin: z.enum(["photographed", "generated"]), metricVerified: z.literal(false), limitations: z.array(z.string()), plan: z.unknown(), checks: z.unknown().optional(),
+  }).optional(),
   id: z.string().uuid(),
   status: renderStatusSchema,
   provider: z.string().nullable(),
@@ -393,6 +402,7 @@ export const renderSchema = z.object({
       mockMode: z.boolean(),
       imageQuality: z.string(),
       editModel: z.string(),
+      repairImageModel: z.string().optional(),
       visionModel: z.string(),
     })
     .optional(),

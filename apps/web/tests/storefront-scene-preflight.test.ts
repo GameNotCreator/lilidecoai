@@ -465,6 +465,68 @@ describe("single storefront scene preflight", () => {
     await expect(inspectStorefrontScene(input())).rejects.toMatchObject({ code: "unavailable", providerCalled: true });
     expect(fetcher).toHaveBeenCalledOnce();
   });
+  it("permits the explicit v5 analysis after25s while keeping one provider call", async () => {
+    const start = Date.now();
+    const fetcher = vi.fn<typeof globalThis.fetch>(async () => {
+      vi.spyOn(Date, "now").mockReturnValue(start + 34_000);
+      return Response.json(envelope(answer()));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const result = await inspectStorefrontScene({ ...input(), timeoutMs: 35_000, deadlineMs: start + 180_000 });
+    expect(result.spans).toHaveLength(points.length);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+  it.each([
+    { remaining: 180_000, elapsed: 35_001 },
+    { remaining: 28_000, elapsed: 28_001 },
+  ])("v5 still rejects after its cap or tighter global reserve: $remaining", async ({ remaining, elapsed }) => {
+    const start = Date.now();
+    const fetcher = vi.fn<typeof globalThis.fetch>(async () => {
+      vi.spyOn(Date, "now").mockReturnValue(start + elapsed);
+      return Response.json(envelope(answer()));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    let failure: unknown;
+    try { await inspectStorefrontScene({ ...input(), timeoutMs: 35_000, deadlineMs: start + remaining }); }
+    catch (reason) { failure = reason; }
+    expect(failure).toMatchObject({ code: "deadline", providerCalled: true });
+    expect(visionObservation(failure)?.usage).toEqual(usage);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+  it("rejects unsupported preflight caps before contacting the provider", async () => {
+    const fetcher = vi.fn<typeof globalThis.fetch>();
+    vi.stubGlobal("fetch", fetcher);
+    await expect(inspectStorefrontScene({ ...input(), timeoutMs: 60_000 as 35_000 })).rejects.toMatchObject({ code: "invalid_input" });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+  it("allows one v6 replacement analysis up to45s without retrying", async () => {
+    const start = Date.now();
+    const fetcher = vi.fn<typeof globalThis.fetch>(async () => {
+      vi.spyOn(Date, "now").mockReturnValue(start + 44_000);
+      return Response.json(envelope(answer()));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const result = await inspectStorefrontScene({ ...input(), timeoutMs: 45_000, deadlineMs: start + 180_000 });
+    expect(result.spans).toHaveLength(points.length);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+  it.each([
+    { remaining: 180_000, elapsed: 45_001 },
+    { remaining: 32_000, elapsed: 32_001 },
+  ])("v6 replacement never exceeds45s or the remaining global budget: $remaining", async ({ remaining, elapsed }) => {
+    const start = Date.now();
+    const fetcher = vi.fn<typeof globalThis.fetch>(async () => {
+      vi.spyOn(Date, "now").mockReturnValue(start + elapsed);
+      return Response.json(envelope(answer()));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    let failure: unknown;
+    try { await inspectStorefrontScene({ ...input(), timeoutMs: 45_000, deadlineMs: start + remaining }); }
+    catch (reason) { failure = reason; }
+    expect(failure).toMatchObject({ code: "deadline", providerCalled: true });
+    expect(visionObservation(failure)?.usage).toEqual(usage);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
   it("does not swallow the worker deadline or lease errors", async () => {
     const failure = new DurableExecutionError("Lease perdue", "lease_lost");
     const fetcher = vi.fn<typeof globalThis.fetch>(async () => { throw failure; });

@@ -1,17 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Db } from "mongodb";
+import type { RenderDocument } from "../lib/server/types";
+import { mongoStore } from "./helpers/mongo-store";
 
 const mocks = vi.hoisted(() => ({
   config: { cronSecret: "test-cron-only" as string | undefined },
   enabled: vi.fn(),
+  collections: vi.fn(),
 }));
 vi.mock("server-only", () => ({}));
 vi.mock("../lib/server/config", () => ({ serverConfig: mocks.config }));
 vi.mock("../lib/server/durable-queue", () => ({
   durableEnabled: mocks.enabled,
 }));
+vi.mock("../lib/server/mongodb", () => ({ collections: mocks.collections }));
 
 import {
   dispatchRenderWorker,
+  dispatchQueuedRender,
   renderWorkerDispatchUrl,
   RENDER_WORKER_DISPATCH_TIMEOUT_MS,
 } from "../lib/server/render-worker-dispatch";
@@ -22,6 +28,37 @@ beforeEach(() => {
   vi.stubEnv("VERCEL_AUTOMATION_BYPASS_SECRET", "");
   mocks.config.cronSecret = "test-cron-only";
   mocks.enabled.mockReturnValue(true);
+});
+
+describe("refresh recovery of a queued render", () => {
+  function queued(): RenderDocument {
+    return { id: "r", organizationId: "org", status: "queued", execution: {
+      deadlineAt: new Date(Date.now() + 180_000), availableAt: new Date(0),
+    } } as RenderDocument;
+  }
+  it("coalesces simultaneous refreshes and never submits a generation payload", async () => {
+    const render = queued();
+    const renders = mongoStore();
+    renders.rows.push(structuredClone(render) as unknown as Record<string, unknown>);
+    mocks.collections.mockReturnValue({ renders });
+    vi.stubEnv("VERCEL_URL", "lili-team.vercel.app");
+    const fetch = vi.fn().mockImplementation(async () => new Response(null, { status: 202 }));
+    vi.stubGlobal("fetch", fetch);
+    const result = await Promise.all([dispatchQueuedRender({} as Db, render), dispatchQueuedRender({} as Db, render)]);
+    expect(result.filter(Boolean)).toHaveLength(1);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls[0]![1]).not.toHaveProperty("body");
+  });
+  it("does not wake completed, processing, delayed or expired jobs", async () => {
+    for (const mode of ["succeeded", "processing", "delayed", "expired"]) {
+      const render = queued();
+      if (mode === "delayed") render.execution!.availableAt = new Date(Date.now() + 5_000);
+      else if (mode === "expired") render.execution!.deadlineAt = new Date(0);
+      else render.status = mode as RenderDocument["status"];
+      expect(await dispatchQueuedRender({} as Db, render)).toBe(false);
+    }
+    expect(mocks.collections).not.toHaveBeenCalled();
+  });
 });
 afterEach(() => {
   vi.unstubAllEnvs();

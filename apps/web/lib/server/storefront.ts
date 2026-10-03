@@ -23,6 +23,7 @@ import { DEMO_CATALOG_USER_ID, type ProductDocument } from "./types";
 import type { RenderInput } from "./render-request";
 import { isSameOriginRequest } from "./request-origin";
 
+// La provenance catalogue et la publication sont requises ensemble pour la boutique.
 export function storefrontProductFilter(organizationId: string) {
   return {
     organizationId,
@@ -55,7 +56,10 @@ export function storefrontVisualization() {
     process.env.STOREFRONT_VISUALIZATION_ENABLED !== "false" &&
     (serverConfig.aiMockMode
       ? process.env.NODE_ENV !== "production"
-      : Boolean(serverConfig.openaiApiKey));
+      : Boolean(serverConfig.openaiApiKey) &&
+        (serverConfig.simplePointImageProvider === "myarchitectai"
+          ? Boolean(serverConfig.myArchitectAIApiKey)
+          : Boolean(serverConfig.openAIImageEnabled)));
   return available
     ? { available }
     : { available, reason: "La visualisation est momentanément indisponible." };
@@ -254,6 +258,7 @@ export async function normalizeStorefrontRender(
     preserveBackground: true,
     idempotencyKey: input.idempotencyKey,
     ...(referenceScale ? { scaleReference: referenceScale.reference } : {}),
+    ...(input.replaceExisting === true ? { replaceExisting: true } : {}),
     simplePlacements: simplePlacements.map((item) => ({
       ...item,
       ...(referenceScale ? { pixelsPerCm: referenceScale.pixelsPerCm } : {}),

@@ -1,7 +1,7 @@
 import "server-only";
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { CUTOUT_VERSION } from "./assets";
+import { CUTOUT_VERSION } from "./cutout-version";
 import { cutoutTrust } from "./cutout-identity";
 import { spatialPreparationForCatalog } from "./spatial-policy";
 import type { ProductDocument } from "./types";

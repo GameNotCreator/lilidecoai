@@ -451,6 +451,8 @@ export async function prepareSpatialVolumeEdit(input: SpatialVolumeEditInput) {
     .webp({ lossless: true })
     .toBuffer();
   const apiMaskRaw = volumeModelProtection(nominalObject, transform);
+  // Le masque API localise la cible nominale. L'union des hypothèses reste une
+  // autorisation d'extraction, jamais une permission d'agrandir le produit.
   const [before, after] = await Promise.all([
     sharp(plainCrop).removeAlpha().raw().toBuffer(),
     sharp(composition).removeAlpha().raw().toBuffer(),

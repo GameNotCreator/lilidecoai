@@ -77,6 +77,14 @@ beforeEach(() => {
   };
 });
 
+it("refuses exhausted budget before the scale provider receives an image", async () => {
+  mocks.readAsset.mockResolvedValue({ buffer: await sharp({ create: { width: 320, height: 320, channels: 3, background: "white" } }).png().toBuffer() });
+  const admission = vi.fn(async () => { throw new Error("budget exhausted"); });
+  await expect(getOrEstimateSceneScale(db, snapshot, points, kinds, admission)).rejects.toThrow("budget exhausted");
+  expect(admission).toHaveBeenCalledOnce();
+  expect(mocks.fetch).not.toHaveBeenCalled();
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();

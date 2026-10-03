@@ -734,7 +734,7 @@ export async function compositeObjectsOnScene(
 export async function padCompositionForAspect(
   composition: CompositionLike,
   requestedSize: string,
-  options: { exactAspect?: boolean } = {},
+  options: { exactAspect?: boolean; exactRasterAspect?: boolean } = {},
 ): Promise<PaddedComposition> {
   const [requestedWidth, requestedHeight] = requestedSize
     .split("x")
@@ -744,7 +744,22 @@ export async function padCompositionForAspect(
   const ratio = sceneWidth / sceneHeight;
   let paddedWidth = sceneWidth;
   let paddedHeight = sceneHeight;
-  if (Math.abs(ratio - targetRatio) / targetRatio > (options.exactAspect ? 0 : 0.01)) {
+  if (options.exactRasterAspect) {
+    // Native provider canvases must share one exact scale with the mask.
+    // Add borders up to an integer multiple of the reduced target ratio;
+    // rounding one side alone can produce incompatible native mask heights.
+    if (![sceneWidth, sceneHeight, requestedWidth, requestedHeight]
+      .every(value => Number.isSafeInteger(value) && value! > 0))
+      throw new Error("Dimensions du cadre de composition invalides.");
+    let divisor = requestedWidth!, remainder = requestedHeight!;
+    while (remainder !== 0) [divisor, remainder] = [remainder, divisor % remainder];
+    const unitWidth = requestedWidth! / divisor, unitHeight = requestedHeight! / divisor;
+    const multiplier = Math.max(Math.ceil(sceneWidth / unitWidth), Math.ceil(sceneHeight / unitHeight));
+    paddedWidth = unitWidth * multiplier;
+    paddedHeight = unitHeight * multiplier;
+    if (paddedWidth > 8192 || paddedHeight > 8192 || paddedWidth * paddedHeight > 16_000_000)
+      throw new Error("Le cadre de composition dépasse les dimensions autorisées.");
+  } else if (Math.abs(ratio - targetRatio) / targetRatio > (options.exactAspect ? 0 : 0.01)) {
     if (ratio > targetRatio) {
       paddedHeight = Math.round(sceneWidth / targetRatio);
     } else {

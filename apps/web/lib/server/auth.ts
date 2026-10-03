@@ -201,6 +201,7 @@ export async function createGuestSession(existing?: Tenant): Promise<{
   };
 }
 
+// Seul le cookie boutique valide de cette organisation assure la continuité du visiteur.
 export async function createStorefrontSession(
   organizationId: string,
   request: Request,

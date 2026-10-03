@@ -561,6 +561,7 @@ export interface BuiltPrompt {
 }
 
 const roleLabels: Record<ImageReference["role"], string> = {
+  placement_guide: "native contact and width reference; never reproduce its annotations",
   spatial_guide: "registered technical volume guide; never reproduce its markers",
   room_original: "untouched original room photograph; source of truth",
   product_front: "front catalog view; product identity reference",

@@ -10,6 +10,7 @@ import {
 } from "../spatial-scene";
 import { z } from "zod";
 import { observeVisionResponse } from "./ai/openai-vision-cost";
+import { sniffImageMime } from "./image-security";
 
 interface CacheDocument {
   _id: string;
@@ -42,6 +43,12 @@ export async function analyzeSpatialRoom(
     throw Object.assign(new Error("L’analyse spatiale est indisponible."), {
       status: 503,
     });
+  const mimeType = sniffImageMime(room);
+  if (!mimeType)
+    throw Object.assign(new Error("Format d’image non reconnu."), {
+      providerCalled: false,
+      status: 422,
+    });
   const started = Date.now();
   const response = await fetch(`${serverConfig.openaiBaseUrl}/responses`, {
     method: "POST",
@@ -67,7 +74,7 @@ export async function analyzeSpatialRoom(
             },
             {
               type: "input_image",
-              image_url: `data:image/webp;base64,${room.toString("base64")}`,
+              image_url: `data:${mimeType};base64,${room.toString("base64")}`,
               detail: "original",
             },
           ],

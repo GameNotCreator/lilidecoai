@@ -85,6 +85,7 @@ export function productListFilter(tenant: Tenant): Filter<ProductDocument> {
 }
 
 /** The visitor session that owns a product, when it is a visitor upload. */
+// La provenance du créateur conserve le périmètre privé des imports visiteurs.
 export function productOwnerSession(
   product: Pick<ProductDocument, "createdByUserId">,
 ): string | undefined {

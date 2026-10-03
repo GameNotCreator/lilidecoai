@@ -52,6 +52,8 @@ function matchesOperator(
 ): boolean {
   const values = Array.isArray(actual) ? actual : [actual];
   switch (op) {
+    case "$regex":
+      return values.some((item) => typeof item === "string" && new RegExp(String(expected)).test(item));
     case "$gt":
       return values.some((item) => (item as number) > (expected as number));
     case "$lt":

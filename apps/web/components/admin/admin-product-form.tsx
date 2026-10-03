@@ -28,6 +28,7 @@ import {
 } from "@/lib/admin-client";
 import { prepareImageForUpload } from "@/lib/client-image";
 import { PlanarTextureEditor } from "./planar-texture-editor";
+import { PreparedViewsPanel } from "./prepared-views-panel";
 
 interface VariantRow {
   key: string;
@@ -1253,6 +1254,9 @@ export function AdminProductForm({ productId }: { productId?: string }) {
           )}
         </aside>
       </div>
+      {editing && product && (
+        <PreparedViewsPanel key={product.id} product={product} disabled={Boolean(busy) || unsavedChanges} />
+      )}
     </>
   );
 }

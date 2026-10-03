@@ -84,9 +84,11 @@ export async function advanceRender(
   }
 }
 
-/** A single-document claim linearizes cancel/delete against finalization.
- * This is deliberately not a substitute for the planned wallet transaction
- * and durable-worker recovery after process termination.
+/**
+ * Le chemin durable délègue son règlement transactionnel à durable-queue.
+ * Le chemin historique ci-dessous utilise une claim du document de rendu pour
+ * arbitrer annulation/suppression, puis capture le crédit séparément : ce chemin
+ * ne possède pas l'atomicité multi-document du worker durable.
  */
 export async function completeRender(
   db: Db,
@@ -151,8 +153,9 @@ export async function completeRender(
  * would stay `processing` for ever — visible to the customer as a render that
  * never ends. The credit is given back by the same sweep in `credits.ts`.
  *
- * This does not resume anything. The attempt is over and is recorded as
- * failed; a durable executor that could continue it is still to be built.
+ * Ce balayage concerne les rendus historiques sans execution et ne les reprend
+ * pas. Les rendus durables utilisent les baux/checkpoints du worker et leur
+ * expiration métier dans durable-queue, plutôt que ce seuil fixe de quinze minutes.
  */
 export async function failAbandonedRenders(
   db: Db,

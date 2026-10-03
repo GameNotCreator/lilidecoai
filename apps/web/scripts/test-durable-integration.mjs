@@ -13,8 +13,10 @@ try {
         new URL("../../../node_modules/vitest/vitest.mjs", import.meta.url),
       ),
       "run",
-      "tests/durable-integration.test.ts",
-      "tests/admin-visualization-budget-integration.test.ts",
+      ...(process.argv.length > 2
+        ? process.argv.slice(2)
+        : ["tests/durable-integration.test.ts", "tests/oriented-pipeline.test.ts",
+          "tests/oriented-durable-integration.test.ts", "--no-file-parallelism", "--maxWorkers=1"]),
     ],
     {
       cwd: new URL("../", import.meta.url),

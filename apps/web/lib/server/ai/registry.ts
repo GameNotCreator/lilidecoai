@@ -25,6 +25,7 @@ import {
   MockSceneAnalysisProvider,
 } from "./mock";
 import { OpenAIImageProvider } from "./openai";
+import { MyArchitectAIImageProvider } from "./myarchitectai";
 
 export interface SelectedEditingProvider {
   provider: ImageEditingProvider;
@@ -34,7 +35,7 @@ export interface SelectedEditingProvider {
 export function selectEditingProvider(
   mode: RenderMode,
   outputQuality: OutputQuality,
-  preferredProvider?: "openai" | "google",
+  preferredProvider?: "openai" | "google" | "myarchitectai",
   imageModelOverride?: string,
 ): SelectedEditingProvider {
   if (serverConfig.aiMockMode) {
@@ -46,6 +47,23 @@ export function selectEditingProvider(
         reason: "AI_MOCK_MODE is enabled",
       },
       provider: new MockImageProvider(),
+    };
+  }
+  if (preferredProvider === "myarchitectai") {
+    const provider = new MyArchitectAIImageProvider();
+    if (!provider.isAvailable()) {
+      throw new Error(
+        "La clé MYARCHITECTAI_API_KEY est requise pour le moteur d’image sélectionné.",
+      );
+    }
+    return {
+      provider,
+      route: {
+        provider: "myarchitectai",
+        modelRole: "final",
+        degradedMode: false,
+        reason: "MyArchitectAI was explicitly selected for the photo workflow",
+      },
     };
   }
   if (preferredProvider === "openai") {
@@ -101,6 +119,11 @@ export function selectEditingProvider(
   }
   if (route.provider === "openai") {
     return { route, provider: new OpenAIImageProvider() };
+  }
+  if (serverConfig.simplePointImageProvider === "myarchitectai") {
+    throw new Error(
+      "MyArchitectAI est disponible pour le parcours photo simple. Ce parcours exige un autre fournisseur configuré.",
+    );
   }
   return { route, provider: new MockImageProvider() };
 }

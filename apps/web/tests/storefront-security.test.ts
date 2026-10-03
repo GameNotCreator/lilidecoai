@@ -54,6 +54,12 @@ import {
 } from "../lib/server/types";
 import type { Tenant } from "../lib/server/auth";
 import type { RenderInput } from "../lib/server/render-request";
+import {
+  ADMIN_MASK_VERSION,
+  adminMaskConfiguration,
+  preparationHash,
+  productPreparationGeometryFingerprint,
+} from "../lib/server/product-preparation";
 
 const db = {} as Db;
 const productId = "00000000-0000-4000-8000-000000000010";
@@ -131,10 +137,35 @@ function input(count = 1): RenderInput {
     dimensionsCm: { width: 999, height: 999, depth: 999, unit: "cm" },
   };
 }
+
+function mattingProduct() {
+  const prepared = product();
+  prepared.cutout = {
+    ...prepared.cutout!,
+    source: "matting",
+    cutoutVersion: ADMIN_MASK_VERSION,
+    verdict: { usable: true, code: "ok", detail: "" },
+  };
+  prepared.productPreparation = { completed: {
+    version: 1,
+    configuration: adminMaskConfiguration(),
+    sourceAssetId: prepared.assetId!,
+    sourceSha256: preparationHash("original photo"),
+    cutoutAssetId: prepared.cutoutAssetId!,
+    cutoutSha256: preparationHash("authentic pixels with approved mask"),
+    maskSha256: preparationHash("approved administrator mask"),
+    metadataSha256: preparationHash(JSON.stringify(prepared.cutout)),
+    geometryFingerprint: productPreparationGeometryFingerprint(prepared),
+    preparedAt: new Date("2026-09-29T12:00:00Z"),
+  } };
+  return prepared;
+}
 beforeEach(async () => {
   vi.clearAllMocks();
   serverConfig.aiMockMode = true;
   serverConfig.openaiApiKey = undefined;
+  serverConfig.simplePointImageProvider = "openai";
+  serverConfig.openAIImageEnabled = true;
   products = mongoStore();
   organizations = mongoStore();
   scenes = mongoStore();
@@ -172,6 +203,13 @@ beforeEach(async () => {
   mocks.render.mockResolvedValue({ id: "render" });
 });
 describe("public concept store boundary", () => {
+  it.each([undefined, false, true])("only preserves explicit replacement consent (%s)", async (replaceExisting) => {
+    const normalized = await normalizeStorefrontRender(db, tenant, { ...input(), replaceExisting });
+    if (replaceExisting === true) expect(normalized.replaceExisting).toBe(true);
+    else expect(normalized).not.toHaveProperty("replaceExisting");
+    expect(normalized.mode).toBe("insert");
+    expect(normalized.preserveBackground).toBe(true);
+  });
   it("cannot read or expire another visitor's overdue render", async () => {
     const renderId = "00000000-0000-4000-8000-000000000030";
     const otherRender = {
@@ -306,6 +344,32 @@ describe("public concept store boundary", () => {
     ).rejects.toThrow("indisponible");
     expect(mocks.render).not.toHaveBeenCalled();
   });
+  it("keeps a published product with a validated administrator mask available", async () => {
+    products.rows[0] = mattingProduct() as unknown as Record<string, unknown>;
+    expect((await getStorefrontCatalog(db)).products[0]?.visualizationAvailable).toBe(true);
+    const normalized = await normalizeStorefrontRender(db, tenant, input());
+    expect(normalized.simplePlacements?.[0]?.productId).toBe(productId);
+  });
+  it.each(["dimensions", "source", "cutout", "metadata", "missing-mask", "invalid-mask", "configuration", "failure", "veto", "lease"])(
+    "keeps the matting product blocked after %s changes", async (change) => {
+      const prepared = mattingProduct();
+      const completed = prepared.productPreparation!.completed!;
+      if (change === "dimensions") prepared.widthCm += 1;
+      if (change === "source") prepared.assetId = "other-source";
+      if (change === "cutout") prepared.cutoutAssetId = "other-cutout";
+      if (change === "metadata") prepared.cutout!.widthPx += 1;
+      if (change === "missing-mask") delete completed.maskSha256;
+      if (change === "invalid-mask") completed.maskSha256 = "invalid";
+      if (change === "configuration") completed.configuration = "unknown-method";
+      if (change === "failure") prepared.productPreparation!.failure = { sourceAssetId: prepared.assetId!, detail: "Masque refusé", at: new Date() };
+      if (change === "veto") prepared.visualizationBlockedReason = "Identité à revérifier";
+      if (change === "lease") prepared.productPreparation!.lease = { token: "active", sourceAssetId: prepared.assetId!, expiresAt: new Date(Date.now() + 60_000) };
+      products.rows[0] = prepared as unknown as Record<string, unknown>;
+      expect((await getStorefrontCatalog(db)).products[0]?.visualizationAvailable).toBe(false);
+      await expect(normalizeStorefrontRender(db, tenant, input())).rejects.toThrow("indisponible");
+      expect(mocks.render).not.toHaveBeenCalled();
+    },
+  );
   it("applies a catalog veto even to an otherwise trusted legacy cutout without preparation tracking", async () => {
     products.rows[0]!.visualizationBlockedReason =
       "Photo avec plante non incluse dans le produit";
@@ -467,7 +531,7 @@ describe("public concept store boundary", () => {
     const response = await dispatchApi(
       new Request("http://test/v1/renders/final", {
         method: "POST",
-        body: JSON.stringify(input()),
+        body: JSON.stringify({ ...input(), replaceExisting: true }),
       }),
       ["renders", "final"],
     );
@@ -477,6 +541,7 @@ describe("public concept store boundary", () => {
         .heightCm,
     ).toBe(30);
     expect(mocks.render.mock.calls[0]?.[3]).toBe("storefront:a");
+    expect(mocks.render.mock.calls[0]?.[2].replaceExisting).toBe(true);
   });
   it.each([
     null,

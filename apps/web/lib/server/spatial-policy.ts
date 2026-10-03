@@ -46,6 +46,8 @@ export function validateSpatialAdmission(
   enabled: boolean,
   publicSessionId?: string,
 ): ProductGeometry {
+  // L'admission est plus stricte que la lecture : fermer le pilote interdit les
+  // nouveaux travaux sans rendre inaccessibles les rendus déjà admis.
   if (!enabled || publicSessionId)
     throw new SpatialAdmissionError(
       "Le placement spatial est réservé aux essais internes des boutiques activées.",

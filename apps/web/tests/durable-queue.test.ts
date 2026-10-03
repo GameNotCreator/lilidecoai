@@ -1,20 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "mongodb";
-import type { RenderDocument } from "../lib/server/types";
+import type { RenderDocument, SceneDocument } from "../lib/server/types";
 import { renderSchema } from "@lili/types";
+import { renderResponse } from "../lib/server/serializers";
 import { mongoStore } from "./helpers/mongo-store";
 
-const mocks = vi.hoisted(() => ({ collections: vi.fn() }));
+const mocks = vi.hoisted(() => ({ collections: vi.fn(), config: { aiMockMode: false, renderStageCapture: false }, layerPolicy: { version: "oriented-layers-v2", contactDarkening: 0.14 } }));
 vi.mock("server-only", () => ({}));
-vi.mock("../lib/server/assets", () => ({
-  assetUrl: (id?: string) => id ? `/api/assets/${id}` : null,
-}));
+vi.mock("../lib/server/assets", () => ({ assetUrl: (id?: string) => id ? `/api/assets/${id}` : null }));
 vi.mock("../lib/server/mongodb", () => ({ collections: mocks.collections }));
+vi.mock("../lib/server/oriented-layer-policy", () => ({ ORIENTED_LAYER_POLICY: mocks.layerPolicy }));
 vi.mock("../lib/server/config", () => ({
-  serverConfig: { aiMockMode: false },
+  serverConfig: mocks.config,
 }));
 import { durableContext } from "../lib/server/durable-context";
-import { renderResponse } from "../lib/server/serializers";
 import {
   completeDurableRender,
   endDurableRender,
@@ -23,16 +22,44 @@ import {
   workerFingerprint,
   heartbeat,
   expireDurableRenders,
-  expireStorefrontRender,
+  prepareExecution,
+  reconcileRenderDeadline,
   retryDurableRender,
 } from "../lib/server/durable-queue";
 
-afterEach(() => {
-  vi.unstubAllEnvs();
-  vi.useRealTimers();
-});
+afterEach(() => { vi.unstubAllEnvs(); vi.useRealTimers(); });
 
 describe("worker snapshot fencing", () => {
+  it("separates diagnostic photo capture from public workers with identical source and models", async () => {
+    const publicFingerprint = workerFingerprint();
+    await renders.updateOne({ id: "r" }, { $set: { status: "queued", "execution.leaseUntil": new Date(0) } });
+    try {
+      mocks.config.renderStageCapture = true;
+      expect(workerFingerprint()).not.toBe(publicFingerprint);
+      expect(await claimRender(db, "diagnostic-worker")).toBeNull();
+      mocks.config.renderStageCapture = false;
+      expect(workerFingerprint()).toBe(publicFingerprint);
+      expect((await claimRender(db, "public-worker"))?.id).toBe("r");
+    } finally {
+      mocks.config.renderStageCapture = false;
+    }
+  });
+  it("prevents an old composition checkpoint from resuming with changed layer rules", () => {
+    const first = workerFingerprint();
+    const originalVersion = mocks.layerPolicy.version;
+    const originalDarkening = mocks.layerPolicy.contactDarkening;
+    try {
+      mocks.layerPolicy.version = "oriented-layers-next";
+      expect(workerFingerprint()).not.toBe(first);
+      mocks.layerPolicy.version = originalVersion;
+      mocks.layerPolicy.contactDarkening = 0.2;
+      expect(workerFingerprint()).not.toBe(first);
+    } finally {
+      mocks.layerPolicy.version = originalVersion;
+      mocks.layerPolicy.contactDarkening = originalDarkening;
+    }
+    expect(workerFingerprint()).toBe(first);
+  });
   it("separates different source snapshots even when Vercel supplies the same Git HEAD", () => {
     vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "a".repeat(40));
     vi.stubEnv("RENDER_WORKER_REVISION", `sha256:${"1".repeat(64)}`);
@@ -224,6 +251,39 @@ describe("durable settlement", () => {
 });
 
 describe("durable dispatch", () => {
+  it("includes queue wait in a three-minute deadline even with the old thirty-minute setting", () => {
+    vi.stubEnv("RENDER_DEADLINE_SECONDS", "1800");
+    const now = Date.now();
+    const execution = prepareExecution({ assetId: "room", expiresAt: new Date(now + 3_600_000) } as SceneDocument, [], {
+      ...render, publicSessionId: "storefront:visitor", createdAt: new Date(now), requestSnapshot: { version: 1, input: { workflow: "simple_point" } },
+    } as RenderDocument);
+    expect(execution.deadlineAt.getTime()).toBe(now + 180_000);
+    expect(execution.deadlineAt.getTime() - execution.availableAt.getTime()).toBeLessThanOrEqual(180_000);
+    expect(execution.deadlineAt.getTime()).toBeLessThanOrEqual(Date.now() + 180_000);
+  });
+  it("keeps the merchant deadline and rejects sources too close to expiry", () => {
+    vi.stubEnv("RENDER_DEADLINE_SECONDS", "300");
+    const execution = prepareExecution({ assetId: "room", expiresAt: new Date(Date.now() + 3_600_000) } as SceneDocument, []);
+    expect(execution.deadlineAt.getTime() - execution.availableAt.getTime()).toBe(300_000);
+    expect(() => prepareExecution({ assetId: "room", expiresAt: new Date(Date.now() + 80_000) } as SceneDocument, [])).toThrow("expiration");
+  });
+  it("polling an expired job returns a terminal state and releases its hold once", async () => {
+    await run(() => reserveDurableCredit(db, render));
+    render.execution!.deadlineAt = new Date(0);
+    await renders.updateOne({ id: render.id }, { $set: { "execution.deadlineAt": new Date(0) } });
+    const result = await reconcileRenderDeadline(db, render);
+    expect(result).toMatchObject({ status: "failed", execution: { errorCode: "deadline" } });
+    expect(result.error).toContain("Aucun crédit");
+    expect((await reconcileRenderDeadline(db, render)).status).toBe("failed");
+    expect(wallets.rows[0]).toMatchObject({ balance: 1, reserved: 0 });
+    expect(journals.rows).toHaveLength(1);
+  });
+  it("does not end a job still within its deadline or replace a delivered result", async () => {
+    expect(await reconcileRenderDeadline(db, render)).toBe(render);
+    const delivered = { ...render, status: "succeeded" as const, execution: { ...render.execution!, deadlineAt: new Date(0) } };
+    expect(await reconcileRenderDeadline(db, delivered)).toBe(delivered);
+    expect(journals.rows).toHaveLength(0);
+  });
   it("resumes an expired lease and excludes duplicate claims", async () => {
     await renders.updateOne(
       { id: "r" },
@@ -316,7 +376,7 @@ describe("durable dispatch", () => {
     await run(() => reserveDurableCredit(db, render));
     vi.useFakeTimers();
     vi.advanceTimersByTime(10_000);
-    const ended = await expireStorefrontRender(db, render);
+    const ended = await reconcileRenderDeadline(db, render);
     expect(ended).toMatchObject({
       status: "failed",
       pipelineState: "failed",
@@ -325,7 +385,7 @@ describe("durable dispatch", () => {
     });
     expect(ended.error).toContain("3 minutes");
     expect(wallets.rows[0]).toMatchObject({ balance: 1, reserved: 0, holds: [] });
-    expect(await expireStorefrontRender(db, render)).toMatchObject({ status: "failed" });
+    expect(await reconcileRenderDeadline(db, render)).toMatchObject({ status: "failed" });
     expect(journals.rows).toHaveLength(1);
     await expect(run(() => completeDurableRender(db, render, accepted))).rejects.toMatchObject({
       code: "deadline",
@@ -364,14 +424,14 @@ describe("durable dispatch", () => {
       reserved: 1,
       holds: [{ key: `render:${render.id}`, reservedAt: new Date() }],
     });
-    const ended = await expireStorefrontRender(db, render);
+    const ended = await reconcileRenderDeadline(db, render);
     expect(ended).toMatchObject({ status: "failed", pipelineState: "failed", creditCharged: false });
     expect(ended).not.toHaveProperty("execution");
     const payload = await Response.json(renderResponse(ended)).json();
     expect(renderSchema.parse(payload)).toMatchObject({ status: "failed", error: expect.stringContaining("3 minutes") });
     expect(payload).not.toHaveProperty("execution");
     expect(wallets.rows[0]).toMatchObject({ balance: 1, reserved: 0, holds: [] });
-    await expireStorefrontRender(db, render);
+    await reconcileRenderDeadline(db, render);
     expect(wallets.rows[0]).toMatchObject({ balance: 1, reserved: 0, holds: [] });
     expect(journals.rows).toHaveLength(held ? 1 : 0);
   });
@@ -396,9 +456,9 @@ describe("durable dispatch", () => {
       createdAt: new Date(Date.now() - 180_000),
       requestSnapshot: { version: 1 as const, input: { workflow: "simple_point" as const, placement: { sceneId: "s", productId: "p" }, idempotencyKey: "key" } },
     };
-    expect(await expireStorefrontRender(db, completed)).toBe(completed);
+    expect(await reconcileRenderDeadline(db, completed)).toBe(completed);
     render.createdAt = completed.createdAt;
-    expect(await expireStorefrontRender(db, render)).toBe(render);
+    expect(await reconcileRenderDeadline(db, render)).toBe(render);
     expect(renders.rows[0]!.status).toBe("processing");
   });
 });

@@ -213,6 +213,8 @@ export async function runSpatialRender(
   const geometry = prepareProductGeometry(product);
   const planar = geometry.shape === "plane";
   const localVolume = ["spatial-v12", "spatial-v13"].includes(versions.prompt);
+  // Le job conserve son contrat de génération : reprendre une ancienne version
+  // ne doit pas lui appliquer silencieusement les masques du moteur courant.
   const numericRepair = versions.prompt === "spatial-v13";
   if (
     numericRepair &&

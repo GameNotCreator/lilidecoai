@@ -17,7 +17,7 @@ vi.mock("../lib/server/assets", () => ({
 
 import { prepareAdminProduct } from "../lib/server/admin-product-preparation";
 import { adminProductResponse, duplicateProduct, findProduct, setProductStatus, updateProduct } from "../lib/server/admin-products";
-import { productPreparationStatus } from "../lib/server/product-preparation";
+import { ADMIN_MASK_VERSION, adminMaskConfiguration, preparationHash, productPreparationStatus } from "../lib/server/product-preparation";
 import { prepareProductGeometry } from "../lib/server/spatial-policy";
 import { DEMO_CATALOG_USER_ID, type ProductDocument } from "../lib/server/types";
 
@@ -110,6 +110,39 @@ describe("local back-office preparation reuse", () => {
     expect(refreshed.cutout).toEqual(first.cutout);
     expect(refreshed.spatialPreparation?.dimensions.widthCm).toBe(25);
     expect(refreshed.productPreparation?.completed?.geometryFingerprint).not.toBe(first.productPreparation?.completed?.geometryFingerprint);
+    expect(productPreparationStatus(refreshed).status).toBe("ready");
+    expect(mocks.prepareCutout).toHaveBeenCalledTimes(1);
+    expect(mocks.storeAsset).toHaveBeenCalledTimes(1);
+    expect(mocks.deleteAsset).not.toHaveBeenCalled();
+  });
+
+  it("reuses a validated matting preparation and preserves its mask proof when geometry changes", async () => {
+    const first = await prepare();
+    const cutout = { ...first.cutout!, source: "matting" as const, cutoutVersion: ADMIN_MASK_VERSION };
+    const completed = {
+      ...first.productPreparation!.completed!,
+      configuration: adminMaskConfiguration(),
+      metadataSha256: preparationHash(JSON.stringify(cutout)),
+      maskSha256: preparationHash("approved administrator mask"),
+    };
+    await products.updateOne({ id: first.id }, { $set: { cutout, productPreparation: { completed }, status: "ready" } });
+    expect(productPreparationStatus(await load()).status).toBe("ready");
+    const replayed = await prepare();
+    expect(replayed.productPreparation?.completed).toEqual(completed);
+    const edited = await updateProduct(db, replayed, { widthCm: 25 });
+    expect(productPreparationStatus(edited).status).toBe("stale");
+    const refreshed = await prepare();
+    expect(refreshed.status).toBe("ready");
+    expect(refreshed.cutoutAssetId).toBe(first.cutoutAssetId);
+    expect(refreshed.cutout).toEqual(cutout);
+    expect(refreshed.productPreparation?.completed).toMatchObject({
+      configuration: completed.configuration,
+      sourceSha256: completed.sourceSha256,
+      cutoutSha256: completed.cutoutSha256,
+      maskSha256: completed.maskSha256,
+      metadataSha256: completed.metadataSha256,
+    });
+    expect(refreshed.productPreparation?.completed?.geometryFingerprint).not.toBe(completed.geometryFingerprint);
     expect(productPreparationStatus(refreshed).status).toBe("ready");
     expect(mocks.prepareCutout).toHaveBeenCalledTimes(1);
     expect(mocks.storeAsset).toHaveBeenCalledTimes(1);

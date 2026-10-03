@@ -55,6 +55,50 @@ const run = <T>(call: () => Promise<T>, token = "first") =>
   durableContext.run({ render, token }, call);
 
 describe("durable checkpoint recovery", () => {
+  it.each(["v4", "v5", "v6"])("reuses both completed %s local images after lease recovery without replaying the historical v3 pose", async version => {
+    const historicalPose = vi.fn().mockResolvedValue({ requestId: "v3-pose", imageAssetId: "private-v3-pose" });
+    const myarchitect = vi.fn().mockResolvedValue({ requestId: "v4-draft", imageAssetId: "private-v4-draft" });
+    const openai = vi.fn().mockResolvedValue({ requestId: "v4-refinement", imageAssetId: "private-v4-refinement" });
+    await run(() => durableStep(db, "pose-responses-v3", "image", historicalPose));
+    await run(() => durableStep(db, `room-image-${version}`, "image", myarchitect));
+    await run(() => durableStep(db, `room-refine-${version}`, "image", openai));
+    await renders.updateOne({ id: "r" }, { $set: { "execution.token": "second" } });
+    expect(await run(() => durableStep(db, `room-image-${version}`, "image", myarchitect), "second")).toMatchObject({ requestId: "v4-draft" });
+    expect(await run(() => durableStep(db, `room-refine-${version}`, "image", openai), "second")).toMatchObject({ requestId: "v4-refinement" });
+    expect(historicalPose).toHaveBeenCalledOnce();
+    expect(myarchitect).toHaveBeenCalledOnce();
+    expect(openai).toHaveBeenCalledOnce();
+  });
+
+  it.each(["room-image-v4", "room-refine-v4", "room-image-v5", "room-refine-v5", "room-image-v6", "room-refine-v6"].flatMap(key => ["running", "unknown"].map(status => [key, status])))
+    ("refuses to replay an uncertain paid checkpoint %s/%s", async (key, status) => {
+      await renders.updateOne({ id: "r" }, { $set: { [`execution.steps.${key}`]: { status, attempts: 1, startedAt: new Date() } } });
+      const image = vi.fn();
+      await expect(run(() => durableStep(db, key!, "image", image))).rejects.toMatchObject({ code: "provider_unknown" });
+      expect(image).not.toHaveBeenCalled();
+    });
+
+  it("keeps the Responses pose checkpoint distinct from the historical native-alpha pose and reuses both without paying twice", async () => {
+    // Existing binary checkpoint storage already has its own cases; use small
+    // structured metadata here to isolate version routing and paid call count.
+    const historical = vi.fn().mockResolvedValue({ requestId: "legacy-pose", imageAssetId: "legacy-private-image" });
+    const response = vi.fn().mockResolvedValue({ requestId: "responses-pose", imageAssetId: "responses-private-image" });
+    await run(() => durableStep(db, "pose-v2", "image", historical));
+    await run(() => durableStep(db, "pose-responses-v3", "image", response));
+    await renders.updateOne({ id: "r" }, { $set: { "execution.token": "second" } });
+    expect(await run(() => durableStep(db, "pose-v2", "image", historical), "second")).toMatchObject({ requestId: "legacy-pose" });
+    expect(await run(() => durableStep(db, "pose-responses-v3", "image", response), "second")).toMatchObject({ requestId: "responses-pose" });
+    expect(historical).toHaveBeenCalledOnce();
+    expect(response).toHaveBeenCalledOnce();
+  });
+
+  it.each(["running", "unknown"])("never regenerates a Responses pose checkpoint left %s by another worker", async status => {
+    await renders.updateOne({ id: "r" }, { $set: { "execution.steps.pose-responses-v3": { status, attempts: 1, startedAt: new Date() } } });
+    const response = vi.fn();
+    await expect(run(() => durableStep(db, "pose-responses-v3", "image", response))).rejects.toMatchObject({ code: "provider_unknown" });
+    expect(response).not.toHaveBeenCalled();
+  });
+
   it("yields before a new paid step while reusing completed checkpoints", async () => {
     const image = vi.fn().mockResolvedValue({ ok: true });
     await run(() => durableStep(db, "image-slice", "image", image));

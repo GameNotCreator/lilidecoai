@@ -1,6 +1,6 @@
 // Pure release policy. Never return environment values, credentials or URIs.
 import { inspectWorkerRevision } from "../lib/render-worker-revision.mjs";
-export const PRODUCTION_PREFLIGHT_POLICY = "production-spatial-closed-v1";
+export const PRODUCTION_PREFLIGHT_POLICY = "production-hybrid-spatial-closed-v2";
 export const PRODUCTION_DURABLE_ENGINE = "render-durable-v2";
 
 const configured = (value) =>
@@ -75,9 +75,16 @@ export function evaluateProductionConfig(env) {
   );
   check(
     "image-provider-enabled",
-    "fournisseur image explicitement actif",
+    "OpenAI image explicitement actif pour les rendus compatibles et multi-objets",
     env.OPENAI_IMAGE_ENABLED === "true",
   );
+  const selectedImageProvider = env.SIMPLE_POINT_IMAGE_PROVIDER === undefined || env.SIMPLE_POINT_IMAGE_PROVIDER === ""
+    ? "openai" : clean(env.SIMPLE_POINT_IMAGE_PROVIDER);
+  check("image-provider-selection", "fournisseur image simple OpenAI ou MyArchitectAI explicite",
+    ["openai", "myarchitectai"].includes(selectedImageProvider));
+  check("selected-image-provider-configured", "identifiants du fournisseur image sélectionné configurés",
+    selectedImageProvider === "myarchitectai" ? configured(clean(env.MYARCHITECTAI_API_KEY))
+      : selectedImageProvider === "openai" && configured(clean(env.OPENAI_API_KEY)));
   check(
     "spatial-admissions-disabled",
     "admissions spatiales non qualifiées désactivées",
@@ -157,6 +164,7 @@ export function evaluateProductionConfig(env) {
     passed: checks.every((item) => item.passed),
     checks,
     revision,
+    imageProvider: ["openai", "myarchitectai"].includes(selectedImageProvider) ? selectedImageProvider : null,
     scope:
       "Configuration seulement ; qualification spatiale, authenticité du paquet et publication non attestées.",
   };
@@ -297,6 +305,9 @@ export const DRAINAGE_COUNT_FIELDS = [
   "activeExpired",
   "activeProviderUnknown",
   "activeFingerprintVariants",
+  "preparedQueued",
+  "preparedPreparing",
+  "preparedProviderUnknown",
 ];
 
 export function evaluateProductionDrainage(counts) {
@@ -315,7 +326,7 @@ export function evaluateProductionDrainage(counts) {
     },
     {
       id: "drainage-empty",
-      name: "aucun rendu actif avant changement de révision",
+      name: "aucun rendu ou préparation actif, ni intention catalogue inconnue, avant changement de révision",
       passed:
         valid && DRAINAGE_COUNT_FIELDS.every((name) => counts[name] === 0),
     },

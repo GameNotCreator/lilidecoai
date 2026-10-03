@@ -3,9 +3,33 @@ import "server-only";
 import { isIP } from "node:net";
 import { serverConfig } from "./config";
 import { durableEnabled } from "./durable-queue";
+import type { Db } from "mongodb";
+import type { RenderDocument } from "./types";
+import { collections } from "./mongodb";
+import { effectiveRenderDeadline } from "./storefront-render-deadline";
 
 export const RENDER_WORKER_DISPATCH_TIMEOUT_MS = 5_000;
 const WORKER_PATH = "/api/cron/render-worker";
+const QUEUED_WAKE_INTERVAL_MS = 10_000;
+
+/** A status refresh can recover a missed kick; it never waits for generation. */
+export async function dispatchQueuedRender(db: Db, render: RenderDocument): Promise<boolean> {
+  const now = new Date();
+  if (!render.execution || render.status !== "queued" ||
+      effectiveRenderDeadline(render) <= now.getTime() || render.execution.availableAt > now) return false;
+  const changed = await collections(db).renders.updateOne({
+    id: render.id,
+    organizationId: render.organizationId,
+    status: "queued",
+    "execution.deadlineAt": { $gt: now },
+    "execution.availableAt": { $lte: now },
+    $or: [
+      { "execution.lastDispatchedAt": { $exists: false } },
+      { "execution.lastDispatchedAt": { $lte: new Date(now.getTime() - QUEUED_WAKE_INTERVAL_MS) } },
+    ],
+  }, { $set: { "execution.lastDispatchedAt": now } });
+  return changed.matchedCount === 1 ? dispatchRenderWorker() : false;
+}
 
 /**
  * Resolve only deployment-owned configuration, never request Host/Origin or

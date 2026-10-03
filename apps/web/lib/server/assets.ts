@@ -12,6 +12,7 @@ import { collections } from "./mongodb";
 import { sniffImageMime } from "./image-security";
 import { transparencyRatio } from "./simple-composite";
 import type { AssetDocument } from "./types";
+import { assetRequiredByPreparedWork } from "./prepared-view-retention";
 
 const allowedTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
 const formatForMime: Record<string, string> = {
@@ -35,7 +36,7 @@ let cloudinaryReady = false;
  * product and reused, so a case must record the version its cutout was made
  * with rather than the version running today (PRO-007, phase 0).
  */
-export const CUTOUT_VERSION = "cutout-v2";
+export { CUTOUT_VERSION } from "./cutout-version";
 
 export type AssetVisibility =
   "published" | "organization" | { ownerSessionId: string };
@@ -1398,6 +1399,7 @@ function hasEnclosedBackground(
   return false;
 }
 
+// Le stockage des octets et la visibilité sont distincts ; les lectures contrôlent les droits.
 export async function storeAsset(
   db: Db,
   input: ImageAssetInput,
@@ -1502,8 +1504,9 @@ export async function deleteExpiredAsset(
   assetId: string,
   now = new Date(),
 ): Promise<boolean> {
+  if (await assetRequiredByPreparedWork(db, assetId)) return false;
   const claimed = await collections(db).assets.findOneAndUpdate(
-    { id: assetId, expiresAt: { $lte: now } },
+    { id: assetId, expiresAt: { $lte: now }, $or: [{ retainedUntil: { $exists: false } }, { retainedUntil: { $lte: now } }] },
     { $set: { purgeClaimedAt: new Date() } },
   );
   if (!claimed) return false;
@@ -1515,6 +1518,10 @@ export async function deleteAsset(db: Db, assetId: string): Promise<void> {
   const assets = collections(db).assets;
   const asset = await assets.findOne({ id: assetId });
   if (!asset) return;
+  if ((asset.retainedUntil && asset.retainedUntil.getTime() > Date.now()) || await assetRequiredByPreparedWork(db, assetId)) {
+    await assets.updateOne({ id: assetId }, { $set: { visibility: "private" } });
+    return;
+  }
   if (asset.cloudinaryPublicId) {
     const deliveryType = asset.cloudinaryDeliveryType ?? "authenticated";
     await cloudinaryClient().uploader.destroy(asset.cloudinaryPublicId, {

@@ -33,7 +33,8 @@ async function fixture(t) {
     await put(`apps/web/${path}`, "export {};\n");
   for (const path of ["vercel-build.mjs", "migrate-image-pipeline.mjs", "migrate-asset-visibility.mjs",
     "migrate-cutout-provenance.mjs", "production-preflight.mjs", "production-preflight-policy.mjs", "production-smoke.mjs",
-    "render-worker.ts", "prepare-release-candidate.mjs", "check-spatial-matting.mjs"])
+    "render-worker.ts", "prepare-release-candidate.mjs", "check-spatial-matting.mjs",
+    "migrate-oriented-views.ts", "oriented-readiness.mjs"])
     await put(`apps/web/scripts/${path}`, "export {};\n");
   for (const path of ["apps/web/app/page.tsx", "apps/web/components/example.tsx", "apps/web/lib/example.ts", "apps/web/public/widget.js"])
     await put(path, "export const example = 1;\n");

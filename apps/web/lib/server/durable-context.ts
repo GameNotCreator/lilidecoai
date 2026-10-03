@@ -9,6 +9,7 @@ import {
 } from "./storefront-render-deadline";
 
 export const DURABLE_ENGINE_VERSION = "render-durable-v2";
+/** End-to-end budget from admission, including time spent waiting for a worker. */
 export interface DurableContext {
   render: RenderDocument;
   token: string;
@@ -55,13 +56,13 @@ export function renderDeadline(startedAt: number): number {
   return render?.execution ? effectiveRenderDeadline(render) : startedAt + 285_000;
 }
 
-/** Each provider keeps its own timeout and also observes the shop's hard stop. */
+/** Each provider retains its own timeout while observing the public hard stop. */
+export function durableAbortSignal(signal: AbortSignal): AbortSignal;
+export function durableAbortSignal(signal?: AbortSignal): AbortSignal | undefined;
 export function durableAbortSignal(signal?: AbortSignal): AbortSignal | undefined {
   const deadlineSignal = durableContext.getStore()?.signal;
   return deadlineSignal
-    ? signal
-      ? AbortSignal.any([signal, deadlineSignal])
-      : deadlineSignal
+    ? signal ? AbortSignal.any([signal, deadlineSignal]) : deadlineSignal
     : signal;
 }
 

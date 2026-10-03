@@ -72,7 +72,7 @@ export const spatialPreviewSchema = z.object({
   assumptions: z.array(z.string()),
 });
 export type SpatialPreview = z.infer<typeof spatialPreviewSchema>;
-export const renderEngineSchema = z.enum(["legacy", "spatial"]);
+export const renderEngineSchema = z.enum(["legacy", "spatial", "oriented"]);
 export const spatialProductMetadataSchema = z
   .object({
     measurementConvention: z.string().trim().min(1).max(500),

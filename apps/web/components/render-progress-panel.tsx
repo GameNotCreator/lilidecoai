@@ -15,12 +15,14 @@ export function RenderProgressPanel({
   trackingIssue,
   onRefresh,
   panelRef,
+  refreshing = false,
 }: {
   render: Render;
   sceneUrl: string;
   trackingIssue: RenderTrackingIssue | null;
   onRefresh: () => void;
   panelRef: Ref<HTMLDivElement>;
+  refreshing?: boolean;
 }) {
   const [now, setNow] = useState<number | null>(null);
   const [showOriginal, setShowOriginal] = useState(false);
@@ -35,6 +37,7 @@ export function RenderProgressPanel({
     deadlineAt > acceptedAt &&
     deadlineAt <= acceptedAt + REQUEST_LIMIT_MS;
   const limitReached =
+    boundedRequest &&
     now !== null &&
     Number.isFinite(acceptedAt) &&
     now >= acceptedAt + REQUEST_LIMIT_MS;
@@ -42,13 +45,8 @@ export function RenderProgressPanel({
     const tick = () => {
       const current = Date.now();
       setNow(current);
-      if (
-        Number.isFinite(acceptedAt) &&
-        current >= acceptedAt + REQUEST_LIMIT_MS
-      )
-        window.clearInterval(timer);
     };
-    const timer = window.setInterval(tick, 5000);
+    const timer = window.setInterval(tick, 1000);
     const firstTick = window.setTimeout(tick, 0);
     const limitTick = Number.isFinite(acceptedAt)
       ? window.setTimeout(
@@ -85,7 +83,12 @@ export function RenderProgressPanel({
         : "Visualisation en préparation";
 
   return (
-    <div className="render-progress-panel" ref={panelRef}>
+    <div
+      className="render-progress-panel focus:outline-none"
+      ref={panelRef}
+      tabIndex={-1}
+      aria-label="Suivi de votre visualisation"
+    >
       <div
         className="render-progress-heading"
         role="status"
@@ -236,11 +239,6 @@ export function RenderProgressPanel({
               Vérification du résultat de votre demande. Vous pouvez consulter
               son état sans créer une nouvelle visualisation.
             </p>
-            {!trackingIssue && (
-              <button type="button" onClick={onRefresh}>
-                <RefreshCw size={15} aria-hidden="true" /> Vérifier maintenant
-              </button>
-            )}
           </div>
         )}
         {trackingIssue ? (
@@ -255,9 +253,6 @@ export function RenderProgressPanel({
                 : "Le suivi doit être vérifié"}
             </strong>
             <p>{trackingIssue.message}</p>
-            <button type="button" onClick={onRefresh}>
-              <RefreshCw size={15} aria-hidden="true" /> Vérifier maintenant
-            </button>
           </div>
         ) : (
           !limitReached && (
@@ -265,25 +260,38 @@ export function RenderProgressPanel({
               {boundedRequest
                 ? "Jusqu’à 3 minutes pour créer et vérifier votre image."
                 : "La création de l’image et sa vérification peuvent prendre quelques minutes."}{" "}
-              Gardez cette page ouverte : le résultat s’affichera ici dès qu’il
-              sera prêt.
+              Le résultat s’affichera ici dès qu’il sera prêt.
             </p>
           )
         )}
+        <p className="render-progress-elapsed" aria-live="off">
+          <Clock3 size={15} aria-hidden="true" />
+          {elapsed ? (
+            <>
+              Temps écoulé · <span>{elapsed}</span>
+            </>
+          ) : (
+            "Demande enregistrée"
+          )}
+        </p>
+        <button
+          type="button"
+          className="btn btn-outline min-h-11 w-full whitespace-normal"
+          onClick={onRefresh}
+          disabled={refreshing}
+        >
+          <RefreshCw
+            size={16}
+            aria-hidden="true"
+            className={refreshing ? "motion-safe:animate-spin" : undefined}
+          />
+          {refreshing ? "Actualisation du suivi…" : "Actualiser le suivi"}
+        </button>
+        <p className="mt-2 text-xs text-base-content/70">
+          Cette action consulte votre demande sans relancer la génération.
+        </p>
         <details className="render-progress-request-details">
           <summary>Détails de la demande</summary>
-          <p className="render-progress-elapsed" aria-live="off">
-            <Clock3 size={15} aria-hidden="true" />
-            {limitReached ? (
-              "Limite atteinte · 3 min"
-            ) : elapsed ? (
-              <>
-                Temps écoulé · <span>{elapsed}</span>
-              </>
-            ) : (
-              "Demande enregistrée"
-            )}
-          </p>
           <p>
             Les étapes indiquent l’état reçu du traitement. La durée écoulée ne
             prédit pas le temps restant.

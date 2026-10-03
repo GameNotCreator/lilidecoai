@@ -25,6 +25,21 @@ const googleApiKey =
   clean(process.env.GOOGLE_AI_API_KEY) ?? clean(process.env.GEMINI_API_KEY);
 const openAIEnabled = clean(process.env.OPENAI_IMAGE_ENABLED) === "true";
 const explicitMockMode = clean(process.env.AI_MOCK_MODE);
+const simplePointImageProvider =
+  clean(process.env.SIMPLE_POINT_IMAGE_PROVIDER) === "myarchitectai"
+    ? ("myarchitectai" as const)
+    : ("openai" as const);
+
+function boundedPositive(
+  value: string | undefined,
+  fallback: number,
+  max: number,
+) {
+  const parsed = Number(clean(value));
+  return Number.isFinite(parsed) && parsed > 0
+    ? Math.min(parsed, max)
+    : fallback;
+}
 
 // In production the shared demo organization must be an explicit opt-in: a
 // missing or empty DEMO_MODE previously enabled it (fail-open).
@@ -48,8 +63,12 @@ function openAIQuality(): "low" | "medium" | "high" | "xhigh" | "max" {
 }
 
 export const serverConfig = {
-  merchantSignupEnabled: clean(process.env.MERCHANT_SIGNUP_ENABLED) === "true" ||
-    (process.env.NODE_ENV !== "production" && clean(process.env.MERCHANT_SIGNUP_ENABLED) !== "false"),
+  orientedOrganizationIds: (clean(process.env.ORIENTED_ORGANIZATION_IDS) ?? "").split(",").map(id => id.trim()).filter(Boolean),
+  orientedProductIds: (clean(process.env.ORIENTED_PRODUCT_IDS) ?? "").split(",").map(id => id.trim()).filter(Boolean),
+  merchantSignupEnabled:
+    clean(process.env.MERCHANT_SIGNUP_ENABLED) === "true" ||
+    (process.env.NODE_ENV !== "production" &&
+      clean(process.env.MERCHANT_SIGNUP_ENABLED) !== "false"),
   // Internal opt-in only; anonymous storefront sessions remain excluded.
   spatialOrganizationIds: (clean(process.env.SPATIAL_ORGANIZATION_IDS) ?? "")
     .split(",")
@@ -90,9 +109,24 @@ export const serverConfig = {
   ),
   imagePipelineMode: clean(process.env.IMAGE_PIPELINE_MODE) ?? "google_hybrid",
   openAIImageEnabled: openAIEnabled,
+  simplePointImageProvider,
+  myArchitectAIApiKey: clean(process.env.MYARCHITECTAI_API_KEY),
+  myArchitectAITimeoutMs: boundedPositive(
+    process.env.MYARCHITECTAI_TIMEOUT_MS,
+    120_000,
+    180_000,
+  ),
+  myArchitectAIEditCostUsd: boundedPositive(
+    process.env.MYARCHITECTAI_EDIT_COST_USD,
+    0.03,
+    5,
+  ),
   aiMockMode:
     explicitMockMode === "true" ||
-    (explicitMockMode !== "false" && !googleApiKey && !openAIEnabled),
+    (explicitMockMode !== "false" &&
+      !googleApiKey &&
+      !openAIEnabled &&
+      simplePointImageProvider !== "myarchitectai"),
   openaiApiKey: clean(process.env.OPENAI_API_KEY),
   openaiModel: clean(process.env.OPENAI_MODEL) ?? "gpt-image-2.5-sunburst",
   // Isolated storefront products require native alpha. Keep older/private
@@ -158,6 +192,8 @@ export function paidImageProviderConfigured(): boolean {
   if (serverConfig.aiMockMode) return false;
   return Boolean(
     serverConfig.googleApiKey ||
+    (serverConfig.simplePointImageProvider === "myarchitectai" &&
+      serverConfig.myArchitectAIApiKey) ||
     (serverConfig.openAIImageEnabled && serverConfig.openaiApiKey),
   );
 }

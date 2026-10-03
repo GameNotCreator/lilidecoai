@@ -35,6 +35,11 @@ export type RenderStage =
   | "model_input"
   | "model_mask"
   | "model_output"
+  | "hybrid_rejected"
+  | "hybrid_repair_output"
+  | "hybrid_pose_output"
+  | "hybrid_room_refinement_output"
+  | "hybrid_room_refinement_guide"
   | "final_rejected";
 
 export function stageCaptureEnabled(): boolean {

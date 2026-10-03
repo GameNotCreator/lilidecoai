@@ -247,6 +247,8 @@ export async function assertRenderBudget(
   renderId: string,
   nextStepCostUsd: number,
 ): Promise<void> {
+  // Budget d'estimations fournisseur, distinct du crédit client réservé.
+  // Le coût prévu est inclus avant l'appel ; aucune facture n'est rapprochée ici.
   if (!Number.isFinite(nextStepCostUsd) || nextStepCostUsd < 0)
     throw new Error("Réserve de coût invalide.");
   const budget = renderBudgetUsd();

@@ -39,6 +39,8 @@ export interface StorefrontScenePreflightInput {
   room: VisualImage;
   points: Array<{ point: { x: number; y: number }; kind: SimplePlacementKind }>;
   deadlineMs: number;
+  /** Versioned storefront contracts permit one longer analysis, never a retry. */
+  timeoutMs?: 25_000 | 35_000 | 45_000;
   reference?: StorefrontScaleReference;
   /** Opt-in: one real product height per requested point, in the same order. */
   productHeightsCm?: number[];
@@ -219,6 +221,7 @@ export async function inspectStorefrontScene(
   if (!pointsSchema.safeParse(input.points).success ||
     (input.reference && !referenceSchema.safeParse(input.reference).success) ||
     !Number.isFinite(input.deadlineMs) ||
+    (input.timeoutMs !== undefined && ![25_000, 35_000, 45_000].includes(input.timeoutMs)) ||
     !["image/jpeg", "image/png", "image/webp"].includes(input.room.mimeType) ||
     input.room.data.byteLength === 0 || input.room.data.byteLength > 32_000_000)
     throw new VisualReviewError("invalid_input", "Photo, points ou référence invalides.");
@@ -227,7 +230,7 @@ export async function inspectStorefrontScene(
   if (!serverConfig.openaiApiKey || serverConfig.aiMockMode)
     throw new VisualReviewError("unavailable", "L’analyse de la pièce n’est pas configurée.");
   const startedAt = Date.now();
-  const deadline = Math.min(startedAt + STOREFRONT_SCENE_PREFLIGHT_TIMEOUT_MS, input.deadlineMs);
+  const deadline = Math.min(startedAt + (input.timeoutMs ?? STOREFRONT_SCENE_PREFLIGHT_TIMEOUT_MS), input.deadlineMs);
   if (deadline - startedAt < 2_000)
     throw new VisualReviewError("deadline", "Temps insuffisant pour analyser la pièce.");
 

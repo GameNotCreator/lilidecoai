@@ -11,7 +11,7 @@ class SmokeError extends Error {
 
 /** Storage/authentication checks only; no vision, image or render API calls. */
 export async function runProductionSmoke({
-  baseUrl, bypassToken, expectedImageModel = DEFAULT_IMAGE_MODEL,
+  baseUrl, bypassToken, expectedImageModel, expectedImageProvider = "openai",
   expectedExecutionMode, fetcher = globalThis.fetch, log = () => {}, timeoutMs = 45_000,
 } = {}) {
   const report = { status: "running", passed: 0, paidGenerationCalls: 0, paidVisionCalls: 0, cleanup: { status: "not-needed" } };
@@ -25,6 +25,8 @@ export async function runProductionSmoke({
   verify("HTTPS sans identifiants dans l'URL", base.protocol === "https:" && !base.username &&
     !base.password && !base.search && !base.hash && base.pathname === "/");
   verify("délai borné", Number.isInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 45_000);
+  verify("fournisseur attendu connu", ["openai", "myarchitectai"].includes(expectedImageProvider));
+  const imageModel = expectedImageModel ?? (expectedImageProvider === "myarchitectai" ? "edit-by-prompt" : DEFAULT_IMAGE_MODEL);
   if (bypassToken !== undefined) verify("protection Vercel bornée", base.hostname.endsWith(".vercel.app") &&
     typeof bypassToken === "string" && bypassToken.length > 0 && bypassToken.length <= 8192 && !/[\r\n]/.test(bypassToken));
   const request = async (path, options = {}) => {
@@ -47,7 +49,14 @@ export async function runProductionSmoke({
     const health = await json(healthResponse);
     verify("MongoDB et stockage configurés", health.database === "mongodb" && health.storage === "cloudinary");
     verify("authentification et IA de production", health.authentication === "required" &&
-      health.imagePipeline?.mockMode === false && health.imagePipeline.activeDemoModel === expectedImageModel);
+      health.imagePipeline?.mockMode === false && health.imagePipeline.activeDemoModel === imageModel);
+    verify("fournisseur image sélectionné", health.imagePipeline.activeDemoProvider === expectedImageProvider);
+    verify("vision OpenAI configurée", (health.imagePipeline.visionConfigured ?? health.imagePipeline.openAIConfigured) === true);
+    if (expectedImageProvider === "myarchitectai") verify("génération hybride configurée",
+      health.imagePipeline.myArchitectAIConfigured === true && health.imagePipeline.openAIConfigured === true &&
+      health.imagePipeline.openAIEnabled === true);
+    report.imageProvider = expectedImageProvider;
+    report.imageModel = imageModel;
     if (expectedExecutionMode) verify("mode du worker", health.imagePipeline.executionMode === expectedExecutionMode);
     for (const path of ["/", "/panier", "/visualiser", "/login"])
       verify("page " + path, (await request(path)).status === 200);
@@ -64,7 +73,10 @@ export async function runProductionSmoke({
       catalog.products.every(product => UUID.test(product.id) && typeof product.visualizationAvailable === "boolean"));
     verify("catalogue sans cache périmé", catalogResponse.headers.get("cache-control") === "no-store");
     report.catalogProductCount = catalog.products.length;
+    report.eligibleProductCount = catalog.products.filter(product => product.visualizationAvailable).length;
     report.visualizationAvailable = catalog.visualization.available;
+    verify("visualisation annoncée disponible avec au moins un produit éligible",
+      !report.visualizationAvailable || report.eligibleProductCount > 0);
     async function session() {
       const response = await request("/api/storefront/session", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
@@ -162,7 +174,8 @@ async function main() {
     const report = await runProductionSmoke({
       baseUrl: process.argv[2],
       bypassToken: process.argv[3] ? readFileSync(process.argv[3], "utf8").trim() : undefined,
-      expectedImageModel: process.env.SMOKE_EXPECTED_IMAGE_MODEL || DEFAULT_IMAGE_MODEL,
+      expectedImageModel: process.env.SMOKE_EXPECTED_IMAGE_MODEL || undefined,
+      expectedImageProvider: process.env.SMOKE_EXPECTED_IMAGE_PROVIDER || "openai",
       expectedExecutionMode: process.env.SMOKE_EXPECTED_EXECUTION_MODE,
       log: message => console.log(message),
     });

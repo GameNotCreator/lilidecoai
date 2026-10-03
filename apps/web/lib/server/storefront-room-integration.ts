@@ -6,6 +6,21 @@ export const STOREFRONT_ROOM_INTEGRATION_COMPOSITE_VERSION =
   "storefront-room-integration-v5";
 export const STOREFRONT_LOCAL_ROOM_INTEGRATION_COMPOSITE_VERSION =
   "storefront-room-local-integration-v6";
+export const STOREFRONT_ROOM_REFINEMENT_COMPOSITE_VERSION =
+  "storefront-room-refinement-region-v1";
+export const STOREFRONT_NATIVE_ROOM_REFINEMENT_FRAME_VERSION =
+  "storefront-room-refinement-native-frame-v1";
+export const STOREFRONT_NATIVE_ROOM_REFINEMENT_GUIDE_VERSION =
+  "storefront-room-refinement-native-guide-v2";
+
+export interface NativeRoomRefinementFrame {
+  image: Buffer;
+  maskPng: Buffer;
+  frame: { width: number; height: number };
+  /** One uniform source-padded to native-image transform, before raster rounding. */
+  scale: number;
+  padding: { x: number; y: number };
+}
 
 export interface StorefrontRoomIntegrationWindow {
   left: number;
@@ -40,6 +55,7 @@ function validateComposition(composition: SimpleComposition) {
 export function roomIntegrationEditComposition(
   composition: SimpleComposition,
   objects: StorefrontPerspectiveGuideObject[],
+  replacements: Array<{ xMin: number; yMin: number; xMax: number; yMax: number }> = [],
 ): SimpleComposition {
   validateComposition(composition);
   if (!Array.isArray(objects) || objects.length < 1 || objects.length > 3) throw invalid();
@@ -99,7 +115,186 @@ export function roomIntegrationEditComposition(
             maskRaw[(y * width + x) * 4 + 3] = 0;
     }
   }
+  if (replacements.length > objects.length) throw invalid();
+  for (const box of replacements) {
+    if (!box || ![box.xMin, box.yMin, box.xMax, box.yMax].every(value => Number.isFinite(value) && value >= 0 && value <= 1) ||
+        box.xMax <= box.xMin || box.yMax <= box.yMin ||
+        (box.xMax - box.xMin) * (box.yMax - box.yMin) > 0.35) throw invalid();
+    clearRectangle(box.xMin * width, box.yMin * height, box.xMax * width, box.yMax * height);
+  }
   return { ...composition, imageWebp: composition.sceneWebp!, baseWebp: composition.sceneWebp!, maskRaw };
+}
+
+/** Opt-in region for a complete photographic correction. Space around each
+ * estimated volume permits the model to reconstruct perspective and contact
+ * without cutting its base at the old narrow mask. This is an authorisation
+ * region, never evidence that the generated object has the correct geometry. */
+export function roomRefinementEditComposition(
+  composition: SimpleComposition,
+  objects: StorefrontPerspectiveGuideObject[],
+  replacements: Array<{ xMin: number; yMin: number; xMax: number; yMax: number }> = [],
+): SimpleComposition {
+  // Keep the historical validation and initial volume/replacement union intact.
+  const validated = roomIntegrationEditComposition(composition, objects, replacements);
+  const { sceneWidth: width, sceneHeight: height } = validated;
+  const maskRaw = Buffer.from(validated.maskRaw);
+  const clearRectangle = (left: number, top: number, right: number, bottom: number) => {
+    for (let y = Math.max(0, Math.floor(top)); y < Math.min(height, Math.ceil(bottom)); y++)
+      for (let x = Math.max(0, Math.floor(left)); x < Math.min(width, Math.ceil(right)); x++)
+        maskRaw[(y * width + x) * 4 + 3] = 0;
+  };
+  for (const object of objects) {
+    // Expand each object separately: distant products do not authorise editing
+    // every unrelated pixel in the rectangle between them.
+    const bounds = editableBounds(roomIntegrationEditComposition(composition, [object]));
+    const extent = Math.max(object.dimensionsCm.width * object.widthPixelsPerCm!,
+      object.dimensionsCm.height * object.pixelsPerCm,
+      object.dimensionsCm.depth * object.widthPixelsPerCm!);
+    const margin = Math.min(64, Math.max(12, Math.ceil(extent * 0.5)));
+    clearRectangle(bounds.left - margin, bounds.top - margin, bounds.right + margin, bounds.bottom + margin);
+  }
+  for (const box of replacements) {
+    // Confirmed removal includes room for the object's immediate contact and
+    // edge reconstruction, while distant architecture stays protected.
+    const margin = Math.min(32, Math.max(8, Math.ceil(Math.min(
+      (box.xMax - box.xMin) * width, (box.yMax - box.yMin) * height) * 0.15)));
+    clearRectangle(box.xMin * width - margin, box.yMin * height - margin,
+      box.xMax * width + margin, box.yMax * height + margin);
+  }
+  return { ...validated, maskRaw };
+}
+
+/** Prepare an opaque provider photograph for a second image edit. Its mask
+ * and photograph must use the exact same padded canvas; resize uniformly only,
+ * reject altered crops/aspects instead of stretching them into alignment. */
+export async function prepareRoomRefinementBase(
+  padded: PaddedComposition,
+  generated: Buffer,
+): Promise<Buffer> {
+  if (!padded || !dimension(padded.paddedWidth) || !dimension(padded.paddedHeight) ||
+      padded.paddedWidth * padded.paddedHeight > 16_000_000 ||
+      !Number.isSafeInteger(padded.offsetX) || padded.offsetX < 0 || padded.offsetX >= padded.paddedWidth ||
+      !Number.isSafeInteger(padded.offsetY) || padded.offsetY < 0 || padded.offsetY >= padded.paddedHeight ||
+      !Buffer.isBuffer(generated) || !generated.length || generated.length > 32_000_000) throw invalid();
+  const source = sharp(generated, { limitInputPixels: 16_000_000 });
+  const metadata = await source.metadata();
+  if (!metadata.width || !metadata.height || !["png", "jpeg", "webp"].includes(metadata.format ?? "") ||
+      (metadata.pages ?? 1) !== 1 || (metadata.orientation !== undefined && metadata.orientation !== 1) ||
+      Math.abs(metadata.height * padded.paddedWidth / metadata.width - padded.paddedHeight) > 0.5) throw invalid();
+  if (metadata.hasAlpha && (await source.stats()).channels.at(-1)?.min !== 255)
+    throw new Error("La correction nécessite une photographie entièrement opaque.");
+  const result = await source.resize({ width: padded.paddedWidth }).removeAlpha()
+    .toColourspace("srgb").png().toBuffer({ resolveWithObject: true });
+  if (result.info.width !== padded.paddedWidth || result.info.height !== padded.paddedHeight || result.info.channels !== 3)
+    throw invalid();
+  return result.data;
+}
+
+/** Opt-in native-resolution bridge between providers. Retain every decoded
+ * photograph pixel and scale only the binary edit mask. Coordinates supplied
+ * to the next provider use this same uniform scale; restoration still uses
+ * the original padded frame, never the native frame as a room-pixel window. */
+export async function prepareNativeRoomRefinementFrame(
+  padded: PaddedComposition,
+  generated: Buffer,
+): Promise<NativeRoomRefinementFrame> {
+  if (!padded || !dimension(padded.paddedWidth) || !dimension(padded.paddedHeight) ||
+      padded.paddedWidth * padded.paddedHeight > 16_000_000 ||
+      !Number.isSafeInteger(padded.offsetX) || padded.offsetX < 0 || padded.offsetX >= padded.paddedWidth ||
+      !Number.isSafeInteger(padded.offsetY) || padded.offsetY < 0 || padded.offsetY >= padded.paddedHeight ||
+      !Buffer.isBuffer(padded.maskPng) || !padded.maskPng.length || padded.maskPng.length > 32_000_000 ||
+      !Buffer.isBuffer(generated) || !generated.length || generated.length > 32_000_000) throw invalid();
+  const source = sharp(generated, { limitInputPixels: 16_000_000 });
+  const maskSource = sharp(padded.maskPng, { limitInputPixels: 16_000_000 });
+  const [metadata, maskMetadata] = await Promise.all([source.metadata(), maskSource.metadata()]);
+  if (!dimension(metadata.width) || !dimension(metadata.height) ||
+      metadata.width * metadata.height > 16_000_000 ||
+      !["png", "jpeg", "webp"].includes(metadata.format ?? "") || (metadata.pages ?? 1) !== 1 ||
+      (metadata.orientation !== undefined && metadata.orientation !== 1) ||
+      maskMetadata.format !== "png" || !maskMetadata.hasAlpha || (maskMetadata.pages ?? 1) !== 1 ||
+      (maskMetadata.orientation !== undefined && maskMetadata.orientation !== 1) ||
+      maskMetadata.width !== padded.paddedWidth || maskMetadata.height !== padded.paddedHeight) throw invalid();
+  const scale = metadata.width / padded.paddedWidth;
+  // At most raster rounding, not a second independent vertical scale or crop.
+  if (Math.abs(padded.paddedHeight * scale - metadata.height) > 0.5 ||
+      Math.round(padded.paddedHeight * scale) !== metadata.height) throw invalid();
+  if (metadata.hasAlpha && (await source.stats()).channels.at(-1)?.min !== 255)
+    throw new Error("La correction nécessite une photographie entièrement opaque.");
+  const alpha = await maskSource.ensureAlpha().extractChannel(3).raw().toBuffer();
+  if (alpha.some(value => value !== 0 && value !== 255)) throw invalid();
+  const [image, scaledAlpha] = await Promise.all([
+    source.removeAlpha().toColourspace("srgb").png().toBuffer(),
+    sharp(alpha, { raw: { width: padded.paddedWidth, height: padded.paddedHeight, channels: 1 } })
+      .resize({ width: metadata.width, kernel: "nearest" }).greyscale().raw().toBuffer({ resolveWithObject: true }),
+  ]);
+  if (scaledAlpha.info.width !== metadata.width || scaledAlpha.info.height !== metadata.height ||
+      scaledAlpha.info.channels !== 1 || scaledAlpha.data.some(value => value !== 0 && value !== 255)) throw invalid();
+  const nativeMask = Buffer.alloc(metadata.width * metadata.height * 4, 255);
+  for (let pixel = 0; pixel < scaledAlpha.data.length; pixel++) nativeMask[pixel * 4 + 3] = scaledAlpha.data[pixel]!;
+  const maskPng = await sharp(nativeMask, { raw: { width: metadata.width, height: metadata.height, channels: 4 } })
+    .png().toBuffer();
+  return { image, maskPng, frame: { width: metadata.width, height: metadata.height }, scale,
+    padding: { x: padded.offsetX * scale, y: padded.offsetY * scale } };
+}
+
+/** Separate reference image only: never replace the unmarked editable input.
+ * Every marker uses the native image's pixel frame without another scale or
+ * rounding. The red cross is the requested contact/centre; blue lateral ticks
+ * show only the target width, not a silhouette, volume or editable boundary. */
+export async function buildNativeRoomRefinementGuide(input: {
+  image: Buffer;
+  frame: { width: number; height: number };
+  contactPixel: { x: number; y: number };
+  physicalWidthPx: number;
+  kind?: "standing" | "wall" | "flat";
+}): Promise<Buffer> {
+  if (!input || !input.frame || !dimension(input.frame.width) || !dimension(input.frame.height) ||
+      input.frame.width * input.frame.height > 16_000_000 ||
+      !Buffer.isBuffer(input.image) || !input.image.length || input.image.length > 32_000_000 ||
+      !input.contactPixel || ![input.contactPixel.x, input.contactPixel.y].every(Number.isFinite) ||
+      input.contactPixel.x < 0 || input.contactPixel.x > input.frame.width ||
+      input.contactPixel.y < 0 || input.contactPixel.y > input.frame.height ||
+      !positive(input.physicalWidthPx) || input.physicalWidthPx > input.frame.width ||
+      (input.kind !== undefined && !["standing", "wall", "flat"].includes(input.kind))) throw invalid();
+  const source = sharp(input.image, { limitInputPixels: 16_000_000 });
+  const metadata = await source.metadata();
+  if (metadata.width !== input.frame.width || metadata.height !== input.frame.height ||
+      !["png", "jpeg", "webp"].includes(metadata.format ?? "") || (metadata.pages ?? 1) !== 1 ||
+      (metadata.orientation !== undefined && metadata.orientation !== 1)) throw invalid();
+  if (metadata.hasAlpha && (await source.stats()).channels.at(-1)?.min !== 255)
+    throw new Error("Le guide nécessite une photographie entièrement opaque.");
+  const { width, height } = input.frame, { x, y } = input.contactPixel;
+  const left = x - input.physicalWidthPx / 2, right = x + input.physicalWidthPx / 2;
+  const textX = width < 160 ? width / 2 : Math.max(80, Math.min(width - 80, x));
+  const labelY = (wanted: number) => Math.max(18, Math.min(height - 6, wanted));
+  const widthMarks = `M ${left} ${y - 12} V ${y + 12} M ${left} ${y} H ${left + 8} M ${right} ${y - 12} V ${y + 12} M ${right} ${y} H ${right - 8}`;
+  const cross = `M ${x - 16} ${y} H ${x + 16} M ${x} ${y - 16} V ${y + 16}`;
+  const label = input.kind === "wall" || input.kind === "flat" ? "POINT" : "BASE";
+  // Serverless images have no guaranteed system fonts. These fixed outlines
+  // keep diagnostic guidance legible without text rendering or font lookup.
+  const glyphs: Record<string, string> = {
+    W: "M0 0L2 14L5 7L8 14L10 0", I: "M1 0H9M5 0V14M1 14H9",
+    D: "M0 0V14H4Q10 14 10 7Q10 0 4 0Z", T: "M0 0H10M5 0V14",
+    H: "M0 0V14M10 0V14M0 7H10", A: "M0 14L5 0L10 14M2 9H8",
+    B: "M0 0V14M0 0H5Q10 0 10 3.5Q10 7 5 7H0M5 7Q10 7 10 10.5Q10 14 5 14H0",
+    S: "M10 1Q6 -1 2 1Q-2 6 5 7Q12 8 9 13Q5 16 0 13",
+    E: "M10 0H0V14H10M0 7H8", P: "M0 14V0H5Q10 0 10 3.5Q10 7 5 7H0",
+    O: "M5 0Q0 0 0 7Q0 14 5 14Q10 14 10 7Q10 0 5 0Z",
+    N: "M0 14V0L10 14V0",
+  };
+  const vectorLabel = (word: string, baseline: number, colour: string) => {
+    const start = textX - (word.length * 14 - 4) / 2;
+    const paths = [...word].map((letter, index) =>
+      `<path d="${glyphs[letter]}" transform="translate(${start + index * 14} ${baseline - 14})"/>`).join("");
+    return `<g fill="none" stroke-linecap="round" stroke-linejoin="round"><g stroke="white" stroke-width="6">${paths}</g><g stroke="${colour}" stroke-width="2.5">${paths}</g></g>`;
+  };
+  const overlay = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+    <g fill="none" stroke-linecap="round"><path d="${widthMarks}" stroke="white" stroke-width="7"/><path d="${widthMarks}" stroke="#0057c8" stroke-width="3"/>
+    <circle cx="${x}" cy="${y}" r="12" stroke="white" stroke-width="7"/><path d="${cross}" stroke="white" stroke-width="7"/>
+    <circle cx="${x}" cy="${y}" r="12" stroke="#e00028" stroke-width="3"/><path d="${cross}" stroke="#e00028" stroke-width="3"/></g>
+    ${vectorLabel("WIDTH", labelY(y - 28), "#0057c8")}${vectorLabel(label, labelY(y + 40), "#e00028")}
+  </svg>`);
+  return source.removeAlpha().toColourspace("srgb").composite([{ input: overlay }]).removeAlpha().png().toBuffer();
 }
 
 /** Restore only the allowed full-scene edit, preserving every exterior RGB pixel. */

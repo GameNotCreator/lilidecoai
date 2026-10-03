@@ -49,6 +49,7 @@ const scaleReferenceSchema = z
   });
 export type StorefrontScaleReference = z.infer<typeof scaleReferenceSchema>;
 export interface StorefrontPlacementReviewOptions {
+  replacement?: boolean;
   realism?: boolean;
   /** Opt-in only for photographic insertion; historical reviews retain v1/v2. */
   fastReview?: boolean;
@@ -154,10 +155,15 @@ export const storefrontRoomIntegrationReviewSchema =
     ).min(1).max(3),
   }).strict();
 
+export const storefrontReplacementReviewSchema = storefrontRoomIntegrationReviewSchema
+  .extend({ replacementComplete: evidence }).strict();
+
 function validateReviewContract(
   products: StorefrontPlacementReviewProduct[],
   options: StorefrontPlacementReviewOptions,
 ) {
+  if (options.replacement && (options.roomIntegration !== true || options.realism !== true))
+    throw new VisualReviewError("invalid_input", "Le remplacement exige le contrôle complet d’intégration dans la pièce.");
   if (options.roomIntegration === true &&
       (options.realism !== true || options.detailReview === true))
     throw new VisualReviewError(
@@ -290,7 +296,9 @@ export function parseStorefrontPlacementReview(
   options: StorefrontPlacementReviewOptions = {},
 ): QualityDecision {
   validateReviewContract(products, options);
-  const data = options.roomIntegration === true
+  const data = options.replacement === true
+    ? storefrontReplacementReviewSchema.parse(payload)
+    : options.roomIntegration === true
     ? storefrontRoomIntegrationReviewSchema.parse(payload)
     : options.realism
     ? storefrontRealisticPlacementReviewSchema.parse(payload)
@@ -319,6 +327,8 @@ export function parseStorefrontPlacementReview(
   add("photo_usable", data.photoUsable);
   add("background_preserved", data.backgroundPreserved);
   add("no_unrequested_products", data.noUnrequestedProducts);
+  if (options.replacement && "replacementComplete" in data)
+    add("replacement_complete", data.replacementComplete as z.infer<typeof evidence>);
   evidenceChecks.push({
     name: "review.confidence",
     score: data.confidence,
@@ -520,7 +530,7 @@ export async function reviewStorefrontPlacement(
     : undefined;
   const fastReview = input.fastReview || input.detailReview === true || input.roomIntegration === true;
   if (
-    input.replacement ||
+    (input.replacement && input.roomIntegration !== true) ||
     input.products.some((product) => product.expectedGeometry) ||
     input.products.length < 1 ||
     input.products.length > 3
@@ -589,7 +599,7 @@ export async function reviewStorefrontPlacement(
                 ? " The single GENERATED PRODUCT VIEW DETAIL WITH COLUMN IDS image is the native generated view before uniform resizing, presented on a neutral grey matte without changing its pose or dimensions; columns run left to right in the supplied placement-ID order. The grey background is a display matte, not room evidence. Use it only to resolve high-resolution pose and product details, including small crowns, lids, handles and motifs. Original catalogue images remain authoritative for identity. The FINAL PLACEMENT TO VERIFY image remains authoritative for actual presence, observedBox, observedContact, placement, size, support, occlusion and preserved background; detail columns have no room scale or placement meaning. Never accept a product based on the native detail alone, and reject contradictions in the final composite even if the native detail looks correct. Compare visible pose with actual room and support-plane evidence; do not force an exact inferred angle or copy a supplied estimate as proof. Keep all 13 photographic checks, confidence requirements and acceptance thresholds unchanged."
                 : "") + (input.roomIntegration === true
                 ? " supportIntegration is a REQUIRED independent check for each product, assessed ONLY in FINAL PLACEMENT TO VERIFY against ORIGINAL ROOM and catalogue identity. Verify a coherent physical footprint on the actual visible support, minimum contact shading or ambient occlusion when needed for attachment, credible body volume in the room camera, relative depth, scale and correct foreground/background occlusion. A sharp isolated product, attractive texture, preserved background pixels and exact bottom anchor DO NOT establish support integration. Reject an obvious pasted sticker, floating or disconnected base, a footprint inconsistent with the floor/support plane, implausible volume/depth or a wrong occlusion relationship even if every previous check passes. The known failure is a clean woven basket pasted at the right point with no interaction with the floor: this must fail supportIntegration. Name concrete observed support evidence in the reason, and fail when it cannot be established. Never use an isolated native product view, a planned bounding box, or a supplied pose/scale estimate as evidence of final integration. Product position, physical scale and source identity remain mandatory; do not trade any of them for a shadow. Evaluate indispensable contact, not aesthetic shadow style or exact inferred angles. Keep the existing 13 photographic checks and all thresholds unchanged. "
-                : ""),
+                : "") + (input.replacement ? " The customer explicitly requested replacement of the listed existing objects. replacementComplete must verify their complete removal, including visible remnants and their former shadows, and credible reconstruction of the local support. backgroundPreserved permits ONLY these listed removals and insertion of the new product; all other objects and furniture must remain unchanged. Reject ghosts, duplicates, incomplete removal or invented furniture." : ""),
             },
           ],
         },
@@ -627,7 +637,7 @@ export async function reviewStorefrontPlacement(
           type: "json_schema",
           name: input.roomIntegration === true ? "storefront_room_integration_review" : detail ? "storefront_realistic_detail_review" : input.realism ? "storefront_realistic_placement_review" : "storefront_placement_review",
           strict: true,
-          schema: z.toJSONSchema(input.roomIntegration === true ? storefrontRoomIntegrationReviewSchema : input.realism ? storefrontRealisticPlacementReviewSchema : storefrontPlacementReviewSchema),
+          schema: z.toJSONSchema(input.replacement ? storefrontReplacementReviewSchema : input.roomIntegration === true ? storefrontRoomIntegrationReviewSchema : input.realism ? storefrontRealisticPlacementReviewSchema : storefrontPlacementReviewSchema),
         },
       },
   });

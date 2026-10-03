@@ -859,8 +859,11 @@ export async function getOrEstimateSceneScale(
   scene: SceneDocument,
   points: ReadonlyArray<{ x: number; y: number }>,
   kinds: readonly SimplePlacementKind[],
-  options: ScaleEstimationOptions = {},
+  beforeProviderCallOrOptions?: (() => Promise<void>) | ScaleEstimationOptions,
+  explicitOptions: ScaleEstimationOptions = {},
 ): Promise<SceneScaleResult> {
+  const beforeProviderCall = typeof beforeProviderCallOrOptions === "function" ? beforeProviderCallOrOptions : undefined;
+  const options = typeof beforeProviderCallOrOptions === "function" ? explicitOptions : beforeProviderCallOrOptions ?? explicitOptions;
   const normalizedKinds = points.map((_, index) => kinds[index] ?? "standing");
   if (serverConfig.aiMockMode || !serverConfig.openaiApiKey) {
     return { ...fallbackEstimate(points.length), cached: false };
@@ -895,6 +898,8 @@ export async function getOrEstimateSceneScale(
   const { data: sceneWebp, info } = await prepareSceneForScale(asset.buffer);
   const sceneWidth = info.width;
   const sceneHeight = info.height;
+  // Admission before spending; cache hits never consume this allowance.
+  await beforeProviderCall?.();
   const estimate = await estimateSceneScale(
     sceneWebp,
     points,

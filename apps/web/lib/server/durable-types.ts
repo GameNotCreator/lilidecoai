@@ -20,6 +20,8 @@ export interface DurableExecution {
   configFingerprint: string;
   deadlineAt: Date;
   availableAt: Date;
+  /** Rate limit for re-awakening a queued job from its authenticated status request. */
+  lastDispatchedAt?: Date;
   attempts: number;
   token?: string;
   leaseUntil?: Date;
@@ -27,6 +29,8 @@ export interface DurableExecution {
   errorCode?: string;
   lastError?: string;
   sourceAssetIds: string[];
+  /** Library frozen at admission; selection happens once in the worker. */
+  preparedViews?: import("@lili/types").RenderViewSnapshot[];
   scene: SceneDocument;
   products: ProductDocument[];
   segmentation?: SegmentationDocument;

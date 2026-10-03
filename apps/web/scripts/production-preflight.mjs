@@ -36,6 +36,9 @@ console.log(
   JSON.stringify({
     policy: config.policy,
     revision: config.revision,
+    imageProvider: config.imageProvider,
+    openAIImageAndVisionRequired: true,
+    myArchitectAIAuthentication: config.imageProvider === "myarchitectai" ? "credential-present-not-tested" : "not-selected",
     spatialQualification: "not-qualified",
     spatialAdmissionsRequired: "disabled",
     scope: config.scope,
@@ -43,9 +46,12 @@ console.log(
 );
 // Reject unsafe release configuration before any database or provider access.
 if (!config.passed) process.exit(1);
+// OpenAI remains required for multi-object generation and vision when MyArchitectAI
+// handles a single object. GET checks do not invoke either paid image API.
 const imageModel = env.OPENAI_MODEL || "gpt-image-2.5-sunburst";
 for (const [label, model] of [
   ["image", imageModel],
+  ["image boutique", env.STOREFRONT_IMAGE_MODEL || "gpt-image-2.5-sunburst"],
   ["vision", env.OPENAI_VISION_MODEL || "gpt-6-astra"],
 ]) {
   try {
@@ -150,6 +156,8 @@ try {
   const active = { status: { $in: ["queued", "processing"] } };
   const count = (filter) =>
     db.collection("renders").countDocuments(filter, { maxTimeMS: 15000 });
+  const preparedCount = (filter) =>
+    db.collection("prepared_view_tasks").countDocuments(filter, { maxTimeMS: 15000 });
   const [
     queued,
     processing,
@@ -160,6 +168,9 @@ try {
     activeExpired,
     activeProviderUnknown,
     fingerprintGroups,
+    preparedQueued,
+    preparedPreparing,
+    preparedProviderUnknown,
   ] = await Promise.all([
     count({ status: "queued" }),
     count({ status: "processing" }),
@@ -184,6 +195,9 @@ try {
         { maxTimeMS: 15000 },
       )
       .toArray(),
+    preparedCount({ state: "queued" }),
+    preparedCount({ state: "preparing" }),
+    preparedCount({ $or: [{ state: "unknown" }, { "provider.state": { $in: ["sent", "unknown"] } }] }),
   ]);
   const drainage = {
     queued,
@@ -195,6 +209,9 @@ try {
     activeExpired,
     activeProviderUnknown,
     activeFingerprintVariants: fingerprintGroups[0]?.variants ?? 0,
+    preparedQueued,
+    preparedPreparing,
+    preparedProviderUnknown,
   };
   const drainPolicy = evaluateProductionDrainage(drainage);
   for (const item of drainPolicy.checks) check(item.name, item.passed);

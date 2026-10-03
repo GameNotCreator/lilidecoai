@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
     openaiBaseUrl: "https://invalid.test/v1",
     openaiQuality: "high",
     openaiMaxCostUsd: 2,
+    openAIImageEnabled: true,
   },
 }));
 vi.mock("server-only", () => ({}));

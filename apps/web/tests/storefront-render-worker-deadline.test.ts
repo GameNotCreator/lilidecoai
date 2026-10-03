@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   sources: vi.fn(),
   execute: vi.fn(),
   findOne: vi.fn(),
+  reconcile: vi.fn(),
 }));
 vi.mock("server-only", () => ({}));
 vi.mock("../lib/server/durable-queue", () => ({
@@ -20,6 +21,7 @@ vi.mock("../lib/server/durable-queue", () => ({
   reserveDurableCredit: mocks.reserve,
   retryDurableRender: mocks.retry,
   validateExecutionSources: mocks.sources,
+  reconcileRenderDeadline: mocks.reconcile,
 }));
 vi.mock("../lib/server/rendering", () => ({
   executeDurableRender: mocks.execute,
@@ -30,6 +32,7 @@ vi.mock("../lib/server/mongodb", () => ({
 
 import { durableAbortSignal } from "../lib/server/durable-context";
 import { runWorkerOnce } from "../lib/server/render-worker";
+import { effectiveRenderDeadline, STOREFRONT_RENDER_DEADLINE_MESSAGE } from "../lib/server/storefront-render-deadline";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -38,6 +41,10 @@ beforeEach(() => {
   mocks.heartbeat.mockResolvedValue(true);
   mocks.sources.mockResolvedValue(undefined);
   mocks.reserve.mockResolvedValue(undefined);
+  mocks.reconcile.mockImplementation(async (db: Db, job: RenderDocument) => {
+    if (!["queued", "processing"].includes(job.status) || effectiveRenderDeadline(job) > Date.now()) return job;
+    return await mocks.end(db, job, "failed", STOREFRONT_RENDER_DEADLINE_MESSAGE, "deadline") ?? job;
+  });
 });
 afterEach(() => vi.useRealTimers());
 
@@ -83,9 +90,11 @@ describe("storefront worker hard stop", () => {
     await vi.advanceTimersByTimeAsync(29_999);
     expect(providerSignal?.aborted).toBe(false);
     expect(mocks.end).not.toHaveBeenCalled();
+    expect(mocks.reconcile).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     await expect(work).resolves.toBe(true);
     expect(providerSignal?.aborted).toBe(true);
+    expect(mocks.reconcile).toHaveBeenCalledWith(expect.anything(), job);
     expect(mocks.end).toHaveBeenCalledWith(
       expect.anything(),
       job,
@@ -101,6 +110,7 @@ describe("storefront worker hard stop", () => {
     const job = render();
     delete job.publicSessionId;
     mocks.claim.mockResolvedValue(job);
+    mocks.findOne.mockImplementation(async () => job);
     let resolve!: () => void;
     mocks.execute.mockImplementation(async () => {
       await new Promise<void>((done) => {
@@ -111,6 +121,7 @@ describe("storefront worker hard stop", () => {
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(90_000);
     expect(mocks.end).not.toHaveBeenCalled();
+    expect(mocks.reconcile).not.toHaveBeenCalled();
     resolve();
     await expect(work).resolves.toBe(true);
     expect(vi.getTimerCount()).toBe(0);

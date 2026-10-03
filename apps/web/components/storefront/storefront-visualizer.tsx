@@ -9,6 +9,7 @@ import {
   LoaderCircle,
   MapPin,
   Plus,
+  RefreshCw,
   RotateCcw,
   ScanLine,
   X,
@@ -40,6 +41,12 @@ import {
 } from "@/lib/render-tracking";
 import { renderTerminalAnnouncement } from "@/lib/render-progress";
 import { RenderProgressPanel } from "@/components/render-progress-panel";
+import {
+  readStorefrontDraft,
+  saveStorefrontDraft,
+  storefrontDraftKey,
+  type StorefrontVisualizationDraft,
+} from "@/lib/storefront-visualization-draft";
 import { useStorefrontCatalog } from "./catalog-state";
 import {
   CatalogError,
@@ -126,6 +133,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
   const [sameDepth, setSameDepth] = useState(false);
   const [referenceReady, setReferenceReady] = useState(false);
   const [useMeasurement, setUseMeasurement] = useState(false);
+  const [replaceExisting, setReplaceExisting] = useState(false);
   const [referenceTarget, setReferenceTarget] = useState<"base" | "top">(
     "base",
   );
@@ -135,21 +143,30 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
   const [activeIndex, setActiveIndex] = useState(0);
   const [keyboardPoint, setKeyboardPoint] = useState<Point>({ x: 0.5, y: 0.7 });
   const [busy, setBusy] = useState("");
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [render, setRender] = useState<Render | null>(null);
   const [uncertain, setUncertain] = useState(false);
   const [showOriginal, setShowOriginal] = useState(false);
   const [trackingIssue, setTrackingIssue] =
     useState<RenderTrackingIssue | null>(null);
+  const [restored, setRestored] = useState(false);
+  const [restoreError, setRestoreError] = useState("");
+  const [restoreUnavailable, setRestoreUnavailable] = useState(false);
+  const [restoreAttempt, setRestoreAttempt] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
   const requestLock = useRef(false);
   const pendingBody = useRef<string | null>(null);
   const refresh = useRef<(() => void) | null>(null);
+  const restoreController = useRef<AbortController | null>(null);
+  const restoreAbandoned = useRef(false);
   const panel = useRef<HTMLDivElement>(null);
   const resultHeading = useRef<HTMLHeadingElement>(null);
   const photoInput = useRef<HTMLInputElement>(null);
   const frame = useRef<HTMLButtonElement>(null);
+  const selectionKey = products.map((product) => product.id).join(",");
   const renderedId = pending(render) ? render!.id : null;
-  const frozen = Boolean(busy || render || uncertain);
+  const frozen = Boolean(!restored || busy || render || uncertain);
   const allPlaced = points.length === products.length && points.every(Boolean);
   const step = render ? 4 : !scene ? 1 : referenceReady ? 3 : 2;
   const scaleReference =
@@ -172,8 +189,172 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
     [products],
   );
 
+  // Reloading only restores identifiers and reads the existing request. It never
+  // submits another render; an uncertain POST retains its original idempotency key.
+  useEffect(() => {
+    const controller = new AbortController();
+    restoreController.current = controller;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const restore = async () => {
+      if (restoreAbandoned.current) return;
+      setRestoreError("");
+      setRestoreUnavailable(false);
+      let saved: StorefrontVisualizationDraft | null = null;
+      try {
+        saved = readStorefrontDraft(
+          window.sessionStorage,
+          selectionKey.split(","),
+        );
+      } catch {
+        /* Storage can be unavailable in a private browsing context. */
+      }
+      if (!saved) {
+        setRestored(true);
+        return;
+      }
+      timeout = setTimeout(() => controller.abort(), 15_000);
+      try {
+        const [photo, latest] = await Promise.all([
+          storefrontApi(`/v1/scenes/${saved.sceneId}`, {
+            signal: controller.signal,
+          }).then((value) => sceneSchema.parse(value)),
+          saved.renderId
+            ? getRender(saved.renderId, controller.signal, storefrontApi)
+            : Promise.resolve(null),
+        ]);
+        if (controller.signal.aborted) return;
+        setConsent(true);
+        setScene(photo);
+        setPoints(saved.points);
+        setReferenceBase(saved.referenceBase);
+        setReferenceTop(saved.referenceTop);
+        setReferenceHeight(saved.referenceHeight);
+        setSameDepth(saved.sameDepth);
+        setReferenceReady(saved.referenceReady);
+        setUseMeasurement(saved.useMeasurement);
+        setReplaceExisting(saved.replaceExisting);
+        setRender(latest);
+        pendingBody.current = saved.pendingBody ?? null;
+        setUncertain(Boolean(saved.pendingBody));
+        if (saved.pendingBody)
+          setError(
+            "Votre demande précédente est conservée. Vérifiez-la pour retrouver son résultat sans créer une seconde visualisation.",
+          );
+        setRestored(true);
+      } catch (reason) {
+        if (restoreAbandoned.current || (controller.signal.aborted && !timeout)) return;
+        const unavailable = reason instanceof ApiError && [403, 404, 410].includes(reason.status);
+        setRestoreUnavailable(unavailable);
+        setRestoreError(
+          unavailable
+            ? "Cette photo ou cette visualisation n’est plus accessible avec votre session. Vous pouvez vérifier à nouveau ou recommencer avec une photo."
+            : "Votre demande est conservée dans cet onglet. Le suivi n’a pas encore pu être récupéré ; actualisez-le pour reprendre au même endroit.",
+        );
+      } finally {
+        clearTimeout(timeout);
+      }
+    };
+    const initial = setTimeout(() => void restore(), 0);
+    return () => {
+      clearTimeout(initial);
+      clearTimeout(timeout);
+      timeout = undefined;
+      controller.abort();
+    };
+  }, [selectionKey, restoreAttempt]);
+
+  function restartAfterLostAccess() {
+    if (!restoreUnavailable || restored) return;
+    // This abandons only this tab's inaccessible draft. It never submits a new
+    // render or cancels/deletes a request that may still exist on the server.
+    restoreAbandoned.current = true;
+    restoreController.current?.abort();
+    try {
+      window.sessionStorage.removeItem(storefrontDraftKey(selectionKey.split(",")));
+    } catch {
+      /* The current page remains usable if browser storage was revoked. */
+    }
+    pendingBody.current = null;
+    requestLock.current = false;
+    setConsent(false);
+    setScene(null);
+    setSceneImageReady(false);
+    setReferenceBase(null);
+    setReferenceTop(null);
+    setReferenceHeight("");
+    setSameDepth(false);
+    setReferenceReady(false);
+    setUseMeasurement(false);
+    setReplaceExisting(false);
+    setReferenceTarget("base");
+    setPoints(products.map(() => null));
+    setActiveIndex(0);
+    setKeyboardPoint({ x: 0.5, y: 0.7 });
+    setRender(null);
+    setUncertain(false);
+    setShowOriginal(false);
+    setTrackingIssue(null);
+    setRefreshing(false);
+    setSubmitting(false);
+    setBusy("");
+    setError("");
+    setRestoreError("");
+    setRestoreUnavailable(false);
+    setRestored(true);
+  }
+
+  const draft = useMemo<StorefrontVisualizationDraft | null>(
+    () =>
+      scene
+        ? {
+            version: 1,
+            savedAt: 0,
+            productIds: selectionKey.split(","),
+            sceneId: scene.id,
+            points,
+            referenceBase,
+            referenceTop,
+            referenceHeight,
+            sameDepth,
+            referenceReady,
+            useMeasurement,
+            replaceExisting,
+            ...(render ? { renderId: render.id } : {}),
+          }
+        : null,
+    [
+      scene,
+      selectionKey,
+      points,
+      referenceBase,
+      referenceTop,
+      referenceHeight,
+      sameDepth,
+      referenceReady,
+      useMeasurement,
+      replaceExisting,
+      render,
+    ],
+  );
+  useEffect(() => {
+    if (!restored || !draft) return;
+    try {
+      saveStorefrontDraft(window.sessionStorage, {
+        ...draft,
+        savedAt: Date.now(),
+        ...(!render && pendingBody.current
+          ? { pendingBody: pendingBody.current }
+          : {}),
+      });
+    } catch {
+      /* The current page remains usable if tab storage is disabled. */
+    }
+  }, [draft, restored, render, uncertain]);
+
   useEffect(() => {
     if (!renderedId) return;
+    panel.current?.focus({ preventScroll: true });
+    panel.current?.scrollIntoView({ block: "start", behavior: "instant" });
     const tracking = startRenderTracking({
       renderId: renderedId,
       fetchRender: (id, signal) => getRender(id, signal, storefrontApi),
@@ -182,6 +363,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
           current?.id === next.id && !pending(current) ? current : next,
         ),
       onInterrupted: setTrackingIssue,
+      onRefreshing: setRefreshing,
     });
     refresh.current = tracking.refresh;
     const resume = () => {
@@ -225,6 +407,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
       setSameDepth(false);
       setReferenceReady(false);
       setUseMeasurement(false);
+      setReplaceExisting(false);
       setReferenceTarget("base");
       setPoints(products.map(() => null));
       setActiveIndex(0);
@@ -315,6 +498,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
       return;
     }
     requestLock.current = true;
+    setSubmitting(true);
     setBusy(
       uncertain
         ? "Vérification de votre demande…"
@@ -335,6 +519,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
         engine: "legacy",
         workflow: "simple_point",
         mode: "insert",
+        replaceExisting,
         ...(useMeasurement ? { scaleReference } : {}),
         simplePlacements: products.map((product, index) => ({
           productId: product.id,
@@ -357,12 +542,26 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
         idempotencyKey: crypto.randomUUID(),
       });
     }
+    // Persist before the network call, including when the tab reloads before
+    // the acceptance response arrives. Retrying will use this exact body.
+    if (draft) {
+      try {
+        saveStorefrontDraft(window.sessionStorage, {
+          ...draft,
+          savedAt: Date.now(),
+          pendingBody: pendingBody.current,
+        });
+      } catch {
+        /* No effect on the idempotent request in this page. */
+      }
+    }
     try {
       await establishStorefrontSession();
       const created = renderSchema.parse(
         await storefrontApi("/v1/renders/final", {
           method: "POST",
           body: pendingBody.current,
+          signal: AbortSignal.timeout(20_000),
         }),
       );
       setRender(created);
@@ -374,7 +573,19 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
         reason.status >= 400 &&
         reason.status < 500 &&
         ![408, 425, 429].includes(reason.status);
-      if (definitelyRefused) pendingBody.current = null;
+      if (definitelyRefused) {
+        pendingBody.current = null;
+        if (draft) {
+          try {
+            saveStorefrontDraft(window.sessionStorage, {
+              ...draft,
+              savedAt: Date.now(),
+            });
+          } catch {
+            /* Optional tab persistence. */
+          }
+        }
+      }
       setUncertain(!definitelyRefused);
       setError(
         definitelyRefused && reason instanceof Error
@@ -383,6 +594,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
       );
     } finally {
       requestLock.current = false;
+      setSubmitting(false);
       setBusy("");
     }
   }
@@ -481,7 +693,43 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
               {error}
             </p>
           )}
-          {!scene ? (
+          {!restored ? (
+            <div className="flex flex-col gap-4 py-6" aria-busy={!restoreError}>
+              <h2>
+                {restoreError
+                  ? "Retrouvons votre visualisation."
+                  : "Récupération de votre demande…"}
+              </h2>
+              <div
+                className="skeleton h-52 w-full motion-reduce:animate-none"
+                aria-hidden="true"
+              />
+              <p role="status">
+                {restoreError ||
+                  "Votre photo, vos emplacements et le suivi sont récupérés dans cet onglet."}
+              </p>
+              {restoreError && (
+                <button
+                  type="button"
+                  className="btn btn-outline min-h-11"
+                  onClick={() => setRestoreAttempt((value) => value + 1)}
+                >
+                  <RefreshCw size={16} aria-hidden="true" />
+                  Actualiser le suivi
+                </button>
+              )}
+              {restoreUnavailable && (
+                <button
+                  type="button"
+                  className="btn min-h-11 whitespace-normal"
+                  onClick={restartAfterLostAccess}
+                >
+                  <RotateCcw size={16} aria-hidden="true" />
+                  Recommencer avec une photo
+                </button>
+              )}
+            </div>
+          ) : !scene ? (
             <div className="store-upload">
               <div className="store-upload-icon">
                 <Camera size={38} strokeWidth={1.4} />
@@ -551,7 +799,11 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
           ) : render ? (
             <div className="store-render-result">
               <span className="store-sr-only" role="status" aria-live="polite">
-                {renderTerminalAnnouncement(render.status)}
+                {renderTerminalAnnouncement(
+                  render.status === "succeeded" && !resultUrl
+                    ? undefined
+                    : render.status,
+                )}
               </span>
               {pending(render) ? (
                 <>
@@ -560,6 +812,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
                     sceneUrl={scene.imageUrl}
                     trackingIssue={trackingIssue}
                     onRefresh={() => refresh.current?.()}
+                    refreshing={refreshing}
                     panelRef={panel}
                   />
                   <button
@@ -632,6 +885,17 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
                   </button>
                 </>
               )}
+            </div>
+          ) : submitting ? (
+            <div className="flex flex-col gap-4 py-6" aria-busy="true">
+              <h2>Envoi de votre demande…</h2>
+              <div
+                className="skeleton h-64 w-full motion-reduce:animate-none"
+                aria-hidden="true"
+              />
+              <p role="status">
+                Un instant, nous enregistrons votre photo et vos emplacements.
+              </p>
             </div>
           ) : (
             <>
@@ -977,6 +1241,26 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
                         : "Taille estimée. Vérifiez l’espace disponible avant votre achat."}
                     </p>
                   )}
+                  <label className="my-4 flex min-h-11 items-start gap-3 text-sm cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="checkbox mt-1 shrink-0"
+                      checked={replaceExisting}
+                      disabled={frozen}
+                      onChange={(event) =>
+                        setReplaceExisting(event.target.checked)
+                      }
+                    />
+                    <span>
+                      {products.length > 1
+                        ? "Remplacer les objets aux emplacements choisis"
+                        : "Remplacer l’objet à cet emplacement"}
+                      <small className="mt-1 block text-base-content/70">
+                        L’objet repéré sera retiré pour accueillir votre
+                        sélection. Le reste de la pièce sera conservé.
+                      </small>
+                    </span>
+                  </label>
                   <div className="store-generate-row">
                     <button
                       className="store-text-link"

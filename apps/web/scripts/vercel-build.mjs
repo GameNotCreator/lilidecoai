@@ -70,6 +70,15 @@ export async function runVercelBuild({
     ["run", "build"],
     { env, cwd },
   );
+  if (env.VERCEL_ENV === "production") {
+    // Build time can admit new work on the live revision. Refresh the read-only
+    // drainage check after a successful build, while publication can still fail.
+    await execute(
+      process.execPath,
+      ["scripts/production-preflight.mjs", "--runtime"],
+      { env, cwd },
+    );
+  }
 }
 
 if (

@@ -84,6 +84,7 @@ export async function ensureOrderIndexes(db: Db) {
   ]);
 }
 
+// Ce devis relit prix et stock ; il ne réserve ni ne décrémente les quantités.
 export function quoteOrderItems(
   input: OrderRequestInput["items"],
   products: StorefrontProduct[],

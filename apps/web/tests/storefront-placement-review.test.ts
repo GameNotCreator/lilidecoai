@@ -688,6 +688,57 @@ describe("storefront physical room-integration qualification", () => {
   const roomInput = (): StorefrontPlacementReviewInput => ({ ...realisticInput(), roomIntegration: true });
   const oldChecks = ["present", "identity", "position", "scale", "perspective", "contact", "edges", "occlusion", "noDuplicate", "gravity", "silhouetteComplete", "photographicCoherence", "referenceScale"] as const;
 
+  it("requires independent complete-removal evidence for a confirmed replacement", () => {
+    const replacement = { ...options, replacement: true };
+    expect(() => parseStorefrontPlacementReview(roomIntegrated(), [realisticProduct], replacement)).toThrow();
+    const complete = { ...roomIntegrated(), replacementComplete: pass() };
+    expect(parseStorefrontPlacementReview(complete, [realisticProduct], replacement).status).toBe("accepted");
+    expect(() => parseStorefrontPlacementReview(complete, [realisticProduct], options)).toThrow();
+  });
+
+  it.each([
+    { passed: false, score: 0.95, reason: "Un morceau de l’ancien objet reste visible." },
+    { passed: true, score: 0.79, reason: "La suppression de l’ancienne ombre n’est pas établie." },
+  ])("rejects remnants or an unproven replacement even when overall acceptance is true (%j)", evidence => {
+    const data = { ...roomIntegrated(), replacementComplete: evidence };
+    const decision = parseStorefrontPlacementReview(data, [realisticProduct], { ...options, replacement: true });
+    expect(decision.status).toBe("rejected");
+    expect(decision.checks.find(check => check.name === "replacement_complete")?.score).toBeLessThan(0.8);
+  });
+
+  it("never trades background preservation or product identity for complete removal", () => {
+    const data = { ...roomIntegrated(), replacementComplete: pass() };
+    data.backgroundPreserved = { passed: false, score: 0.95, reason: "Un meuble non sélectionné a changé." };
+    expect(parseStorefrontPlacementReview(data, [realisticProduct], { ...options, replacement: true }).status).toBe("rejected");
+    data.backgroundPreserved = pass();
+    data.products[0]!.checks.identity = { passed: false, score: 0.95, reason: "L’objet du catalogue a été déformé." };
+    expect(parseStorefrontPlacementReview(data, [realisticProduct], { ...options, replacement: true }).status).toBe("rejected");
+  });
+
+  it.each([{ replacement: true }, { replacement: true, realism: true }])("rejects a replacement without its complete room-integration contract (%j)", async mode => {
+    const fetcher = vi.fn<typeof globalThis.fetch>();
+    vi.stubGlobal("fetch", fetcher);
+    const data = { ...roomIntegrated(), replacementComplete: pass() };
+    expect(() => parseStorefrontPlacementReview(data, [realisticProduct], mode)).toThrow();
+    await expect(reviewStorefrontPlacement({ ...realisticInput(), ...mode })).rejects.toMatchObject({ code: "invalid_input", providerCalled: false });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("sends a single strict replacement review and refuses missing removal evidence without retry", async () => {
+    const fetcher = vi.fn<typeof globalThis.fetch>(async () => Response.json(envelope(roomIntegrated())));
+    vi.stubGlobal("fetch", fetcher);
+    await expect(reviewStorefrontPlacement({ ...roomInput(), replacement: true,
+      instructions: 'Confirmed replacement: {"name":"old vase","normalizedOriginalRoomBox":{"xMin":0.4,"yMin":0.3,"xMax":0.6,"yMax":0.6}}',
+    })).rejects.toThrow();
+    expect(fetcher).toHaveBeenCalledOnce();
+    const request = JSON.parse(fetcher.mock.calls[0]![1]!.body as string);
+    expect(request.text.format.strict).toBe(true);
+    expect(request.text.format.schema.required).toContain("replacementComplete");
+    expect(request.input[0].content[0].text).toContain("visible remnants and their former shadows");
+    expect(request.input[0].content[0].text).toContain("all other objects and furniture must remain unchanged");
+    expect(request.input[1].content[0].text).toContain("normalizedOriginalRoomBox");
+  });
+
   it("requires the new support evidence without changing historical photographic schemas", () => {
     expect(STOREFRONT_ROOM_INTEGRATION_REVIEW_VERSION).toBe("storefront-room-integration-review-v5");
     expect(parseStorefrontPlacementReview(roomIntegrated(), [realisticProduct], options)).toMatchObject({

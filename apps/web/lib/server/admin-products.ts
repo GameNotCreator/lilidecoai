@@ -1,4 +1,5 @@
 import "server-only";
+import { retirePreparedProduct } from "./prepared-view-retention";
 import { currentPlanarTexture } from "../planar-texture";
 import { spatialPreparationForCatalog } from "./spatial-policy";
 import { productPreparationStatus } from "./product-preparation";
@@ -223,6 +224,9 @@ export async function setProductStatus(
         $set: { status: resolved, archivedAt, expiresAt, updatedAt },
       },
     );
+    // Close catalogue admission before fencing preparations; a late worker
+    // also checks this document inside its candidate-publication transaction.
+    await retirePreparedProduct(db, product.organizationId, product.id, expiresAt);
     if (assetIds.length) {
       await c.assets.updateMany(
         { id: { $in: assetIds }, expiresAt: { $exists: false } },
@@ -394,6 +398,11 @@ export async function deleteProduct(
   db: Db,
   product: ProductDocument,
 ): Promise<void> {
+  const expiresAt = archiveExpiry();
+  await collections(db).products.updateOne({ id: product.id, organizationId: product.organizationId },
+    { $set: { status: "archived", archivedAt: new Date(), expiresAt, updatedAt: new Date() } });
+  await syncProductAssetVisibility(db, product, "archived");
+  await retirePreparedProduct(db, product.organizationId, product.id, expiresAt);
   for (const assetId of imageAssetIds(product)) {
     await deleteAsset(db, assetId).catch((reason) => {
       console.error(`Asset ${assetId} non supprimé`, reason);

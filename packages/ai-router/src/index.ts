@@ -49,6 +49,7 @@ export interface ImageReference {
     | "composition"
     | "target_mask"
     | "intermediate"
+    | "placement_guide"
     | "spatial_guide";
 }
 
@@ -85,10 +86,19 @@ export interface ProviderAttemptResult {
   safety: SafetyMetadata;
   attemptCount: number;
   usage?: Record<string, unknown>;
+  /** Locally constructed safe accounting only; never raw Responses content or provider output. */
+  productViewUsage?: {
+    mainline: { model: string; modelSource: "response" | "requested"; usage?: Record<string, unknown>;
+      cost: Record<string, unknown> & { estimatedCostUsd: number } };
+    imageGeneration: { model: string; modelSource: "requested"; callId?: string; action: "generate";
+      cost: { method: "allowance"; estimatedCostUsd: number; invoice: false; reason: string } };
+  };
   degradedMode?: boolean;
 }
 
 export interface ImageGenerationRequest {
+  /** Omitted on historical jobs. An oriented edit never adds a catalogue image. */
+  operation?: "legacy_composition" | "oriented_harmonization" | "storefront_integration";
   scene: Uint8Array;
   productCutout: Uint8Array;
   composition: Uint8Array;
@@ -118,6 +128,12 @@ export interface ImageEditingRequest extends ImageGenerationRequest {
   productIsolation?: boolean;
   /** Internal isolation opt-in: one geometry guide, one room, then every catalog reference. */
   productIsolationCameraFirst?: boolean;
+  /** Explicit storefront pose contract: generate a new view through Responses, never an edit fallback. */
+  generateProductView?: boolean;
+  /** One bounded opaque room edit, after the MyArchitectAI composition. */
+  storefrontRoomRefinement?: boolean;
+  /** V6 adds an annotated native contact/width reference before the full room. */
+  storefrontRoomRefinementContactGuide?: boolean;
 }
 
 /** @deprecated Prefer ProviderAttemptResult for all new provider code. */
@@ -258,7 +274,7 @@ export interface ProviderRoutingConfig {
 }
 
 export interface ProviderRoute {
-  provider: "google" | "openai" | "mock";
+  provider: "google" | "openai" | "myarchitectai" | "mock";
   modelRole: "preview" | "final" | "fallback" | "mock";
   degradedMode: boolean;
   reason: string;
@@ -355,6 +371,8 @@ export function shouldRetryAttempt(
 ): boolean {
   return (
     result.status === "failed" &&
+    result.usage?.providerOutcome !== "unknown" &&
+    result.usage?.providerOutcome !== "succeeded" &&
     Boolean(result.error?.retryable) &&
     result.attemptCount < maximumAttempts
   );
@@ -368,3 +386,4 @@ export function selectProvider(
 }
 
 export * from "./prompt-builder";
+export * from "./oriented-prompts";

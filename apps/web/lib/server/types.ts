@@ -42,6 +42,8 @@ export interface AssetDocument {
   expiresAt?: Date;
   /** Set by the purge when it claims this asset for destruction. */
   purgeClaimedAt?: Date;
+  /** Bounded pin for assets frozen by an admitted oriented render. */
+  retainedUntil?: Date;
 }
 
 export type ProductViewType =
@@ -158,7 +160,17 @@ export interface RenderAuditDocument {
 }
 
 export interface RenderDocument {
-  engine?: "legacy" | "spatial";
+  engine?: "legacy" | "spatial" | "oriented";
+  orientedEvidence?: {
+    version: "oriented-v1";
+    selectedViewId: string;
+    snapshotFingerprint: string;
+    origin: "photographed" | "generated";
+    metricVerified: false;
+    limitations: string[];
+    plan: unknown;
+    checks?: unknown;
+  };
   spatialEvidence?: import("@lili/types").RenderEvidence;
   execution?: DurableExecution;
   id: string;
@@ -228,6 +240,9 @@ export interface RenderDocument {
     mockMode: boolean;
     imageQuality: string;
     editModel: string;
+    repairImageModel?: string;
+    /** Historical simple-point jobs without this field keep their OpenAI route. */
+    editProvider?: "openai" | "google" | "myarchitectai" | "mock";
     visionModel: string;
     /** Absent on admitted historical jobs: preserve their original allowance. */
     visionCostPolicy?: "astra-token-allowance-v1";

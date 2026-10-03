@@ -92,6 +92,8 @@ export function projectSpatialBox(
     throw new Error("Invalid object volume");
   const origin = intersectSupport(camera, anchor),
     yaw = (yawDegrees * Math.PI) / 180;
+  // L'ancre est le centre de la base sur Y=0, pas le coin de la boîte écran.
+  // La boîte sert d'enveloppe dimensionnelle ; elle ne décrit pas la silhouette.
   // Near-left, near-right, far-right, far-left, followed by matching top corners.
   const offsets = [
     [-1, -1],

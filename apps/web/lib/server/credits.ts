@@ -15,14 +15,12 @@ import { collections } from "./mongodb";
  *     reserve → (paid pipeline) → capture on delivery
  *                              └→ release on failure, cancel or rejection
  *
- * Every transition is one atomic update of the single wallet document, which
- * is what MongoDB guarantees without a replica set — this deployment has no
- * multi-document transactions, and pretending otherwise would be the same
- * fiction the audit found elsewhere. The consequence is stated rather than
- * hidden: the wallet is authoritative, and the `credit_transactions` journal
- * is written immediately after and can lag behind by one crash. A held credit
- * whose process dies is neither captured nor released until a sweeper reclaims
- * it; `reservedAt` exists for that sweeper, which is not built yet.
+ * Ce module conserve le règlement historique : chaque transition du wallet
+ * est atomique, mais son journal est écrit séparément et peut être en retard
+ * après un crash. `releaseStaleHolds` récupère les réservations abandonnées.
+ * Les rendus durables actifs sont exclus de ce balayage : leur réservation,
+ * leur règlement et leur journal utilisent les transactions de durable-queue.
+ * Cette distinction décrit les chemins du code, pas la topologie déployée.
  *
  * All three operations are idempotent on `idempotencyKey`, so a replayed
  * request never holds, spends or returns a credit twice.

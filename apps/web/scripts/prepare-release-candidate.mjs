@@ -12,7 +12,8 @@ const WEB_FILES = ["package.json", "next.config.ts", "next-env.d.ts", "postcss.c
   "tsconfig.json", "eslint.config.mjs", "vercel.json"];
 const WEB_SCRIPTS = ["vercel-build.mjs", "migrate-image-pipeline.mjs", "migrate-asset-visibility.mjs",
   "migrate-cutout-provenance.mjs", "production-preflight.mjs", "production-preflight-policy.mjs", "production-smoke.mjs",
-  "render-worker.ts", "prepare-release-candidate.mjs", "check-spatial-matting.mjs"];
+  "render-worker.ts", "prepare-release-candidate.mjs", "check-spatial-matting.mjs",
+  "migrate-oriented-views.ts", "oriented-readiness.mjs"];
 const SOURCE_TREES = ["apps/web/app", "apps/web/components", "apps/web/lib", "apps/web/public",
   ...PACKAGE_NAMES.map((name) => `packages/${name}/src`)];
 const REQUIRED_FILES = [...ROOT_FILES, ...WEB_FILES.map((path) => `apps/web/${path}`),

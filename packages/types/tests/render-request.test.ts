@@ -12,6 +12,12 @@ const base = {
 };
 
 describe("render request schema", () => {
+  it("requires a boolean for explicit replacement consent and keeps insertion the default", () => {
+    expect(renderRequestSchema.parse(base)).not.toHaveProperty("replaceExisting");
+    expect(renderRequestSchema.parse({ ...base, replaceExisting: true }).replaceExisting).toBe(true);
+    expect(renderRequestSchema.parse({ ...base, replaceExisting: false }).replaceExisting).toBe(false);
+    expect(() => renderRequestSchema.parse({ ...base, replaceExisting: "true" })).toThrow();
+  });
   it("keeps the legacy insert request compatible", () => {
     const parsed = renderRequestSchema.parse(base);
     expect(parsed.mode).toBe("insert");

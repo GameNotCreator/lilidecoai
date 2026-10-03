@@ -65,6 +65,38 @@ tentatives de rendu, analytics et audits.
 
 ## Vérification
 
+Le parcours boutique hybride utilise `SIMPLE_POINT_IMAGE_PROVIDER=myarchitectai`,
+`MYARCHITECTAI_API_KEY` et `OPENAI_API_KEY`. Pour une insertion libre, OpenAI
+analyse la scène puis génère une nouvelle vue complète du produit sur fond transparent
+via Responses (Astra, raisonnement faible, et le modèle image figé à l’admission),
+suivant la caméra estimée de la pièce. Le serveur place et dimensionne cette vue ;
+MyArchitectAI apporte une intégration RGB limitée au produit et à son contact.
+Le serveur restaure ensuite sa texture native intérieure en conservant la lumière
+locale, la silhouette alpha et le contact intégrés.
+OpenAI contrôle ensuite l’identité, la perspective, l’échelle et l’intégration.
+Avant toute génération, les petites projections (largeur et hauteur projetées
+inférieures à 64 pixels) et les remplacements confirmés sont dirigés vers un autre
+parcours : MyArchitectAI compose la pièce, puis une unique édition locale opaque
+OpenAI reprend ce résultat avec le catalogue et la pièce entière comme références.
+Cette édition conserve la résolution native du premier résultat et emploie un
+masque ainsi que des coordonnées exprimés dans le même cadre.
+Un guide distinct indique le contact et la largeur attendus, sans dessiner de
+silhouette ; l’image de base reste sans annotation.
+L’objet et son appui sont générés ensemble dans une région bornée ; le fond extérieur
+est restauré à l’identique. Un seul contrôle final applique les mêmes exigences,
+sans nouvelle tentative après un refus. Les sélections de plusieurs produits utilisent OpenAI.
+Pour les appels réels, définir `AI_MOCK_MODE=false`, `OPENAI_IMAGE_ENABLED=true`
+et `RENDER_EXECUTION_MODE=durable` avec MongoDB Atlas ou un replica set et le
+[worker configuré](infra/render-worker.md). Le délai boutique inclut l’attente
+et s’arrête à 180 secondes ; cela borne l’exécution, sans garantir la latence
+d’un fournisseur ou une reconstruction 3D exacte. Un échec ne consomme pas de
+crédit boutique. Le contrôle de coût inclut le raisonnement Astra et l’image.
+La capacité boutique se gère dans le back office et reste distincte des crédits
+des fournisseurs. Conserver `RENDER_STAGE_CAPTURE=false` en production.
+
+Références API : [MyArchitectAI](https://portal.myarchitectai.com/docs) et
+[génération d’images OpenAI](https://developers.openai.com/api/docs/guides/tools-image-generation).
+
 ```powershell
 npm.cmd run lint
 npm.cmd run typecheck

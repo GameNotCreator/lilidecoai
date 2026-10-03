@@ -92,6 +92,8 @@ export async function projectPlanarTexture(input: {
       "Le tapis recouvre une zone réfléchissante non prise en charge.",
     );
   const inverse = solveHomography(input.targetCorners, input.sourceCorners);
+  // On remonte du pixel de destination vers la texture réelle : la projection
+  // conserve la provenance du motif sans déléguer son dessin au fournisseur.
   const version = input.version ?? "planar-texture-v1";
   const areaSample =
     version === "planar-texture-v2"

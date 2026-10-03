@@ -122,6 +122,7 @@ export function renderResponse(render: RenderDocument) {
   return {
     engine: render.engine ?? "legacy",
     spatialEvidence: render.spatialEvidence,
+    orientedEvidence: render.orientedEvidence,
     id: render.id,
     status: render.status,
     provider: render.provider,
@@ -161,7 +162,7 @@ export function renderResponse(render: RenderDocument) {
     stages: isolatedProductStages(render),
     attemptCount: render.attemptCount ?? 0,
     estimatedCostUsd:
-      (render.engine === "spatial"
+      (["spatial", "oriented"].includes(render.engine ?? "")
         ? render.usageTotals?.estimatedCostUsd
         : undefined) ?? render.estimatedCostUsd ?? 0,
     /**

@@ -31,7 +31,14 @@ function numericField(value: unknown, key: string, schema: z.ZodNumber): number 
 
 /** Numbers only: never decode checkpoint assets or expose free-form evidence. */
 function sceneProjection(render: RenderDocument) {
-  const step = render.execution?.steps?.["storefront-scene-preflight"];
+  const steps = render.execution?.steps;
+  // The current contract is authoritative when present, even while incomplete.
+  // Never fill gaps in a newer result from an older checkpoint.
+  const step = steps && Object.hasOwn(steps, "preflight-v6") ? steps["preflight-v6"]
+    : steps && Object.hasOwn(steps, "preflight-v5") ? steps["preflight-v5"]
+    : steps && Object.hasOwn(steps, "preflight-v4") ? steps["preflight-v4"]
+    : steps && Object.hasOwn(steps, "preflight-v3") ? steps["preflight-v3"]
+    : steps && Object.hasOwn(steps, "preflight-v2") ? steps["preflight-v2"] : steps?.["storefront-scene-preflight"];
   const profile = render.engineVersions?.scaleEstimation;
   if (!["queued", "processing", "succeeded", "failed"].includes(render.status) ||
       render.engineVersions?.mockMode !== false ||
@@ -74,6 +81,31 @@ export async function GET(
         "execution.steps.storefront-scene-preflight.output.widthPixelsPerCm": 1,
         "execution.steps.storefront-scene-preflight.output.poses.cameraElevationDegrees": 1,
         "execution.steps.storefront-scene-preflight.output.poses.cameraRollDegrees": 1,
+        "execution.steps.preflight-v2.status": 1,
+        "execution.steps.preflight-v2.output.spans.pixelsPerCm": 1,
+        "execution.steps.preflight-v2.output.widthPixelsPerCm": 1,
+        "execution.steps.preflight-v2.output.poses.cameraElevationDegrees": 1,
+        "execution.steps.preflight-v2.output.poses.cameraRollDegrees": 1,
+        "execution.steps.preflight-v3.status": 1,
+        "execution.steps.preflight-v3.output.spans.pixelsPerCm": 1,
+        "execution.steps.preflight-v3.output.widthPixelsPerCm": 1,
+        "execution.steps.preflight-v3.output.poses.cameraElevationDegrees": 1,
+        "execution.steps.preflight-v3.output.poses.cameraRollDegrees": 1,
+        "execution.steps.preflight-v4.status": 1,
+        "execution.steps.preflight-v4.output.spans.pixelsPerCm": 1,
+        "execution.steps.preflight-v4.output.widthPixelsPerCm": 1,
+        "execution.steps.preflight-v4.output.poses.cameraElevationDegrees": 1,
+        "execution.steps.preflight-v4.output.poses.cameraRollDegrees": 1,
+        "execution.steps.preflight-v5.status": 1,
+        "execution.steps.preflight-v5.output.spans.pixelsPerCm": 1,
+        "execution.steps.preflight-v5.output.widthPixelsPerCm": 1,
+        "execution.steps.preflight-v5.output.poses.cameraElevationDegrees": 1,
+        "execution.steps.preflight-v5.output.poses.cameraRollDegrees": 1,
+        "execution.steps.preflight-v6.status": 1,
+        "execution.steps.preflight-v6.output.spans.pixelsPerCm": 1,
+        "execution.steps.preflight-v6.output.widthPixelsPerCm": 1,
+        "execution.steps.preflight-v6.output.poses.cameraElevationDegrees": 1,
+        "execution.steps.preflight-v6.output.poses.cameraRollDegrees": 1,
       } },
     );
     const headers = { "Cache-Control": "no-store" };

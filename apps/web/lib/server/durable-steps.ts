@@ -113,13 +113,19 @@ export interface DurableAnalysisRetryPolicy {
   respectRetryable: boolean;
 }
 
-/** Read-only analysis is retryable; an interrupted image edit is never replayed. */
+/**
+ * Les analyses peuvent être reprises et refacturées. Une édition interrompue
+ * en état running/unknown est bloquée ; un refus HTTP 429 peut autoriser retry.
+ * Une sortie completed est relue depuis son checkpoint sans rappeler call.
+ */
 export async function durableStep<T>(
   db: Db,
   key: string,
   policy: "analysis" | "image",
   call: () => Promise<T>,
   retryPolicy?: DurableAnalysisRetryPolicy,
+  /** Opt-in recovery of a KNOWN private provider response; must never generate. */
+  recoverKnownImage?: () => Promise<T>,
 ): Promise<T> {
   const context = durableContext.getStore();
   if (!context) return call();
@@ -147,11 +153,22 @@ export async function durableStep<T>(
   if (
     policy === "image" &&
     (previous?.status === "running" || previous?.status === "unknown")
-  )
+  ) {
+    if (recoverKnownImage) {
+      const recovered = await recoverKnownImage();
+      const encoded = await encode(db, recovered);
+      const saved = await collections(db).renders.updateOne(
+        { id: render.id, status: "processing", ...executionFence(render.id) },
+        { $set: { [`execution.steps.${key}`]: { ...previous, status: "completed", output: encoded, completedAt: new Date() }, updatedAt: new Date() } },
+      );
+      if (!saved.matchedCount) throw new DurableExecutionError("Le bail du rendu a expiré.", "lease_lost");
+      return recovered;
+    }
     throw new DurableExecutionError(
       "Le résultat du fournisseur est incertain. Aucun nouvel appel d’image n’a été lancé.",
       "provider_unknown",
     );
+  }
   const attempts = (previous?.attempts ?? 0) + 1;
   const analysisRetry = policy === "analysis" ? retryPolicy : undefined;
   const maxAttempts = analysisRetry?.maxAttempts ?? 3;
@@ -224,6 +241,9 @@ export async function durableStep<T>(
   }
   // If persistence fails after a paid call, leave 'running': recovery must not
   // mistake a lost result for permission to spend again.
+  // The call already journals its provider outcome independently. A late
+  // response must not create more image assets or publish a resumable checkpoint.
+  await assertExecutionActive(db, render.id);
   const encoded = await encode(db, output);
   await save({
     status: "completed",

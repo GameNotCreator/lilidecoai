@@ -32,6 +32,8 @@
     "migrate:image-pipeline": "node apps/web/scripts/migrate-image-pipeline.mjs",
     "migrate:asset-visibility": "node apps/web/scripts/migrate-asset-visibility.mjs",
     "migrate:cutout-provenance": "node apps/web/scripts/migrate-cutout-provenance.mjs",
+    "migrate:oriented-views": "node --conditions=react-server --env-file-if-exists=.env --import tsx apps/web/scripts/migrate-oriented-views.ts",
+    "check:oriented": "node --env-file-if-exists=.env apps/web/scripts/oriented-readiness.mjs",
     "corpus:run": "node apps/web/scripts/corpus-run.mjs",
     "corpus:aggregate": "node apps/web/scripts/corpus-aggregate.mjs",
     "corpus:compare": "node apps/web/scripts/corpus-comparison.mjs",
@@ -39,7 +41,7 @@
     "worker:render": "node --conditions=react-server --env-file-if-exists=.env --import tsx apps/web/scripts/render-worker.ts",
     "test:durable": "npm run test --workspace @visualizer/web -- tests/durable-steps.test.ts tests/durable-queue.test.ts",
     "test:durable:integration": "node apps/web/scripts/test-durable-integration.mjs",
-    "test:release": "node --test apps/web/scripts/test-vercel-build.mjs apps/web/scripts/test-prepare-release-candidate.mjs apps/web/scripts/test-production-smoke.mjs testpratiques/scripts/test-production-preflight-policy.mjs",
+    "test:release": "node --test apps/web/scripts/test-vercel-build.mjs apps/web/scripts/test-prepare-release-candidate.mjs apps/web/scripts/test-production-smoke.mjs apps/web/scripts/test-oriented-readiness.mjs testpratiques/scripts/test-production-preflight-policy.mjs",
     "format": "prettier --write ."
   },
   "devDependencies": {

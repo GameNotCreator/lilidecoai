@@ -24,11 +24,13 @@ export const STOREFRONT_PERSPECTIVE_PROGRESS_STEPS = [
 export function isStorefrontPlacementRender(
   render: Pick<Render, "engineVersions">,
 ): boolean {
-  return render.engineVersions?.quality === "storefront-placement-review-v1" ||
+  return (
+    render.engineVersions?.quality === "storefront-placement-review-v1" ||
     render.engineVersions?.quality === "storefront-realistic-placement-v2" ||
     render.engineVersions?.quality === "storefront-realistic-placement-v3" ||
     render.engineVersions?.quality === "storefront-realistic-detail-v4" ||
-    render.engineVersions?.quality === "storefront-room-integration-review-v5";
+    render.engineVersions?.quality === "storefront-room-integration-review-v5"
+  );
 }
 
 export function renderTerminalAnnouncement(
@@ -232,11 +234,13 @@ const perspectiveStageCopy: Record<string, StageCopy> = {
   ...placementStageCopy,
   generating_final: {
     title: "Adaptation de la perspective",
-    detail: "L’orientation des objets est adaptée à votre photo en conservant leur apparence et leur emplacement.",
+    detail:
+      "L’orientation des objets est adaptée à votre photo en conservant leur apparence et leur emplacement.",
     phase: 2,
   },
   checking_placement: {
-    ...placementStageCopy.checking_placement!, phase: 3,
+    ...placementStageCopy.checking_placement!,
+    phase: 3,
   },
   quality_check: { ...placementStageCopy.quality_check!, phase: 3 },
   completed: { ...stageCopy.completed!, phase: 4 },
@@ -245,12 +249,18 @@ const perspectiveStageCopy: Record<string, StageCopy> = {
 
 /** Progress comes exclusively from server evidence, never elapsed time. */
 export function renderProgress(render: ProgressInput) {
-  const sourcePixelPlacement = render.engineVersions?.quality === "storefront-placement-review-v1";
-  const perspectivePlacement = render.engineVersions?.quality === "storefront-realistic-placement-v2" ||
+  const sourcePixelPlacement =
+    render.engineVersions?.quality === "storefront-placement-review-v1";
+  const perspectivePlacement =
+    render.engineVersions?.quality === "storefront-realistic-placement-v2" ||
     render.engineVersions?.quality === "storefront-realistic-placement-v3" ||
     render.engineVersions?.quality === "storefront-realistic-detail-v4" ||
     render.engineVersions?.quality === "storefront-room-integration-review-v5";
-  const copies = perspectivePlacement ? perspectiveStageCopy : sourcePixelPlacement ? placementStageCopy : stageCopy;
+  const copies = perspectivePlacement
+    ? perspectiveStageCopy
+    : sourcePixelPlacement
+      ? placementStageCopy
+      : stageCopy;
   const placementStage =
     typeof render.placement?.pipelineStage === "string"
       ? render.placement.pipelineStage
@@ -290,8 +300,8 @@ export function renderProgress(render: ProgressInput) {
     steps: (perspectivePlacement
       ? STOREFRONT_PERSPECTIVE_PROGRESS_STEPS
       : sourcePixelPlacement
-      ? STOREFRONT_PLACEMENT_PROGRESS_STEPS
-      : RENDER_PROGRESS_STEPS
+        ? STOREFRONT_PLACEMENT_PROGRESS_STEPS
+        : RENDER_PROGRESS_STEPS
     ).map((label, index) => ({
       label,
       state:

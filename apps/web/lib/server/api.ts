@@ -60,7 +60,6 @@ import { enforceRateLimit } from "./rate-limit";
 import { getOrEstimateSceneScale } from "./scale-estimation";
 import { createRender, RenderError, type DeferRenderTask } from "./rendering";
 import { stopRender } from "./render-lifecycle";
-import { expireStorefrontRender } from "./durable-queue";
 import { checkpointAssetIds } from "./checkpoint-assets";
 import { buildRetryInput } from "./render-request";
 import { spatialRetryBodySchema } from "../spatial-retry";
@@ -82,6 +81,10 @@ import { validateSpatialAdmission, canUseSpatialPilot, canReadSpatialRenders } f
 import { getRoomGeometry, buildSpatialPlan } from "./spatial-planning";
 import { SpatialCacheBusyError } from "./spatial-scene-cache";
 import { assertStorefrontRoute, normalizeStorefrontRender } from "./storefront";
+import { canReadOrientedRenders, canUseOrientedPilot } from "./oriented-policy";
+import { previewOrientedPlacement } from "./oriented-preview";
+import { reconcileRenderDeadline } from "./durable-queue";
+import { dispatchQueuedRender } from "./render-worker-dispatch";
 
 const productCreateSchema = z.object({
   temporary: z.boolean().default(false),
@@ -143,6 +146,11 @@ export async function dispatchApi(
 ): Promise<Response> {
   try {
     if (path[0] === "health" && request.method === "GET") {
+      const myArchitectAISelected =
+        serverConfig.simplePointImageProvider === "myarchitectai";
+      const demoImageAvailable = myArchitectAISelected
+        ? Boolean(serverConfig.myArchitectAIApiKey)
+        : Boolean(serverConfig.openaiApiKey && serverConfig.openAIImageEnabled);
       return Response.json({
         status: "ok",
         database: (await pingMongo()) ? "mongodb" : "unavailable",
@@ -156,14 +164,20 @@ export async function dispatchApi(
           mockMode: serverConfig.aiMockMode,
           activeDemoProvider: serverConfig.aiMockMode
             ? "mock"
-            : serverConfig.openaiApiKey
-              ? "openai"
+            : demoImageAvailable
+              ? myArchitectAISelected
+                ? "myarchitectai"
+                : "openai"
               : "unavailable",
           activeDemoModel: serverConfig.aiMockMode
             ? "mock"
-            : serverConfig.openaiApiKey
-              ? serverConfig.openaiModel
+            : demoImageAvailable
+              ? myArchitectAISelected
+                ? "edit-by-prompt"
+                : serverConfig.openaiModel
               : null,
+          visionConfigured: Boolean(serverConfig.openaiApiKey),
+          myArchitectAIConfigured: Boolean(serverConfig.myArchitectAIApiKey),
           executionMode:
             process.env.RENDER_EXECUTION_MODE === "durable" ? "durable" : "web",
           openAIConfigured: Boolean(serverConfig.openaiApiKey),
@@ -202,7 +216,7 @@ export async function dispatchApi(
     if (tenant.storefront) assertStorefrontRoute(request, path);
     if (serverConfig.demoMode && !tenant.storefront) await ensureDemoSeed(db);
     if (path[0] === "render-capabilities" && request.method === "GET") {
-      return Response.json({ spatial: canUseSpatialPilot(tenant, serverConfig.spatialOrganizationIds ?? []) });
+      return Response.json({ spatial: canUseSpatialPilot(tenant, serverConfig.spatialOrganizationIds ?? []), oriented: canUseOrientedPilot(tenant, serverConfig.orientedOrganizationIds ?? []) });
     }
     if (path[0] === "products") {
       return await handleProducts(db, tenant, request, path.slice(1));
@@ -628,6 +642,11 @@ async function handleScenes(
       : {}),
   });
   if (!scene) return error("Scène introuvable", 404);
+  if (path[1] === "oriented-preview" && request.method === "POST") {
+    if (!canUseOrientedPilot(tenant, serverConfig.orientedOrganizationIds)) throw new AuthError("Essai orienté interne non activé.", 403);
+    await enforcePaidLimit(db, tenant, "oriented-preview", 30, 150, 600_000);
+    return Response.json(await previewOrientedPlacement(db, scene, await request.json()), { headers: { "Cache-Control": "no-store" } });
+  }
   if (["spatial-analysis", "spatial-preview"].includes(path[1] ?? "") && request.method === "POST") {
     if (!canUseSpatialPilot(tenant, serverConfig.spatialOrganizationIds ?? [])) throw new AuthError("Essai spatial interne non activé.", 403);
     if (scene.status === "deleted" || scene.expiresAt.getTime() <= Date.now()) return error("Photo expirée ou supprimée.", 410);
@@ -1079,14 +1098,15 @@ async function handleRenders(
   if (path.length === 2 && path[0] === "by-request" && request.method === "GET") {
     if (!canReadSpatialRenders(tenant)) throw new AuthError("Rendu spatial interne non accessible.", 403);
     const key = z.string().min(1).max(160).parse(path[1]);
-    const render = await c.renders.findOne({ organizationId: tenant.organizationId, engine: "spatial", idempotencyKey: key, publicSessionId: { $exists: false } });
+    const render = await c.renders.findOne({ organizationId: tenant.organizationId, engine: { $in: ["spatial", "oriented"] }, idempotencyKey: key, publicSessionId: { $exists: false } });
+    if (render?.engine === "oriented" && !canReadOrientedRenders(tenant)) throw new AuthError("Rendu interne non accessible.", 403);
     return Response.json(render ? renderResponse(render) : { detail: "Cette demande n’est pas encore enregistrée." }, { status: render ? 200 : 404, headers: { "Cache-Control": "no-store" } });
   }
   if (path.length === 0 && request.method === "GET") {
     const renders = await c.renders
       .find({
         organizationId: tenant.organizationId,
-        ...(!canReadSpatialRenders(tenant) ? { engine: { $ne: "spatial" } } : {}),
+        ...(!canReadOrientedRenders(tenant) ? { engine: { $nin: ["spatial", "oriented"] } } : {}),
         ...(tenant.publicSessionId
           ? { publicSessionId: tenant.publicSessionId }
           : {}),
@@ -1110,12 +1130,13 @@ async function handleRenders(
       ...(qualityEndpoint ? { outputQuality: qualityEndpoint } : {}),
     });
     if (input.engine === "spatial" && !canUseSpatialPilot(tenant, serverConfig.spatialOrganizationIds ?? [])) throw new AuthError("Essai spatial interne non activé.", 403);
+    if (input.engine === "oriented" && !canUseOrientedPilot(tenant, serverConfig.orientedOrganizationIds ?? [])) throw new AuthError("Essai orienté interne non activé.", 403);
     if (tenant.storefront) {
       // A lost response must remain recoverable even if the catalogue changed
       // after admission. This returns only this visitor's already admitted job.
       const existing = await c.renders.findOne({
         organizationId: tenant.organizationId, publicSessionId: tenant.publicSessionId,
-        idempotencyKey: input.idempotencyKey, engine: { $ne: "spatial" },
+        idempotencyKey: input.idempotencyKey, engine: { $nin: ["spatial", "oriented"] },
       });
       if (existing) return Response.json(renderResponse(existing), { status: 200 });
     }
@@ -1200,10 +1221,13 @@ async function handleRenders(
   });
   if (!render) return error("Rendu introuvable", 404);
   if (render.engine === "spatial" && !canReadSpatialRenders(tenant)) throw new AuthError("Rendu spatial interne non accessible.", 403);
+  if (render.engine === "oriented" && !canReadOrientedRenders(tenant)) throw new AuthError("Rendu orienté interne non accessible.", 403);
   if (path.length === 1 && request.method === "GET") {
-    const current = await expireStorefrontRender(db, render);
+    const current = await reconcileRenderDeadline(db, render);
+    if (current.status === "queued" && current.execution)
+      deferRenderTask?.(async () => { await dispatchQueuedRender(db, current); });
     return Response.json(renderResponse(current), {
-      headers: { "Cache-Control": "private, no-store" },
+      headers: { "Cache-Control": "no-store" },
     });
   }
   if (path.length === 1 && request.method === "DELETE") {
