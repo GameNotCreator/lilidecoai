@@ -19,12 +19,23 @@ const draftSchema = z
     referenceReady: z.boolean(),
     useMeasurement: z.boolean(),
     replaceExisting: z.boolean().default(false),
+    visualWidths: z.array(z.number().min(0.02).max(0.75).nullable()).min(1).max(3).optional(),
+    replacementRegion: z.object({
+      xMin: z.number().min(0).max(1), yMin: z.number().min(0).max(1),
+      xMax: z.number().min(0).max(1), yMax: z.number().min(0).max(1),
+    }).refine((box) => box.xMax > box.xMin && box.yMax > box.yMin &&
+      (box.xMax - box.xMin) * (box.yMax - box.yMin) <= 0.5).nullable().optional(),
+    replacementConfirmed: z.boolean().optional(),
     renderId: z.string().uuid().optional(),
     pendingBody: z.string().max(40_000).optional(),
   })
   .superRefine((draft, context) => {
     if (draft.points.length !== draft.productIds.length)
       context.addIssue({ code: "custom", message: "Sélection incohérente." });
+    if (draft.visualWidths && draft.visualWidths.length !== draft.productIds.length)
+      context.addIssue({ code: "custom", message: "Tailles incohérentes." });
+    if (draft.replacementConfirmed && (!draft.replaceExisting || draft.productIds.length !== 1 || !draft.replacementRegion))
+      context.addIssue({ code: "custom", message: "Zone de remplacement incohérente." });
     if (!draft.pendingBody) return;
     try {
       const request = renderRequestSchema.parse(JSON.parse(draft.pendingBody));

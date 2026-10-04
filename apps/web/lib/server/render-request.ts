@@ -32,6 +32,7 @@ export interface RenderInput {
   spatialReference?: import("@lili/types").SpatialReference;
   scaleReference?: import("@lili/types").StorefrontScaleReference;
   replaceExisting?: boolean;
+  replacementRegion?: import("@lili/types").StorefrontReplacementRegion;
   workflow?: "standard" | "simple_point";
   placement: PlacementInput;
   idempotencyKey: string;
@@ -64,6 +65,7 @@ export interface RenderInput {
     };
     placementKind?: SimplePlacementKind;
     pixelsPerCm?: number;
+    visualWidthNormalized?: number;
   }>;
 }
 

@@ -52,6 +52,15 @@ export const storefrontScaleReferenceSchema = z.object({
   sameDepthConfirmed: z.literal(true),
 }).strict();
 export type StorefrontScaleReference = z.infer<typeof storefrontScaleReferenceSchema>;
+/** A visual target width, not a physical measurement or camera calibration. */
+export const storefrontVisualWidthSchema = z.number().finite().min(0.02).max(0.75);
+export const storefrontReplacementRegionSchema = z.object({
+  xMin: z.number().finite().min(0).max(1), yMin: z.number().finite().min(0).max(1),
+  xMax: z.number().finite().min(0).max(1), yMax: z.number().finite().min(0).max(1),
+}).strict().refine(region => region.xMax > region.xMin && region.yMax > region.yMin &&
+  (region.xMax - region.xMin) * (region.yMax - region.yMin) <= 0.5,
+  { message: "Tracez une zone visible contenant au maximum la moitié de la photo." });
+export type StorefrontReplacementRegion = z.infer<typeof storefrontReplacementRegionSchema>;
 const dimensionValueCmSchema = z.number().finite().positive().max(1_500);
 const dimensionReferenceSchema = z.object({
   axis: z.enum(["width", "height"]),
@@ -83,6 +92,7 @@ export const simplePlacementSchema = z
      * support). Wins over the vision estimate; validated server-side.
      */
     pixelsPerCm: z.number().finite().min(0.2).max(200).optional(),
+    visualWidthNormalized: storefrontVisualWidthSchema.optional(),
   })
   .refine((value) => value.dimensionPair || value.dimensionReference, {
     message: "Indiquez deux dimensions pour cet objet.",
@@ -134,6 +144,7 @@ export const renderRequestSchema = z
     spatialReference: spatialReferenceSchema.optional(),
     scaleReference: storefrontScaleReferenceSchema.optional(),
     replaceExisting: z.boolean().optional(),
+    replacementRegion: storefrontReplacementRegionSchema.optional(),
     workflow: z.enum(["standard", "simple_point"]).default("standard"),
     mode: renderModeSchema.default("insert"),
     placement: z.object({
@@ -192,6 +203,19 @@ export const renderRequestSchema = z
         message: "Indiquez les objets, leurs points et leurs dimensions.",
         path: ["simplePlacements"],
       });
+    }
+    const visualControls = value.replacementRegion !== undefined ||
+      value.simplePlacements?.some(item => item.visualWidthNormalized !== undefined);
+    if (visualControls && (value.workflow !== "simple_point" || !value.simplePlacements?.length)) {
+      context.addIssue({ code: "custom", message: "Le patron visuel s’utilise avec les articles du placement simple.", path: ["simplePlacements"] });
+    }
+    if (value.replacementRegion) {
+      const anchor = value.simplePlacements?.[0]?.placementPoint;
+      const region = value.replacementRegion;
+      if (value.simplePlacements?.length !== 1 || value.replaceExisting !== true || !anchor || anchor.x < region.xMin || anchor.x > region.xMax ||
+          anchor.y < region.yMin || anchor.y > region.yMax) {
+        context.addIssue({ code: "custom", message: "Confirmez le remplacement et placez le point dans la zone sélectionnée.", path: ["replacementRegion"] });
+      }
     }
     if (value.mode === "replace" && value.workflow !== "simple_point") {
       if (!value.targetPoint) {
@@ -374,6 +398,8 @@ export const renderSchema = z.object({
   resultUrl: z.string().nullable(),
   /** Deterministic composite (before harmonization), when stored. */
   compositeUrl: z.string().nullable().optional(),
+  /** Owner-only candidate whose identity is checked, while geometry needs adjustment. */
+  adjustmentPreviewUrl: z.string().nullable().optional(),
   error: z.string().nullable().optional(),
   qualityScore: z.coerce.number().nullable(),
   qualityDecision: qualityDecisionSchema.optional(),

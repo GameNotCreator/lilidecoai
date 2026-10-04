@@ -42,8 +42,9 @@ import { buildStorefrontPerspectiveGuide, type StorefrontPerspectiveGuideObject 
 import { localiseStorefrontPerspectiveGuide } from "./storefront-perspective-guide-window";
 import { composeStorefrontIsolatedProducts, harmonizeStorefrontIsolatedProducts, STOREFRONT_ISOLATED_COMPOSITE_VERSION, type StorefrontIsolatedComposition } from "./storefront-isolated-composite";
 import { roomIntegrationEditComposition, roomRefinementEditComposition, prepareRoomRefinementBase, prepareNativeRoomRefinementFrame, buildNativeRoomRefinementGuide, localiseRoomIntegration, restoreRoomIntegrationBackground, restoreLocalRoomIntegrationBackground, STOREFRONT_ROOM_INTEGRATION_COMPOSITE_VERSION, STOREFRONT_LOCAL_ROOM_INTEGRATION_COMPOSITE_VERSION } from "./storefront-room-integration";
+import { confirmedStorefrontReplacementRegion, resolveStorefrontVisualScale } from "./storefront-visual-policy";
 import { inspectStorefrontScene, storefrontScenePreflightAllowance, STOREFRONT_SCENE_PREFLIGHT_VERSION, STOREFRONT_POSE_PREFLIGHT_VERSION, STOREFRONT_WIDTH_POSE_PREFLIGHT_VERSION, type StorefrontScenePose } from "./ai/storefront-scene-preflight";
-import { buildStorefrontHybridPosePrompt, buildStorefrontHybridPrompt, buildStorefrontRoomRefinementPrompt, buildStorefrontNativeRoomRefinementPrompt, buildStorefrontContactRoomRefinementPrompt, storefrontRoomRefinementRequired, STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ALPHA_HYBRID_PROMPT_VERSION, STOREFRONT_LEGACY_HYBRID_PROMPT_VERSION } from "./storefront-hybrid";
+import { buildStorefrontHybridPosePrompt, buildStorefrontHybridPrompt, buildStorefrontRoomRefinementPrompt, buildStorefrontNativeRoomRefinementPrompt, buildStorefrontContactRoomRefinementPrompt, storefrontRoomRefinementRequired, STOREFRONT_VISUAL_OPENAI_PROMPT_VERSION, STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION, STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ALPHA_HYBRID_PROMPT_VERSION, STOREFRONT_LEGACY_HYBRID_PROMPT_VERSION } from "./storefront-hybrid";
 import { captureStage } from "./render-capture";
 import { cutoutTrust } from "./cutout-identity";
 import {
@@ -201,6 +202,7 @@ interface SimpleRenderObject {
   placementKind: SimplePlacementKind;
   /** Scale confirmed by the customer, which wins over the vision estimate. */
   pixelsPerCm: number | null;
+  visualWidthNormalized?: number;
 }
 
 interface ResolvedRenderInput extends Omit<RenderInput, "placement"> {
@@ -420,8 +422,21 @@ export async function createRender(
           item.placementKind ??
           simplePointPlacementKind(selectedProduct.objectType),
         pixelsPerCm,
+        ...(item.visualWidthNormalized !== undefined ? { visualWidthNormalized: item.visualWidthNormalized } : {}),
       };
     });
+    const hasVisualControls = input.replacementRegion !== undefined ||
+      simpleObjects.some(item => item.visualWidthNormalized !== undefined);
+    if (hasVisualControls && !fastStorefront)
+      throw new RenderError("Le patron visuel s’utilise dans le placement simple de la boutique.", 422);
+    try {
+      confirmedStorefrontReplacementRegion(input.replacementRegion, input.replaceExisting,
+        simpleObjects.map(item => item.placementPoint));
+      for (const item of simpleObjects)
+        resolveStorefrontVisualScale(item.visualWidthNormalized, scene.widthPx, item.product.widthCm);
+    } catch (reason) {
+      throw new RenderError(reason instanceof Error ? reason.message : "Patron visuel invalide.", 422);
+    }
     const firstSimpleObject = simpleObjects[0]!;
     input.simplePlacements = simpleObjects.map((item) => ({
       productId: item.product.id,
@@ -429,6 +444,7 @@ export async function createRender(
       dimensionPair: item.dimensionPair,
       placementKind: item.placementKind,
       ...(item.pixelsPerCm !== null ? { pixelsPerCm: item.pixelsPerCm } : {}),
+      ...(item.visualWidthNormalized !== undefined ? { visualWidthNormalized: item.visualWidthNormalized } : {}),
     }));
     input.mode = "insert";
     input.placementPoint = firstSimpleObject.placementPoint;
@@ -438,6 +454,8 @@ export async function createRender(
       xNormalized: firstSimpleObject.placementPoint.x,
       yNormalized: firstSimpleObject.placementPoint.y,
       simplePlacements: input.simplePlacements,
+      ...(hasVisualControls ? { scaleEvidence: "user_visual_size", metricVerified: false,
+        ...(input.replacementRegion ? { replacementRegion: input.replacementRegion } : {}) } : {}),
     };
     input.userInstructions = buildSimplePointPrompt({
       objects: simpleObjects.map((item) => ({
@@ -459,6 +477,10 @@ export async function createRender(
   const now = new Date();
   const requestedSize = selectOutputSize(scene.widthPx, scene.heightPx);
   const mode = input.mode ?? "insert";
+  const visualStorefront = fastStorefront && (input.replacementRegion !== undefined ||
+    input.simplePlacements?.some(item => item.visualWidthNormalized !== undefined));
+  const storefrontHybridPrompt = visualStorefront ? STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION : STOREFRONT_HYBRID_PROMPT_VERSION;
+  const storefrontOpenAIPrompt = visualStorefront ? STOREFRONT_VISUAL_OPENAI_PROMPT_VERSION : STOREFRONT_LOCAL_ROOM_INTEGRATION_PROMPT_VERSION;
   const outputQuality = input.outputQuality ?? "final";
   const placementPoint = input.placementPoint ?? {
     x: Number(input.placement.xNormalized ?? 0.5),
@@ -541,7 +563,7 @@ export async function createRender(
     ],
     attemptCount: 0,
     estimatedCostUsd: 0,
-    promptVersion: fastStorefront ? (selectedProvider.route.provider === "myarchitectai" ? STOREFRONT_HYBRID_PROMPT_VERSION : STOREFRONT_LOCAL_ROOM_INTEGRATION_PROMPT_VERSION) : simplePointWorkflow
+    promptVersion: fastStorefront ? (selectedProvider.route.provider === "myarchitectai" ? storefrontHybridPrompt : storefrontOpenAIPrompt) : simplePointWorkflow
       ? SIMPLE_POINT_PROMPT_VERSION
       : PROMPT_VERSION,
     engineVersions: {
@@ -552,7 +574,7 @@ export async function createRender(
       // The prompt the model actually receives. simple_point sends the
       // harmonize prompt (SIMPLE_COMPOSITE_PROMPT_VERSION); the "simple point"
       // version is the render's own contract, already on `promptVersion`.
-      prompt: fastStorefront ? (selectedProvider.route.provider === "myarchitectai" ? STOREFRONT_HYBRID_PROMPT_VERSION : STOREFRONT_LOCAL_ROOM_INTEGRATION_PROMPT_VERSION) : simplePointWorkflow
+      prompt: fastStorefront ? (selectedProvider.route.provider === "myarchitectai" ? storefrontHybridPrompt : storefrontOpenAIPrompt) : simplePointWorkflow
         ? selectedProvider.route.provider === "myarchitectai"
           ? SIMPLE_MYARCHITECTAI_PROMPT_VERSION
           : SIMPLE_COMPOSITE_PROMPT_VERSION
@@ -709,7 +731,7 @@ export async function createRender(
   if (simplePointWorkflow) {
     if (!serverConfig.aiMockMode && deferTask) {
       const update = {
-        ...([STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ALPHA_HYBRID_PROMPT_VERSION].includes(render.engineVersions?.prompt ?? "") && render.engineVersions?.editProvider === "myarchitectai"
+        ...([STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION, STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ALPHA_HYBRID_PROMPT_VERSION].includes(render.engineVersions?.prompt ?? "") && render.engineVersions?.editProvider === "myarchitectai"
           ? { provider: null, model: null }
           : { provider: selectedProvider.route.provider, model: selectedProvider.provider.model }),
         pipelineState: "generating_final" as const,
@@ -951,6 +973,7 @@ export async function executeDurableRender(
         placementKind:
           item.placementKind ?? simplePointPlacementKind(product.objectType),
         pixelsPerCm: item.pixelsPerCm ?? null,
+        ...(item.visualWidthNormalized !== undefined ? { visualWidthNormalized: item.visualWidthNormalized } : {}),
       };
     },
   );
@@ -1090,19 +1113,22 @@ async function runSimplePointRender(
   const fastStorefront = render.publicSessionId?.startsWith("storefront:") === true &&
     render.engineVersions?.quality === STOREFRONT_PLACEMENT_REVIEW_VERSION && input.mode !== "replace";
   const detailRealisticReview = render.engineVersions?.quality === STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION;
-  const hybridRoomIntegration = [STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ALPHA_HYBRID_PROMPT_VERSION, STOREFRONT_LEGACY_HYBRID_PROMPT_VERSION].includes(render.engineVersions?.prompt ?? "") && render.engineVersions?.editProvider === "myarchitectai";
-  const hybridContactAnchoring = hybridRoomIntegration && render.engineVersions?.prompt === STOREFRONT_HYBRID_PROMPT_VERSION;
+  const hybridRoomIntegration = [STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION, STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ALPHA_HYBRID_PROMPT_VERSION, STOREFRONT_LEGACY_HYBRID_PROMPT_VERSION].includes(render.engineVersions?.prompt ?? "") && render.engineVersions?.editProvider === "myarchitectai";
+  const visualStorefront = render.publicSessionId?.startsWith("storefront:") === true &&
+    [STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_OPENAI_PROMPT_VERSION].includes(render.engineVersions?.prompt ?? "");
+  const hybridContactAnchoring = hybridRoomIntegration &&
+    [STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION].includes(render.engineVersions?.prompt ?? "");
   const hybridNativeRoomFrame = hybridContactAnchoring || hybridRoomIntegration && render.engineVersions?.prompt === STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION;
   const replacementPreflightBudget = hybridContactAnchoring && input.replaceExisting === true;
   const hybridAdaptiveRoom = hybridNativeRoomFrame || hybridRoomIntegration && render.engineVersions?.prompt === STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION;
   const hybridResponsesPose = hybridAdaptiveRoom || hybridRoomIntegration && render.engineVersions?.prompt === STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION;
   const hybridPosePipeline = hybridResponsesPose || hybridRoomIntegration && render.engineVersions?.prompt === STOREFRONT_NATIVE_ALPHA_HYBRID_PROMPT_VERSION;
-  const hybridStepVersion = hybridContactAnchoring ? "v6" : hybridNativeRoomFrame ? "v5" : hybridAdaptiveRoom ? "v4" : hybridResponsesPose ? "v3" : "v2";
+  const hybridStepVersion = visualStorefront ? "v9" : hybridContactAnchoring ? "v6" : hybridNativeRoomFrame ? "v5" : hybridAdaptiveRoom ? "v4" : hybridResponsesPose ? "v3" : "v2";
   const localRoomIntegration = render.engineVersions?.composite === STOREFRONT_LOCAL_ROOM_INTEGRATION_COMPOSITE_VERSION;
   const roomIntegration = localRoomIntegration || render.engineVersions?.composite === STOREFRONT_ROOM_INTEGRATION_COMPOSITE_VERSION;
   const roomIntegrationReview = render.engineVersions?.quality === STOREFRONT_ROOM_INTEGRATION_REVIEW_VERSION;
   if (roomIntegration !== roomIntegrationReview || (roomIntegration && render.engineVersions?.prompt !==
-      (hybridRoomIntegration ? render.engineVersions?.prompt : localRoomIntegration ? STOREFRONT_LOCAL_ROOM_INTEGRATION_PROMPT_VERSION : STOREFRONT_ROOM_INTEGRATION_PROMPT_VERSION)))
+      (hybridRoomIntegration ? render.engineVersions?.prompt : localRoomIntegration ? visualStorefront ? STOREFRONT_VISUAL_OPENAI_PROMPT_VERSION : STOREFRONT_LOCAL_ROOM_INTEGRATION_PROMPT_VERSION : STOREFRONT_ROOM_INTEGRATION_PROMPT_VERSION)))
     throw new RenderError("Le contrat d’intégration dans la pièce est incompatible.", 422);
   const fastRealisticReview = roomIntegration || detailRealisticReview || render.engineVersions?.quality === STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION;
   const isolatedProducts = render.engineVersions?.composite === STOREFRONT_ISOLATED_COMPOSITE_VERSION;
@@ -1120,7 +1146,7 @@ async function runSimplePointRender(
     [STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_ROOM_INTEGRATION_REVIEW_VERSION].includes(render.engineVersions?.quality ?? "") && input.mode !== "replace";
   const realisticReviewVersion = roomIntegration ? STOREFRONT_ROOM_INTEGRATION_REVIEW_VERSION : detailRealisticReview ? STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION : fastRealisticReview ? STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION : STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION;
   const imageEditQuality = roomIntegration || highQualityIsolation ? "high" : "medium";
-  const imagePromptVersion = hybridRoomIntegration ? render.engineVersions!.prompt! : localRoomIntegration ? STOREFRONT_LOCAL_ROOM_INTEGRATION_PROMPT_VERSION : roomIntegration ? STOREFRONT_ROOM_INTEGRATION_PROMPT_VERSION : detailIsolation ? STOREFRONT_DETAIL_ISOLATION_PROMPT_VERSION : highQualityIsolation ? STOREFRONT_HIGH_QUALITY_ISOLATION_PROMPT_VERSION : cameraWindowIsolation ? STOREFRONT_CAMERA_WINDOW_ISOLATION_PROMPT_VERSION : cameraFirstIsolation ? STOREFRONT_CAMERA_FIRST_ISOLATION_PROMPT_VERSION : realisticReviewVersion;
+  const imagePromptVersion = visualStorefront ? render.engineVersions!.prompt! : hybridRoomIntegration ? render.engineVersions!.prompt! : localRoomIntegration ? STOREFRONT_LOCAL_ROOM_INTEGRATION_PROMPT_VERSION : roomIntegration ? STOREFRONT_ROOM_INTEGRATION_PROMPT_VERSION : detailIsolation ? STOREFRONT_DETAIL_ISOLATION_PROMPT_VERSION : highQualityIsolation ? STOREFRONT_HIGH_QUALITY_ISOLATION_PROMPT_VERSION : cameraWindowIsolation ? STOREFRONT_CAMERA_WINDOW_ISOLATION_PROMPT_VERSION : cameraFirstIsolation ? STOREFRONT_CAMERA_FIRST_ISOLATION_PROMPT_VERSION : realisticReviewVersion;
   const boundedStorefront = fastStorefront || realisticStorefront;
   const renderDeadlineMs = Math.min(renderDeadline(startedAt), boundedStorefront ? render.createdAt.getTime() + 180_000 : Infinity);
   if (realisticStorefront && input.scaleReference && simpleObjects.some(item => item.pixelsPerCm === null))
@@ -1228,19 +1254,41 @@ async function runSimplePointRender(
   // Metric scale and room lighting come from one cached vision pass, shared
   // with the free pre-flight the client already ran: the customer sees the
   // same numbers the render uses, and the call is paid for only once.
-  await setStage("analyzing_scene", "estimating_scale");
   const points = simpleObjects.map((item) => item.placementPoint);
+  const manualReplacement = visualStorefront
+    ? confirmedStorefrontReplacementRegion(input.replacementRegion, input.replaceExisting, points) : null;
+  const visualScales = simpleObjects.map(item => visualStorefront
+    ? resolveStorefrontVisualScale(item.visualWidthNormalized, sceneWidth, item.product.widthCm) : null);
+  const directVisualPlacement = visualStorefront && visualScales.every(Boolean) && !input.scaleReference &&
+    (input.replaceExisting !== true || manualReplacement !== null);
+  await setStage(directVisualPlacement ? "computing_geometry" : "analyzing_scene",
+    directVisualPlacement ? "preparing_visual_placement" : "estimating_scale");
   const kinds = simpleObjects.map((item) => item.placementKind);
   let realisticInspections: SceneInspection[] | undefined;
   let realisticPoses: StorefrontScenePose[] | undefined;
-  const scaleResult: SceneScaleResult = realisticStorefront ? await durableStep(db, hybridPosePipeline ? `preflight-${hybridStepVersion}` : "storefront-scene-preflight", "analysis", async () => {
+  // V9's explicit visual target is sufficient to start the image edit. Camera and
+  // support remain unknown here; the image models see the original room and infer
+  // them. This path makes no paid preflight call, retry or calibration claim.
+  const scaleResult: SceneScaleResult = directVisualPlacement ? await durableStep(db, "manual-placement-v9", "analysis", async () => ({
+    spans: simpleObjects.map((_item, index) => ({ pixelsPerCm: visualScales[index]!.pixelsPerCm,
+      scaleSource: "visual_size" as const, confidence: "low" as const, supportKind: "other", supportMaterial: "other",
+      supportGlossy: false, referenceKind: "none", impliedFrameWidthCm: null })),
+    widthPixelsPerCm: visualScales.map(scale => scale!.widthPixelsPerCm),
+    inspections: simpleObjects.map(() => ({ imageClear: false, clarityScore: 0, targetVisible: false,
+      supportVisible: false, obstacleAtPoint: false, obstacleName: null, obstacleBox: null,
+      evidence: "Patron visuel choisi ; support non mesuré." })),
+    poses: simpleObjects.map(() => ({ cameraElevationDegrees: null, cameraRollDegrees: null,
+      evidence: "Caméra inférée par le modèle d’image ; aucune calibration." })),
+    lighting: null, cached: true,
+  }), { maxAttempts: 1, respectRetryable: true }) : realisticStorefront ? await durableStep(db, (hybridPosePipeline || visualStorefront) ? `preflight-${hybridStepVersion}` : "storefront-scene-preflight", "analysis", async () => {
     if (serverConfig.aiMockMode) return { spans: [], lighting: null, cached: true };
     const result = await measureProviderCall(db, render, {
-      step: hybridPosePipeline ? `storefront_scene_preflight_${hybridStepVersion}` : "storefront_scene_preflight", provider: "openai", model: serverConfig.openaiVisionModel,
+      step: (hybridPosePipeline || visualStorefront) ? `storefront_scene_preflight_${hybridStepVersion}` : "storefront_scene_preflight", provider: "openai", model: serverConfig.openaiVisionModel,
       ...storefrontScenePreflightAllowance(), promptVersion: widthAnchoredIsolated ? STOREFRONT_WIDTH_POSE_PREFLIGHT_VERSION : fastRealisticReview ? STOREFRONT_POSE_PREFLIGHT_VERSION : STOREFRONT_SCENE_PREFLIGHT_VERSION,
     }, () => inspectStorefrontScene({ room: { data: sceneImage, mimeType: "image/webp" },
       points: simpleObjects.map(item => ({ point: item.placementPoint, kind: item.placementKind })),
       deadlineMs: Math.min(renderDeadlineMs - (replacementPreflightBudget ? 105_000 : 125_000), Date.now() + (replacementPreflightBudget ? 45_000 : hybridNativeRoomFrame ? 35_000 : 25_000)), reference: input.scaleReference,
+      ...(manualReplacement ? { replacementRegion: manualReplacement } : {}),
       ...(hybridNativeRoomFrame ? { timeoutMs: replacementPreflightBudget ? 45_000 as const : 35_000 as const } : {}),
       ...(fastRealisticReview ? { productHeightsCm: simpleObjects.map(item => item.product.heightCm) } : {}),
       ...(widthAnchoredIsolated ? { productWidthsCm: simpleObjects.map(item => item.product.widthCm) } : {}),
@@ -1297,6 +1345,8 @@ async function runSimplePointRender(
     if (item.pixelsPerCm !== null) {
       return { pixelsPerCm: item.pixelsPerCm, scaleSource: "user" as const };
     }
+    const visualScale = visualScales[index];
+    if (visualScale) return { pixelsPerCm: visualScale.pixelsPerCm, scaleSource: visualScale.scaleSource };
     const span = spans[index];
     return {
       pixelsPerCm: span?.pixelsPerCm ?? null,
@@ -1310,7 +1360,8 @@ async function runSimplePointRender(
   // historical admissions keep their frozen guide and scaling contract.
   const widthScales = widthAnchoredIsolated && !serverConfig.aiMockMode && "widthPixelsPerCm" in scaleResult
     ? (scaleResult as SceneScaleResult & { widthPixelsPerCm?: Array<number | null> }).widthPixelsPerCm
-    : undefined;
+      ?.map((value, index) => visualScales[index]?.widthPixelsPerCm ?? value)
+    : visualScales.some(Boolean) ? visualScales.map(value => value?.widthPixelsPerCm ?? null) : undefined;
   if (widthAnchoredIsolated && !serverConfig.aiMockMode &&
       (!widthScales || widthScales.length !== simpleObjects.length ||
         widthScales.some(value => value === null || !Number.isFinite(value) || value <= 0)))
@@ -1334,8 +1385,20 @@ async function runSimplePointRender(
       baseRowFraction: item.product.cutout?.baseRowFraction,
     },
   }));
+  // The catalogue silhouette is a placeholder. A supplied pixel-width preference
+  // is uniform; it cannot certify the height of the subsequently generated pose.
+  const compositionScales = scales.map((scale, index) => {
+    const visualScale = visualScales[index];
+    const item = simpleObjects[index]!;
+    const cutout = cutoutSizes[index]!;
+    return visualScale && item.dimensionPair.mode === "height_length"
+      ? { ...scale, pixelsPerCm: visualScale.widthPx * cutout.heightPx * (item.product.cutout?.baseRowFraction ?? 1) /
+          (cutout.widthPx * item.dimensionPair.heightCm) }
+      : scale;
+  });
+  for (const [index, spec] of specs.entries()) spec.pixelsPerCm = compositionScales[index]?.pixelsPerCm ?? null;
   try {
-    planSimplePlacements(sceneWidth, sceneHeight, specs);
+    planSimplePlacements(sceneWidth, sceneHeight, specs, { allowEstimatedFrameCrop: visualStorefront && visualScales.some(Boolean) });
   } catch (reason) {
     if (reason instanceof SimpleCompositeError) {
       throw new RenderError(reason.message, reason.status);
@@ -1395,7 +1458,13 @@ async function runSimplePointRender(
         inspections.push(inspection);
     }
     for (const [index, inspection] of inspections.entries()) {
-      assertClearInspection(inspection);
+      if (!(visualStorefront && (visualScales[index] || manualReplacement))) assertClearInspection(inspection);
+      const confirmedRegion = index === 0 ? manualReplacement : null;
+      if (confirmedRegion) {
+        removedBoxes.push(confirmedRegion);
+        replacedTargets.push({ objectIndex: index, name: inspection.obstacleName ?? "objet sélectionné" });
+        continue;
+      }
       if (!inspection.obstacleAtPoint) continue;
       if (input.mode !== "replace" && !(realisticStorefront && input.replaceExisting))
         throw new RenderError(
@@ -1488,12 +1557,12 @@ async function runSimplePointRender(
         cutout: cutouts[index] as Buffer,
         point: item.placementPoint,
         dimensions: item.dimensionPair,
-        pixelsPerCm: scales[index]?.pixelsPerCm ?? null,
-        scaleSource: scales[index]?.scaleSource,
+        pixelsPerCm: compositionScales[index]?.pixelsPerCm ?? null,
+        scaleSource: compositionScales[index]?.scaleSource,
         kind: item.placementKind,
         baseRowFraction: item.product.cutout?.baseRowFraction,
       })),
-      { lighting },
+      { lighting, allowEstimatedFrameCrop: visualStorefront && visualScales.some(Boolean) },
     ),
   );
 
@@ -1520,15 +1589,15 @@ async function runSimplePointRender(
     pose: realisticPoses?.[index],
   })) : [];
   const hybridLocalRefinement = hybridAdaptiveRoom && storefrontRoomRefinementRequired(roomGuideObjects, replacedTargets.length);
-  const editComposition = hybridLocalRefinement ? roomRefinementEditComposition(composition, roomGuideObjects, removedBoxes)
-    : roomIntegration ? roomIntegrationEditComposition(composition, roomGuideObjects, removedBoxes)
+  const editComposition = hybridLocalRefinement ? roomRefinementEditComposition(composition, roomGuideObjects, removedBoxes, { confirmedReplacement: Boolean(manualReplacement), allowEstimatedVolume: visualStorefront && visualScales.some(Boolean) })
+    : roomIntegration ? roomIntegrationEditComposition(composition, roomGuideObjects, removedBoxes, { confirmedReplacement: Boolean(manualReplacement), allowEstimatedVolume: visualStorefront && visualScales.some(Boolean) })
     : realisticStorefront ? perspectiveEditComposition(composition) : composition;
   const fullRoomGuide = hybridLocalRefinement ? await markPoints(workingScene, simpleObjects.map(item => item.placementPoint), sceneWidth, sceneHeight)
     : localRoomIntegration ? await buildStorefrontPerspectiveGuide({
     room: workingScene, width: sceneWidth, height: sceneHeight,
     objects: roomGuideObjects, reference: input.scaleReference,
   }) : null;
-  const localRoom = localRoomIntegration ? await localiseRoomIntegration(editComposition, roomGuideObjects, fullRoomGuide!) : null;
+  const localRoom = localRoomIntegration ? await localiseRoomIntegration(editComposition, roomGuideObjects, fullRoomGuide!, { allowEstimatedVolume: visualStorefront && visualScales.some(Boolean) }) : null;
   // The room is the editable authority. A pasted catalogue pose in image1
   // biases the model toward that camera, so v3 uses a separate measured guide.
   const padded = await padCompositionForAspect(localRoom ? localRoom.composition : fastRealisticReview
@@ -1901,7 +1970,10 @@ async function runSimplePointRender(
         yMax: (removedBoxes[index]!.yMax * sceneHeight - (hybridWindow?.top ?? 0) + hybridInputFrame.offsetY) / hybridInputFrame.paddedHeight,
       } })),
     };
-    const hybridPrompt = hybridRoomIntegration ? buildStorefrontHybridPrompt(hybridPlacement) : undefined;
+    const visualSizeNote = visualStorefront && visualScales.some(Boolean)
+      ? "\nThe requested pixel size is a customer-adjusted VISUAL target, not a physical measurement or camera calibration. Preserve the catalogue proportions through a uniform change of size; do not claim metric accuracy."
+      : "";
+    const hybridPrompt = hybridRoomIntegration ? buildStorefrontHybridPrompt(hybridPlacement) + visualSizeNote : undefined;
     const roomRefinementModel = hybridLocalRefinement ? render.engineVersions?.repairImageModel : undefined;
     if (hybridLocalRefinement && (!roomRefinementModel || !localRoom || !fullRoomGuide))
       throw new DurableExecutionError("Le contrat de composition locale est incomplet.", "permanent");
@@ -1988,12 +2060,12 @@ async function runSimplePointRender(
           scene: refinementBase, composition: refinementBase, productCutout: orderedReferences[0]!.data,
           protectionMask: new Uint8Array(),
           targetMask: { data: new Uint8Array(nativeFrame?.maskPng ?? hybridInputFrame.maskPng), mimeType: "image/png", role: "target_mask" },
-          prompt: nativeContract ? (contactGuide ? buildStorefrontContactRoomRefinementPrompt(nativeContract)
+          prompt: (nativeContract ? (contactGuide ? buildStorefrontContactRoomRefinementPrompt(nativeContract)
             : buildStorefrontNativeRoomRefinementPrompt(nativeContract)) : buildStorefrontRoomRefinementPrompt({ ...hybridPlacement,
             originalFrame: { width: sceneWidth, height: sceneHeight }, window: hybridWindow!,
             padding: { x: hybridInputFrame.offsetX, y: hybridInputFrame.offsetY },
             contactInOriginalRoom: hybridItem.placementPoint,
-          }),
+          })) + visualSizeNote,
           quality: "high", size: requestedSize,
           lighting: { direction: "automatic", temperature: "neutral", hardness: "balanced" },
           placement: { x: hybridItem.placementPoint.x, y: hybridItem.placementPoint.y, operation: "place", objectCount: 1 },
@@ -2066,14 +2138,14 @@ async function runSimplePointRender(
     }
     // An owner-only provisional image survives an unavailable review. It is
     // never a delivered result until completeRender accepts the quality gate.
-    let candidateAsset = await durableStep(db, hybridPosePipeline ? `preview-${hybridStepVersion}` : "storefront-perspective-preview", "analysis", () => storeAsset(db, {
+    let candidateAsset = await durableStep(db, (hybridPosePipeline || visualStorefront) ? `preview-${hybridStepVersion}` : "storefront-perspective-preview", "analysis", () => storeAsset(db, {
       organizationId, kind: "render", visibility: privateVisibility(render.publicSessionId),
       buffer: finalBuffer, contentType: "image/webp", expiresAt: scene.expiresAt,
     }));
     await advanceRender(db, render.id, { $set: { compositeAssetId: candidateAsset.id, updatedAt: new Date() } });
     await setStage("quality_check", "checking_placement");
-    let decision = serverConfig.aiMockMode ? simulatedQualityDecision() : await durableStep(db, hybridPosePipeline ? `review-${hybridStepVersion}` : "storefront-first-review", "analysis", () => measureProviderCall(db, render, {
-      step: hybridPosePipeline ? `storefront_placement_review_${hybridStepVersion}` : "storefront_placement_review", provider: "openai", model: serverConfig.openaiVisionModel,
+    let decision = serverConfig.aiMockMode ? simulatedQualityDecision() : await durableStep(db, (hybridPosePipeline || visualStorefront) ? `review-${hybridStepVersion}` : "storefront-first-review", "analysis", () => measureProviderCall(db, render, {
+      step: (hybridPosePipeline || visualStorefront) ? `storefront_placement_review_${hybridStepVersion}` : "storefront_placement_review", provider: "openai", model: serverConfig.openaiVisionModel,
       ...storefrontPlacementReviewAllowance(), promptVersion: realisticReviewVersion,
     }, () => reviewStorefrontPlacement({ ...visualInput, deadlineMs: hybridRoomIntegration ? Math.min(renderDeadlineMs, Date.now() + 35_000) : renderDeadlineMs, realism: true, fastReview: fastRealisticReview, scaleReference: reference,
       ...(roomIntegration ? { roomIntegration: true } : {}),
@@ -2171,7 +2243,7 @@ async function runSimplePointRender(
       placement: { ...input.placement, operation: "place", objectCount: simpleObjects.length,
         pipelineStage: "complete", compositePlacements: posedComposition?.placements ?? composition.placements,
         sceneWidth, sceneHeight, lighting, scaleSpans: spans, ...(reference ? { scaleReference: reference } : {}),
-        scaleEvidence: reference ? "customer_declared_height_same_depth" : "visual_estimate", replacedTargets, skippedObstacles,
+        scaleEvidence: reference ? "customer_declared_height_same_depth" : visualScales.some(Boolean) ? "user_visual_size" : "visual_estimate", replacedTargets, skippedObstacles,
         ...(roomEdit ? { roomEdit } : {}) },
       updatedAt: new Date(),
     };

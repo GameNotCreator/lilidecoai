@@ -95,6 +95,7 @@ vi.mock("../lib/server/ai", () => ({
   inspectImagesWithGoogle: vi.fn(),
 }));
 import { createRender } from "../lib/server/rendering";
+import { renderResponse } from "../lib/server/serializers";
 import { selectEditingProvider } from "../lib/server/ai";
 import { stopRender } from "../lib/server/render-lifecycle";
 import { markPoints } from "../lib/server/scale-estimation";
@@ -1376,5 +1377,126 @@ it("settles a failed MyArchitectAI render with only OpenAI vision enabled", asyn
     expect(mocks.edit).toHaveBeenCalledOnce();
     expect(mocks.capture).not.toHaveBeenCalled();
     expect(mocks.release).toHaveBeenCalledOnce();
+  });
+});
+
+
+describe("public visual placement v9 uses a declared pixel target directly", () => {
+  beforeEach(async () => {
+    mocks.config.simplePointImageProvider = "myarchitectai";
+    request.simplePlacements = request.simplePlacements!.slice(0, 1);
+    request.simplePlacements[0]!.visualWidthNormalized = 0.04;
+    await scenes.updateOne({ id: "scene" }, { $set: { publicSessionId: "storefront:visitor-1" } });
+    const pose = await sharp(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><rect x="20" y="20" width="20" height="40" fill="#2850a0"/></svg>')).png().toBuffer();
+    mocks.edit.mockImplementation(async input => ({
+      provider: input.productIsolation || input.storefrontRoomRefinement ? "openai" : "myarchitectai",
+      model: input.productIsolation || input.storefrontRoomRefinement ? "test-repair-image" : "edit-by-prompt",
+      status: "succeeded", durationMs: 1, estimatedCostUsd: 0.1, attemptCount: 1,
+      images: [{ data: input.productIsolation ? pose : input.composition, mimeType: input.productIsolation ? "image/png" : "image/webp" }],
+      safety: { blocked: false },
+    }));
+  });
+  const run = () => createRender(db, "org", structuredClone(request), "storefront:visitor-1");
+
+  it("starts both image providers without the slow scale/support preflight, with unknown camera and a frozen v9 snapshot", async () => {
+    mocks.storefrontPreflight.mockRejectedValue(new Error("This mandatory analysis would time out."));
+    const result = await run();
+    expect(result.status).toBe("succeeded");
+    expect(mocks.storefrontPreflight).not.toHaveBeenCalled();
+    expect(mocks.edit).toHaveBeenCalledTimes(2);
+    expect(renders.rows[0]).toMatchObject({ engineVersions: { prompt: "storefront-myarchitect-room-v9" },
+      requestSnapshot: { input: { simplePlacements: [{ visualWidthNormalized: 0.04 }] } },
+      audit: { scaleSources: ["visual_size"], scaleFallbackFired: false } });
+    expect(mocks.edit.mock.calls[1]![0].prompt).toContain("not a physical measurement");
+    expect(mocks.edit.mock.calls[1]![0].prompt).toContain('"elevationDegrees":null');
+    const steps = vi.mocked(durableStep).mock.calls.map(call => call[1]);
+    expect(steps).toContain("manual-placement-v9");
+    expect(steps).not.toContain("preflight-v9");
+    expect(reviewCalls).toBe(1);
+    expect(mocks.capture).toHaveBeenCalledOnce();
+  });
+
+  it("uses the exact confirmed replacement box and final replacement QA without asking for a visible empty support", async () => {
+    request.replaceExisting = true;
+    request.replacementRegion = { xMin: 0.05, yMin: 0.25, xMax: 0.75, yMax: 0.85 };
+    const result = await run();
+    expect(result.status).toBe("succeeded");
+    expect(mocks.storefrontPreflight).not.toHaveBeenCalled();
+    expect(mocks.edit).toHaveBeenCalledTimes(2);
+    expect(mocks.edit.mock.calls[0]![0].prompt).toContain("objet sélectionné");
+    expect(renders.rows[0]!.placement).toMatchObject({ replacementRegion: request.replacementRegion,
+      replacedTargets: [{ objectIndex: 0, name: "objet sélectionné" }] });
+    expect((renders.rows[0] as unknown as RenderDocument).qualityDecision!.checks).toEqual(expect.arrayContaining([expect.objectContaining({ name: "replacement_complete" })]));
+  });
+
+  it("retains explicit detection when replacement is requested without a confirmed manual box", async () => {
+    request.replaceExisting = true;
+    await run();
+    expect(mocks.storefrontPreflight).toHaveBeenCalledOnce();
+  });
+
+  it.each(["scale", "perspective", "contact", "position", "supportIntegration"])(
+    "shows an owner-only adjustment candidate for %s while refusing the final and releasing its credit", async gate => {
+      reviewPayload.gateFailure = gate;
+      await expect(run()).rejects.toThrow();
+      const row = renders.rows[0] as unknown as RenderDocument;
+      expect(row).toMatchObject({ status: "failed", qualityDecision: { status: "rejected" }, creditCharged: false });
+      expect(renderResponse(row).adjustmentPreviewUrl).toBe(`/api/assets/${row.compositeAssetId}`);
+      expect(row.resultAssetId).toBeUndefined();
+      expect(mocks.capture).not.toHaveBeenCalled();
+      expect(mocks.release).toHaveBeenCalledOnce();
+      expect(mocks.edit).toHaveBeenCalledTimes(2);
+    });
+
+  it.each(["identity", "present", "silhouetteComplete", "noDuplicate"])(
+    "withholds a corrupt %s candidate despite the simpler geometry policy", async gate => {
+      reviewPayload.gateFailure = gate;
+      await expect(run()).rejects.toThrow();
+      expect(renderResponse(renders.rows[0] as unknown as RenderDocument).adjustmentPreviewUrl).toBeNull();
+      expect(mocks.capture).not.toHaveBeenCalled();
+    });
+
+  it("withholds incomplete replacement and never retries its paid image", async () => {
+    request.replaceExisting = true;
+    request.replacementRegion = { xMin: 0.05, yMin: 0.25, xMax: 0.75, yMax: 0.85 };
+    reviewPayload.replacementFailure = true;
+    await expect(run()).rejects.toThrow();
+    expect(renderResponse(renders.rows[0] as unknown as RenderDocument).adjustmentPreviewUrl).toBeNull();
+    expect(mocks.edit).toHaveBeenCalledTimes(2);
+    expect(mocks.capture).not.toHaveBeenCalled();
+  });
+
+  it("preserves the historical v6 clarity admission for a client without visual controls", async () => {
+    delete request.simplePlacements![0]!.visualWidthNormalized;
+    const preflight = await mocks.storefrontPreflight.getMockImplementation()!();
+    preflight.inspections[0].supportVisible = false;
+    mocks.storefrontPreflight.mockResolvedValue(preflight);
+    await expect(run()).rejects.toThrow(/support|visible/);
+    expect((renders.rows[0] as unknown as RenderDocument).engineVersions!.prompt).toBe("storefront-myarchitect-room-v6");
+    expect(mocks.storefrontPreflight).toHaveBeenCalledOnce();
+    expect(mocks.edit).not.toHaveBeenCalled();
+  });
+
+  it("keeps explicit measured-reference analysis instead of treating it as a visual calibration", async () => {
+    delete request.simplePlacements![0]!.visualWidthNormalized;
+    request.simplePlacements![0]!.pixelsPerCm = 3;
+    request.scaleReference = { realHeightCm: 30, basePoint: { x: 0.2, y: 0.8 }, topPoint: { x: 0.2, y: 0.5 }, sameDepthConfirmed: true };
+    await expect(run()).rejects.toThrow(); // The offline review deliberately lacks the measured-reference check.
+    expect(mocks.storefrontPreflight).toHaveBeenCalledOnce();
+    expect(mocks.storefrontPreflight.mock.calls[0]![0].reference).toEqual(request.scaleReference);
+    expect((renders.rows[0] as unknown as RenderDocument).engineVersions!.prompt).toBe("storefront-myarchitect-room-v6");
+  });
+
+  it("uses visual widths for two articles on the existing OpenAI route without a MyArchitect fallback or mandatory preflight", async () => {
+    request.simplePlacements!.push({ ...request.simplePlacements![0]!, productId: "p1", placementPoint: { x: 0.65, y: 0.8 } });
+    mocks.edit.mockImplementation(async input => ({ provider: "openai", model: "test-image", status: "succeeded",
+      durationMs: 1, estimatedCostUsd: 0.1, attemptCount: 1, images: [{ data: input.composition, mimeType: "image/webp" }], safety: { blocked: false } }));
+    const result = await run();
+    expect(result.status).toBe("succeeded");
+    expect(mocks.storefrontPreflight).not.toHaveBeenCalled();
+    expect(mocks.edit).toHaveBeenCalledOnce();
+    expect(renders.rows[0]).toMatchObject({ engineVersions: { prompt: "storefront-openai-room-v9", editProvider: "openai" },
+      audit: { scaleSources: ["visual_size", "visual_size"] } });
+    expect(reviewCalls).toBe(1);
   });
 });

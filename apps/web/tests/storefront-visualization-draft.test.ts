@@ -133,3 +133,26 @@ describe("storefront reload recovery", () => {
     expect(saveStorefrontDraft(blocked, draft())).toBe(false);
   });
 });
+
+
+describe("visual size and explicit replacement draft", () => {
+  it("restores old version-one drafts without requiring new fields", () => {
+    const tab = storage();
+    tab.setItem(storefrontDraftKey([productId]), JSON.stringify(draft()));
+    expect(readStorefrontDraft(tab, [productId], 1001)?.points).toEqual([point]);
+  });
+  it("keeps chosen size and confirmed box after a reload without photo bytes", () => {
+    const tab = storage();
+    const region = { xMin: 0.3, yMin: 0.3, xMax: 0.7, yMax: 0.8 };
+    expect(saveStorefrontDraft(tab, draft({ visualWidths: [0.24], replaceExisting: true, replacementRegion: region, replacementConfirmed: true }))).toBe(true);
+    expect(readStorefrontDraft(tab, [productId], 1001)).toMatchObject({ visualWidths: [0.24], replacementRegion: region, replacementConfirmed: true });
+    expect(tab.getItem(storefrontDraftKey([productId]))).not.toMatch(/data:image|imageUrl|accessToken/);
+  });
+  it("refuses a confirmed box without replacement and mismatched size counts", () => {
+    const tab = storage();
+    const region = { xMin: 0.3, yMin: 0.3, xMax: 0.7, yMax: 0.8 };
+    expect(saveStorefrontDraft(tab, draft({ replacementRegion: region, replacementConfirmed: true }))).toBe(false);
+    expect(saveStorefrontDraft(tab, draft({ visualWidths: [0.2, 0.3] }))).toBe(false);
+    expect(saveStorefrontDraft(tab, draft({ visualWidths: [0.9] }))).toBe(false);
+  });
+});

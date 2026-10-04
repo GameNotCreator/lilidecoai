@@ -163,6 +163,16 @@ describe("merchant render diagnostics", () => {
       "execution.steps.preflight-v5.output.widthPixelsPerCm",
       "execution.steps.preflight-v5.output.poses.cameraElevationDegrees",
       "execution.steps.preflight-v5.output.poses.cameraRollDegrees",
+      "execution.steps.manual-placement-v9.status",
+      "execution.steps.manual-placement-v9.output.spans.pixelsPerCm",
+      "execution.steps.manual-placement-v9.output.widthPixelsPerCm",
+      "execution.steps.manual-placement-v9.output.poses.cameraElevationDegrees",
+      "execution.steps.manual-placement-v9.output.poses.cameraRollDegrees",
+      "execution.steps.preflight-v9.status",
+      "execution.steps.preflight-v9.output.spans.pixelsPerCm",
+      "execution.steps.preflight-v9.output.widthPixelsPerCm",
+      "execution.steps.preflight-v9.output.poses.cameraElevationDegrees",
+      "execution.steps.preflight-v9.output.poses.cameraRollDegrees",
       "execution.steps.preflight-v6.status",
       "execution.steps.preflight-v6.output.spans.pixelsPerCm",
       "execution.steps.preflight-v6.output.widthPixelsPerCm",
@@ -274,6 +284,71 @@ describe("merchant render diagnostics", () => {
     const body = await (await GET(request, context)).json();
     expect(body.sceneProjection).toEqual([{ index: 1, heightPixelsPerCm: 11, widthPixelsPerCm: null, cameraElevationDegrees: null, cameraRollDegrees: null }]);
     expect(JSON.stringify(body)).not.toMatch(/private|placementGuide|checkpoint|prompt/);
+  });
+
+  it.each(["preflight-v9", "manual-placement-v9"])("exposes bounded numeric %s evidence without inventing pose or leaking the guide", async checkpoint => {
+    const render = realRender();
+    render.execution.steps["preflight-v6"] = { status: "completed", output: completeOutput };
+    render.execution.steps[checkpoint] = { status: "completed", output: {
+      spans: [{ pixelsPerCm: 12 }, { pixelsPerCm: "4" }, { pixelsPerCm: Infinity }],
+      widthPixelsPerCm: [15, 201, "6"],
+      poses: [
+        { cameraElevationDegrees: null, cameraRollDegrees: null, evidence: "private unknown camera" },
+        { cameraElevationDegrees: 86, cameraRollDegrees: "2" },
+        { cameraElevationDegrees: -1, cameraRollDegrees: -31 },
+      ],
+      inspections: [{ evidence: "private visual placement evidence" }],
+      placementGuide: { __checkpointImage: "private v9 guide" },
+      prompt: "private v9 prompt",
+    } };
+    mocks.findOne.mockResolvedValue(render);
+    const response = await GET(request, context);
+    const body = await response.json();
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(body.sceneProjection).toEqual([
+      { index: 1, heightPixelsPerCm: 12, widthPixelsPerCm: 15, cameraElevationDegrees: null, cameraRollDegrees: null },
+      { index: 2, heightPixelsPerCm: null, widthPixelsPerCm: null, cameraElevationDegrees: null, cameraRollDegrees: null },
+      { index: 3, heightPixelsPerCm: null, widthPixelsPerCm: null, cameraElevationDegrees: null, cameraRollDegrees: null },
+    ]);
+    expect(JSON.stringify(body)).not.toMatch(/private|evidence|placementGuide|checkpoint|prompt|requestSnapshot|publicSessionId|workerId|token/);
+  });
+
+  it("prefers completed manual v9 evidence over earlier v9 analysis without filling its unknown fields", async () => {
+    const render = realRender();
+    render.execution.steps["preflight-v9"] = { status: "completed", output: completeOutput };
+    render.execution.steps["manual-placement-v9"] = { status: "completed", output: {
+      spans: [{ pixelsPerCm: 16 }],
+      widthPixelsPerCm: [18],
+      poses: [{ cameraElevationDegrees: null, cameraRollDegrees: null }],
+    } };
+    mocks.findOne.mockResolvedValue(render);
+    expect((await (await GET(request, context)).json()).sceneProjection).toEqual([
+      { index: 1, heightPixelsPerCm: 16, widthPixelsPerCm: 18, cameraElevationDegrees: null, cameraRollDegrees: null },
+    ]);
+  });
+
+  it.each(["preflight-v9", "manual-placement-v9"].flatMap(checkpoint =>
+    ["running", "unknown", "failed", "retry"].map(status => [checkpoint, status] as const),
+  ))("does not substitute older completed evidence when %s is %s", async (checkpoint, status) => {
+    const render = realRender();
+    render.execution.steps["preflight-v6"] = { status: "completed", output: completeOutput };
+    if (checkpoint === "manual-placement-v9")
+      render.execution.steps["preflight-v9"] = { status: "completed", output: completeOutput };
+    render.execution.steps[checkpoint] = { status, output: completeOutput };
+    mocks.findOne.mockResolvedValue(render);
+    expect((await (await GET(request, context)).json()).sceneProjection).toBeNull();
+  });
+
+  it.each(["preflight-v9", "manual-placement-v9"])("does not substitute older evidence for malformed completed %s output", async checkpoint => {
+    const render = realRender();
+    render.execution.steps["preflight-v6"] = { status: "completed", output: completeOutput };
+    if (checkpoint === "manual-placement-v9")
+      render.execution.steps["preflight-v9"] = { status: "completed", output: completeOutput };
+    render.execution.steps[checkpoint] = { status: "completed", output: { __checkpointImage: "private v9 image" } };
+    mocks.findOne.mockResolvedValue(render);
+    const body = await (await GET(request, context)).json();
+    expect(body.sceneProjection).toBeNull();
+    expect(JSON.stringify(body)).not.toMatch(/private|checkpoint|prompt|evidence/);
   });
 
   it.each(["running", "unknown", "failed", "retry"])("does not fall back to v5 when the v6 preflight is %s", async status => {

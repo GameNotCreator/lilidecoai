@@ -4,6 +4,9 @@ export const STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION = "storefront-myarchitec
 export const STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION = "storefront-myarchitect-room-v4";
 export const STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION = "storefront-myarchitect-room-v5";
 export const STOREFRONT_HYBRID_PROMPT_VERSION = "storefront-myarchitect-room-v6";
+/** New visual controls never reinterpret admitted v1-v8 jobs or checkpoints. */
+export const STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION = "storefront-myarchitect-room-v9";
+export const STOREFRONT_VISUAL_OPENAI_PROMPT_VERSION = "storefront-openai-room-v9";
 
 interface ProjectedProduct {
   kind: "standing" | "wall" | "flat";

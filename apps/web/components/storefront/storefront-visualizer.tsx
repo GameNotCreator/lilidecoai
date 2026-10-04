@@ -48,6 +48,8 @@ import {
   type StorefrontVisualizationDraft,
 } from "@/lib/storefront-visualization-draft";
 import { useStorefrontCatalog } from "./catalog-state";
+import { StorefrontCamera } from "./storefront-camera";
+import { fitStorefrontVisualPoint, storefrontVisualFootprint, type StorefrontReplacementRegion } from "@/lib/storefront-visual-footprint";
 import {
   CatalogError,
   CatalogLoading,
@@ -131,9 +133,15 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
   const [referenceTop, setReferenceTop] = useState<Point | null>(null);
   const [referenceHeight, setReferenceHeight] = useState("");
   const [sameDepth, setSameDepth] = useState(false);
-  const [referenceReady, setReferenceReady] = useState(false);
+  const [referenceReady, setReferenceReady] = useState(true);
   const [useMeasurement, setUseMeasurement] = useState(false);
   const [replaceExisting, setReplaceExisting] = useState(false);
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [visualWidths, setVisualWidths] = useState<Array<number | null>>(() => products.map(() => null));
+  const [replacementRegion, setReplacementRegion] = useState<StorefrontReplacementRegion | null>(null);
+  const [replacementConfirmed, setReplacementConfirmed] = useState(false);
+  const [replacementFirstCorner, setReplacementFirstCorner] = useState<Point | null>(null);
+  const [regionCorner, setRegionCorner] = useState<"first" | "second">("first");
   const [referenceTarget, setReferenceTarget] = useState<"base" | "top">(
     "base",
   );
@@ -168,7 +176,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
   const renderedId = pending(render) ? render!.id : null;
   const frozen = Boolean(!restored || busy || render || uncertain);
   const allPlaced = points.length === products.length && points.every(Boolean);
-  const step = render ? 4 : !scene ? 1 : referenceReady ? 3 : 2;
+  const step = render ? 3 : !scene ? 1 : 2;
   const scaleReference =
     referenceBase && referenceTop
       ? {
@@ -233,6 +241,9 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
         setReferenceReady(saved.referenceReady);
         setUseMeasurement(saved.useMeasurement);
         setReplaceExisting(saved.replaceExisting);
+        setVisualWidths(saved.visualWidths ?? saved.productIds.map(() => null));
+        setReplacementRegion(saved.replacementRegion ?? null);
+        setReplacementConfirmed(Boolean(saved.replacementConfirmed));
         setRender(latest);
         pendingBody.current = saved.pendingBody ?? null;
         setUncertain(Boolean(saved.pendingBody));
@@ -283,9 +294,13 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
     setReferenceTop(null);
     setReferenceHeight("");
     setSameDepth(false);
-    setReferenceReady(false);
+    setReferenceReady(true);
     setUseMeasurement(false);
     setReplaceExisting(false);
+    setVisualWidths(products.map(() => null));
+    setReplacementRegion(null);
+    setReplacementConfirmed(false);
+    setReplacementFirstCorner(null);
     setReferenceTarget("base");
     setPoints(products.map(() => null));
     setActiveIndex(0);
@@ -319,6 +334,9 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
             referenceReady,
             useMeasurement,
             replaceExisting,
+            visualWidths,
+            replacementRegion: replacementRegion && (replacementRegion.xMax - replacementRegion.xMin) * (replacementRegion.yMax - replacementRegion.yMin) <= 0.5 && replacementRegion.xMax > replacementRegion.xMin && replacementRegion.yMax > replacementRegion.yMin ? replacementRegion : null,
+            replacementConfirmed,
             ...(render ? { renderId: render.id } : {}),
           }
         : null,
@@ -333,6 +351,9 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
       referenceReady,
       useMeasurement,
       replaceExisting,
+      visualWidths,
+      replacementRegion,
+      replacementConfirmed,
       render,
     ],
   );
@@ -405,9 +426,13 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
       setReferenceTop(null);
       setReferenceHeight("");
       setSameDepth(false);
-      setReferenceReady(false);
+      setReferenceReady(true);
       setUseMeasurement(false);
       setReplaceExisting(false);
+      setVisualWidths(products.map(() => null));
+      setReplacementRegion(null);
+      setReplacementConfirmed(false);
+      setReplacementFirstCorner(null);
       setReferenceTarget("base");
       setPoints(products.map(() => null));
       setActiveIndex(0);
@@ -433,6 +458,31 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
       setError("");
       return;
     }
+    if (replaceExisting && products.length === 1 && !replacementConfirmed) {
+      if (regionCorner === "first" || !replacementFirstCorner) {
+        setReplacementFirstCorner(point);
+        setReplacementRegion(null);
+        setRegionCorner("second");
+      } else {
+        setReplacementRegion({
+          xMin: Math.min(replacementFirstCorner.x, point.x),
+          yMin: Math.min(replacementFirstCorner.y, point.y),
+          xMax: Math.max(replacementFirstCorner.x, point.x),
+          yMax: Math.max(replacementFirstCorner.y, point.y),
+        });
+      }
+      setError("");
+      pendingBody.current = null;
+      return;
+    }
+    if (scene) point = fitStorefrontVisualPoint(activeProduct, scene, point);
+    if (replaceExisting && replacementRegion) {
+      // The selected support point stays in the region explicitly approved by the user.
+      point = {
+        x: Math.max(replacementRegion.xMin, Math.min(replacementRegion.xMax, point.x)),
+        y: Math.max(replacementRegion.yMin, Math.min(replacementRegion.yMax, point.y)),
+      };
+    }
     if (scene && useMeasurement) {
       try {
         computeStorefrontReferenceScale(
@@ -441,18 +491,19 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
           scene.heightPx,
           [point],
         );
-      } catch (reason) {
-        setError(
-          reason instanceof Error
-            ? reason.message
-            : "Gardez l’article près de votre référence.",
-        );
-        return;
+      } catch {
+        setUseMeasurement(false);
+        setError("La taille sera estimée avec le patron visuel. Vous pouvez déplacer librement l’article.");
       }
     }
     const next = [...points];
     next[activeIndex] = point;
     setPoints(next);
+    if (scene) {
+      setVisualWidths((current) => current.map((width, index) => index === activeIndex
+        ? storefrontVisualFootprint(products[index]!, scene, point, width ?? 0.18).width
+        : width));
+    }
     setError("");
     pendingBody.current = null;
     const following = next.findIndex((p, index) => index > activeIndex && !p);
@@ -477,6 +528,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
       !scene ||
       !referenceReady ||
       !allPlaced ||
+      (!pendingBody.current && replaceExisting && products.length === 1 && !replacementConfirmed) ||
       requestLock.current ||
       render
     )
@@ -489,12 +541,9 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
           scene.heightPx,
           points.filter((point): point is Point => !!point),
         );
-    } catch (reason) {
-      setError(
-        reason instanceof Error
-          ? reason.message
-          : "Vérifiez la référence de hauteur.",
-      );
+    } catch {
+      setUseMeasurement(false);
+      setError("La taille de votre article sera estimée avec le patron visuel. Relancez quand vous êtes prêt.");
       return;
     }
     requestLock.current = true;
@@ -520,12 +569,16 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
         workflow: "simple_point",
         mode: "insert",
         replaceExisting,
+        ...(replaceExisting && replacementConfirmed && replacementRegion ? { replacementRegion } : {}),
         ...(useMeasurement ? { scaleReference } : {}),
         simplePlacements: products.map((product, index) => ({
           productId: product.id,
           placementPoint: points[index],
           dimensionPair: productDimensionPair(product),
           placementKind: productPlacementKind(product),
+          ...(!useMeasurement ? {
+            visualWidthNormalized: storefrontVisualFootprint(product, scene, points[index]!, visualWidths[index] ?? 0.18).width,
+          } : {}),
         })),
         placement: {
           sceneId: scene.id,
@@ -633,10 +686,38 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
     pendingBody.current = null;
   }
   const resultUrl = safeStorefrontUrl(render?.resultUrl);
+  // Only the server can authorize a private adjustment preview after the identity
+  // and background checks. A failed composite alone is never exposed here.
+  const adjustmentUrl = render?.status === "failed"
+    ? safeStorefrontUrl(render.adjustmentPreviewUrl) : null;
+  const activePoint = points[activeIndex];
+  const activeFootprint = scene && activePoint
+    ? storefrontVisualFootprint(activeProduct, scene, activePoint, visualWidths[activeIndex] ?? 0.18)
+    : null;
+  function confirmReplacement() {
+    if (!replacementRegion || !scene) return;
+    const width = replacementRegion.xMax - replacementRegion.xMin;
+    const height = replacementRegion.yMax - replacementRegion.yMin;
+    if (width < 0.02 || height < 0.02 || width * height > 0.5) {
+      setError("Entourez seulement l’objet à remplacer, avec un peu d’espace autour.");
+      return;
+    }
+    const point = fitStorefrontVisualPoint(activeProduct, scene, { x: (replacementRegion.xMin + replacementRegion.xMax) / 2, y: replacementRegion.yMax });
+    setReplacementRegion({
+      xMin: Math.min(replacementRegion.xMin, point.x), yMin: Math.min(replacementRegion.yMin, point.y),
+      xMax: Math.max(replacementRegion.xMax, point.x), yMax: Math.max(replacementRegion.yMax, point.y),
+    });
+    setPoints([point]);
+    setKeyboardPoint(point);
+    setVisualWidths([storefrontVisualFootprint(activeProduct, scene, point, width).width]);
+    setReplacementConfirmed(true);
+    setError("");
+    pendingBody.current = null;
+  }
   return (
     <>
       <ol className="store-steps" aria-label="Étapes de visualisation">
-        {["Photo", "Échelle", "Placement", "Résultat"].map((label, i) => (
+        {["Photo", "Placement", "Résultat"].map((label, i) => (
           <li
             key={label}
             aria-current={step === i + 1 ? "step" : undefined}
@@ -736,10 +817,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
               </div>
               <p className="store-kicker">COMMENÇONS CHEZ VOUS</p>
               <h2>Montrez-nous votre intérieur.</h2>
-              <p>
-                Prenez une photo bien éclairée, avec le sol ou le support
-                visible. Gardez de l’espace autour du futur emplacement.
-              </p>
+              <p>Prenez une photo ou choisissez-en une dans votre galerie. Placez ensuite votre article et ajustez sa taille à l’écran.</p>
               <label className="store-consent">
                 <input
                   type="checkbox"
@@ -764,6 +842,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
                   <ImagePlus size={18} />
                   Choisir une photo
                   <input
+                    ref={photoInput}
                     type="file"
                     accept="image/jpeg,image/png,image/webp"
                     className="store-sr-only"
@@ -775,31 +854,17 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
                     }}
                   />
                 </label>
-                <label
-                  className={`store-button secondary ${!consent || busy ? "is-disabled" : ""}`}
-                >
-                  <Camera size={18} />
+                <button type="button" className="store-button secondary" disabled={!consent || !!busy} onClick={() => setCameraOpen(true)}>
+                  <Camera size={18} aria-hidden="true" />
                   Prendre une photo
-                  <input
-                    type="file"
-                    accept="image/jpeg,image/png,image/webp"
-                    capture="environment"
-                    className="store-sr-only"
-                    disabled={!consent || !!busy}
-                    onChange={(event) => {
-                      const file = event.target.files?.[0];
-                      event.target.value = "";
-                      if (file) void uploadPhoto(file);
-                    }}
-                  />
-                </label>
+                </button>
               </div>
               <small>JPEG, PNG ou WebP · 20 Mo maximum</small>
             </div>
           ) : render ? (
             <div className="store-render-result">
               <span className="store-sr-only" role="status" aria-live="polite">
-                {renderTerminalAnnouncement(
+                {adjustmentUrl ? "Votre aperçu est disponible. Vous pouvez ajuster sa taille ou son placement." : renderTerminalAnnouncement(
                   render.status === "succeeded" && !resultUrl
                     ? undefined
                     : render.status,
@@ -831,22 +896,22 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
                       ? "Bienvenue chez vous."
                       : render.status === "cancelled"
                         ? "La visualisation a été annulée."
-                        : "Nous n’avons pas pu terminer cette visualisation."}
+                        : adjustmentUrl ? "Aperçu à ajuster." : "Nous n’avons pas pu terminer cette visualisation."}
                   </h2>
-                  {render.status === "succeeded" && resultUrl ? (
+                  {(render.status === "succeeded" && resultUrl) || adjustmentUrl ? (
                     <>
                       <div className="store-result-image">
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
-                          src={showOriginal ? scene.imageUrl : resultUrl}
+                          src={showOriginal ? scene.imageUrl : (resultUrl ?? adjustmentUrl)!}
                           alt={
                             showOriginal
                               ? "Votre pièce avant la visualisation"
-                              : "Votre sélection visualisée dans votre pièce"
+                              : adjustmentUrl ? "Aperçu de votre article, taille et placement à ajuster" : "Votre sélection visualisée dans votre pièce"
                           }
                         />
                         <span>
-                          {showOriginal ? "Votre photo" : "Votre visualisation"}
+                          {showOriginal ? "Votre photo" : adjustmentUrl ? "Aperçu à ajuster" : "Votre visualisation"}
                         </span>
                       </div>
                       <div className="store-result-actions">
@@ -859,18 +924,19 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
                             ? "Voir ma sélection"
                             : "Comparer avec ma photo"}
                         </button>
-                        <a
-                          href={resultUrl}
+                        {!adjustmentUrl && <a
+                          href={resultUrl!}
                           className="store-button"
                           target="_blank"
                           rel="noopener noreferrer"
                         >
                           Ouvrir l’image
-                        </a>
+                        </a>}
                       </div>
                       <p className="store-small-note">
-                        Image d’inspiration à échelle approximative. Vérifiez
-                        les dimensions et l’espace disponible avant votre achat.
+                        {adjustmentUrl
+                          ? "Votre article est visible. Ajustez son placement ou sa taille pour améliorer l’aperçu. Cette tentative n’a pas utilisé de crédit."
+                          : "Image d’inspiration à échelle approximative. Vérifiez les dimensions et l’espace disponible avant votre achat."}
                       </p>
                     </>
                   ) : (
@@ -881,7 +947,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
                   )}
                   <button className="store-text-link" onClick={editAgain}>
                     <RotateCcw size={16} />
-                    Revenir aux emplacements
+                    {adjustmentUrl ? "Ajuster placement et taille" : "Revenir aux emplacements"}
                   </button>
                 </>
               )}
@@ -918,7 +984,9 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
                       ? referenceTarget === "base"
                         ? "Vous pouvez continuer avec une taille estimée. Si vous connaissez une hauteur dans la pièce, indiquez son bas puis son sommet pour affiner l’échelle."
                         : "Touchez maintenant le sommet de cet objet, puis indiquez sa hauteur."
-                      : productPlacementKind(activeProduct) === "standing"
+                      : replaceExisting && products.length === 1 && !replacementConfirmed
+                        ? "Choisissez deux coins opposés autour de l’objet à retirer, puis confirmez la zone."
+                        : productPlacementKind(activeProduct) === "standing"
                         ? useMeasurement
                           ? "Touchez l’endroit où le bord inférieur visible de l’article doit rencontrer le sol ou le meuble, à la même profondeur que votre référence."
                           : "Touchez l’endroit où le bord inférieur visible de l’article doit rencontrer le sol ou le meuble."
@@ -957,7 +1025,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
                     frame.current?.focus();
                   }}
                 >
-                  Continuer avec une échelle estimée
+                  Revenir au placement avec une taille estimée
                 </button>
               )}
               {!referenceReady && (
@@ -992,7 +1060,9 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
                 disabled={frozen || !sceneImageReady}
                 aria-label={
                   referenceReady
-                    ? `Placer ${activeProduct.name} sur la photo. Au clavier, utilisez les flèches puis Entrée.`
+                    ? replaceExisting && products.length === 1 && !replacementConfirmed
+                      ? `Entourer l’objet à remplacer : choisir le ${regionCorner === "first" ? "premier" : "second"} coin. Au clavier, utilisez les flèches puis Entrée.`
+                      : `Placer ${activeProduct.name} sur la photo. Au clavier, utilisez les flèches puis Entrée.`
                     : `Choisir ${referenceTarget === "base" ? "le bas" : "le sommet"} de la référence sur la photo. Au clavier, utilisez les flèches puis Entrée.`
                 }
                 onKeyDown={(event) => {
@@ -1046,6 +1116,24 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
                   draggable={false}
                   onLoad={() => setSceneImageReady(true)}
                 />
+                {referenceReady && sceneImageReady && (
+                  <svg aria-hidden="true" viewBox={`0 0 ${scene.widthPx} ${scene.heightPx}`} className="store-visual-guides">
+                    {points.map((point, index) => {
+                      if (!point || useMeasurement) return null;
+                      const box = storefrontVisualFootprint(products[index]!, scene, point, visualWidths[index] ?? 0.18);
+                      return <rect key={index} className="store-visual-footprint" data-active={activeIndex === index}
+                        x={box.xMin * scene.widthPx} y={box.yMin * scene.heightPx}
+                        width={box.width * scene.widthPx} height={box.height * scene.heightPx} />;
+                    })}
+                    {replaceExisting && replacementRegion && <rect className="store-replacement-region"
+                      x={replacementRegion.xMin * scene.widthPx} y={replacementRegion.yMin * scene.heightPx}
+                      width={(replacementRegion.xMax - replacementRegion.xMin) * scene.widthPx}
+                      height={(replacementRegion.yMax - replacementRegion.yMin) * scene.heightPx} />}
+                    {replaceExisting && !replacementConfirmed && replacementFirstCorner && <circle
+                      className="store-replacement-corner" cx={replacementFirstCorner.x * scene.widthPx}
+                      cy={replacementFirstCorner.y * scene.heightPx} r={scene.widthPx / 70} />}
+                  </svg>
+                )}
                 {referenceBase &&
                   referenceTop &&
                   (!referenceReady || useMeasurement) && (
@@ -1205,14 +1293,13 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
                     disabled={frozen}
                     onClick={() => {
                       setReferenceReady(false);
-                      setPoints(products.map(() => null));
                       setActiveIndex(0);
                       pendingBody.current = null;
                     }}
                   >
                     {useMeasurement
                       ? "Modifier le repère"
-                      : "Ajouter un repère de hauteur"}
+                      : "Affiner la taille avec une hauteur connue"}
                   </button>
                 </div>
               )}
@@ -1241,26 +1328,50 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
                         : "Taille estimée. Vérifiez l’espace disponible avant votre achat."}
                     </p>
                   )}
+                  {useMeasurement && <button type="button" className="btn min-h-11 my-3" disabled={frozen} onClick={() => {
+                    setUseMeasurement(false); pendingBody.current = null;
+                  }}>Ajuster la taille à l’écran</button>}
+                  {activeFootprint && !useMeasurement && (
+                    <div className="store-visual-size my-4 flex flex-col gap-3">
+                      <label htmlFor="store-visual-width" className="text-sm font-medium">Taille visuelle de {activeProduct.name}</label>
+                      <input id="store-visual-width" className="range" type="range" min="0.02" max={Math.max(0.02, activeFootprint.maxWidth)} step="0.005"
+                        value={activeFootprint.width} disabled={frozen} aria-describedby="store-visual-size-help"
+                        onChange={(event) => {
+                          const width = Number(event.target.value);
+                          setUseMeasurement(false);
+                          setVisualWidths((current) => current.map((value, index) => index === activeIndex ? width : value));
+                          pendingBody.current = null;
+                        }} />
+                      <p id="store-visual-size-help" className="text-sm text-base-content/70">Le patron indique l’espace souhaité dans la photo. Glissez le curseur, ou utilisez les flèches au clavier. C’est une estimation visuelle.</p>
+                    </div>
+                  )}
                   <label className="my-4 flex min-h-11 items-start gap-3 text-sm cursor-pointer">
-                    <input
-                      type="checkbox"
-                      className="checkbox mt-1 shrink-0"
-                      checked={replaceExisting}
-                      disabled={frozen}
-                      onChange={(event) =>
-                        setReplaceExisting(event.target.checked)
-                      }
-                    />
-                    <span>
-                      {products.length > 1
-                        ? "Remplacer les objets aux emplacements choisis"
-                        : "Remplacer l’objet à cet emplacement"}
-                      <small className="mt-1 block text-base-content/70">
-                        L’objet repéré sera retiré pour accueillir votre
-                        sélection. Le reste de la pièce sera conservé.
-                      </small>
+                    <input type="checkbox" className="checkbox mt-1 shrink-0" checked={replaceExisting} disabled={frozen}
+                      onChange={(event) => {
+                        setReplaceExisting(event.target.checked);
+                        setReplacementConfirmed(false);
+                        setReplacementRegion(null);
+                        setReplacementFirstCorner(null);
+                        setRegionCorner("first");
+                        pendingBody.current = null;
+                        if (event.target.checked) frame.current?.focus();
+                      }} />
+                    <span>{products.length > 1 ? "Remplacer les objets aux emplacements choisis" : "Remplacer un objet présent dans la photo"}
+                      <small className="mt-1 block text-base-content/70">{products.length > 1
+                        ? "Les objets repérés seront retirés pour accueillir votre sélection."
+                        : "Entourez l’objet à retirer en choisissant deux coins sur la photo."}</small>
                     </span>
                   </label>
+                  {replaceExisting && products.length === 1 && <div className="my-4 flex flex-col gap-3" aria-label="Zone à remplacer">
+                    <p role="status" className="text-sm">{replacementConfirmed ? "Zone confirmée. Ajustez le patron à la taille du nouvel article." : replacementRegion
+                      ? "Vérifiez la zone entourée, puis confirmez-la." : regionCorner === "first" ? "Choisissez le premier coin autour de l’objet." : "Choisissez le coin opposé autour de l’objet."}</p>
+                    <div className="flex flex-wrap gap-2">
+                      <button type="button" className="btn min-h-11" disabled={frozen} onClick={() => {
+                        setReplacementConfirmed(false); setReplacementFirstCorner(null); setReplacementRegion(null); setRegionCorner("first"); frame.current?.focus();
+                      }}>{replacementConfirmed ? "Modifier la zone" : "Recommencer la zone"}</button>
+                      {!replacementConfirmed && <button type="button" className="btn min-h-11" disabled={frozen || !replacementRegion} onClick={confirmReplacement}>Confirmer la zone à remplacer</button>}
+                    </div>
+                  </div>}
                   <div className="store-generate-row">
                     <button
                       className="store-text-link"
@@ -1276,7 +1387,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
                     </button>
                     <button
                       className="store-button"
-                      disabled={!allPlaced || !!busy}
+                      disabled={!allPlaced || !!busy || (!uncertain && replaceExisting && products.length === 1 && !replacementConfirmed)}
                       onClick={() => void generate()}
                     >
                       <ScanLine size={18} />
@@ -1297,6 +1408,10 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
           )}
         </section>
       </div>
+      {cameraOpen && <StorefrontCamera onClose={() => setCameraOpen(false)} onCapture={(file) => {
+        setCameraOpen(false);
+        void uploadPhoto(file);
+      }} onChooseExisting={() => { setCameraOpen(false); photoInput.current?.click(); }} />}
     </>
   );
 }

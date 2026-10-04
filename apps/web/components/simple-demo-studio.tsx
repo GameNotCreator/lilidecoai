@@ -1850,6 +1850,7 @@ function scaleBadgeText(entry: ObjectPlacement): string {
 
 const SCALE_SOURCE_BADGES: Record<SimpleScaleSource, string> = {
   user: "Taille ajustée visuellement",
+  visual_size: "Taille visuelle choisie",
   vision: "Échelle estimée sur la photo",
   vision_coarse: "Échelle approximative",
   vision_interpolated: "Échelle approximative",
@@ -1869,6 +1870,7 @@ interface PlacementBadge {
 
 const SCALE_SOURCE_TONES: Record<SimpleScaleSource, BadgeTone> = {
   user: "estimate",
+  visual_size: "estimate",
   vision: "estimate",
   vision_coarse: "estimate",
   vision_interpolated: "estimate",

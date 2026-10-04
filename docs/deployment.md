@@ -78,14 +78,23 @@ différentes. Ne jamais préfixer une clé secrète par `NEXT_PUBLIC_`.
 
 ## 5. Vérification avant et après déploiement
 
+Réutiliser un seul checkout de travail et ses dépendances. Exécuter
+`npm.cmd ci` uniquement si `node_modules` manque ou si les dépendances du
+`package-lock.json` ont changé depuis l'installation.
+
+Vérifier le typage et le lint, puis lancer les tests concernés par la modification :
+
 ```powershell
-npm.cmd ci
 npm.cmd run lint
 npm.cmd run typecheck
-npm.cmd test
-npm.cmd run build
-npm.cmd run test:e2e
+npm.cmd run test --workspace @visualizer/web -- tests/storefront-hybrid.test.ts
 ```
+
+Le fichier de test ci-dessus est un exemple pour le rendu hybride ; adapter la
+sélection aux modules modifiés et ajouter les contrôles navigateur si le parcours
+change. La CI exécute aussi la suite complète. La construction de production
+s'exécute chez Vercel à partir du commit Git livré ; un build local supplémentaire
+est réservé à un diagnostic qui le nécessite.
 
 Smoke tests :
 
@@ -141,15 +150,35 @@ Les variables Vercel sensibles ne sont pas relisibles après stockage ; un expor
 node apps/web/scripts/production-preflight.mjs .vercel/production.env
 ```
 
-Construire sans basculer le domaine principal, puis inspecter le déploiement et vérifier ses parcours avant promotion :
+### Publication depuis Git
+
+Le parcours normal conserve les versions dans GitHub : commits, branches de
+travail et, si nécessaire, tags identifiant un essai à conserver. Réutiliser le
+checkout et ses dépendances ; les sauvegardes ne créent ni copie complète du
+projet, ni dossier `release-candidate`, ni archive ZIP. Les secrets, caches et
+photos privées restent exclus de Git.
+
+Après les contrôles appropriés, pousser la branche pour sa vérification puis
+publier le commit validé sur `main` selon le flux Git du projet. Vercel construit
+ce commit dans le cloud ; sa révision est `VERCEL_GIT_COMMIT_SHA`.
 
 ```powershell
-vercel deploy --prod --skip-domain --yes
+git rev-parse HEAD
+git push origin HEAD:main
 vercel inspect <deployment-id> --logs
-node apps/web/scripts/production-smoke.mjs https://<deployment-url> <fichier-local-du-jeton-de-protection>
-vercel promote <deployment-id> --yes
 node apps/web/scripts/production-smoke.mjs https://lilidecoai-web.vercel.app
 ```
+
+Ne déclarer la publication terminée qu'après avoir vérifié que le déploiement
+est prêt, que son SHA Git correspond au commit livré et que le domaine public
+pointe vers ce déploiement. Les journaux doivent confirmer le preflight de
+production avant et après le build ; le smoke test et les parcours modifiés
+doivent ensuite passer sur cette même version publique.
+
+`prepare-release-candidate.mjs` reste un outil exceptionnel pour une livraison
+CLI sans métadonnées Git explicitement demandée. Son paquet temporaire et sa
+révision de contenu servent à cette livraison précise, jamais à sauvegarder des
+versions successives du projet ; supprimer le paquet une fois l'essai terminé.
 
 Pour une migration explicitement préparée, ajouter uniquement à ce déploiement `--build-env APPLY_IMAGE_PIPELINE_MIGRATION=true`. Ne pas enregistrer ce drapeau dans les variables permanentes du projet. La migration sauvegarde les champs concernés dans `migration_backups_image_pipeline_v1`, ne remplit que les champs manquants et peut être relancée sans réécrire les valeurs existantes.
 

@@ -722,3 +722,28 @@ describe("storefront full-room integration", () => {
     await expect(restoreRoomIntegrationBackground(local, padded, Buffer.from("not an image"))).rejects.toThrow();
   });
 });
+
+
+describe("v9 customer-confirmed replacement permission", () => {
+  it("allows a .42-photo region only explicitly and does not erase outside the selected rectangle", async () => {
+    const original = await fixture();
+    const objects = [object(0, 0.2, 0.8)];
+    const box = { xMin: 0.1, yMin: 0.25, xMax: 0.8, yMax: 0.85 };
+    expect(() => roomRefinementEditComposition(original, objects, [box])).toThrow();
+    const edit = roomRefinementEditComposition(original, objects, [box], { confirmedReplacement: true });
+    expect(alpha(edit, 127, 60)).toBe(0);
+    expect(alpha(edit, 128, 60)).toBe(255);
+    const local = await localiseRoomIntegration(edit, objects, original.sceneWebp!);
+    const padded = await padCompositionForAspect(local.composition, "1536x1024", { exactAspect: true });
+    const generated = await sharp({ create: { width: padded.paddedWidth, height: padded.paddedHeight,
+      channels: 3, background: "#0099ee" } }).png().toBuffer();
+    const restored = await sharp(await restoreLocalRoomIntegrationBackground(edit, local.window, padded, generated)).raw().toBuffer();
+    const source = await sharp(original.sceneWebp!).raw().toBuffer();
+    for (let pixel = 0; pixel < original.sceneWidth * original.sceneHeight; pixel++) {
+      if (edit.maskRaw[pixel * 4 + 3] === 0) continue;
+      expect(restored.subarray(pixel * 3, pixel * 3 + 3)).toEqual(source.subarray(pixel * 3, pixel * 3 + 3));
+    }
+    expect(() => roomRefinementEditComposition(original, objects,
+      [{ xMin: 0, yMin: 0, xMax: 1, yMax: 1 }], { confirmedReplacement: true })).toThrow();
+  });
+});

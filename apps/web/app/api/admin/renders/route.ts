@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 
 const scaleEvidenceSchema = z.object({
   scaleSource: z.enum([
-    "user", "vision", "vision_coarse", "vision_interpolated", "assumed_room_width",
+    "user", "visual_size", "vision", "vision_coarse", "vision_interpolated", "assumed_room_width",
   ]),
   confidence: z.enum(["high", "low", "none"]),
 });

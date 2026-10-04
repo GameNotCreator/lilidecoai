@@ -56,6 +56,7 @@ export function roomIntegrationEditComposition(
   composition: SimpleComposition,
   objects: StorefrontPerspectiveGuideObject[],
   replacements: Array<{ xMin: number; yMin: number; xMax: number; yMax: number }> = [],
+  options: { confirmedReplacement?: boolean; allowEstimatedVolume?: boolean } = {},
 ): SimpleComposition {
   validateComposition(composition);
   if (!Array.isArray(objects) || objects.length < 1 || objects.length > 3) throw invalid();
@@ -102,7 +103,7 @@ export function roomIntegrationEditComposition(
     const right = Math.max(...corners.map(corner => corner.x));
     const upper = Math.min(...corners.map(corner => corner.y));
     const lower = Math.max(...corners.map(corner => corner.y));
-    if (right - left > width || lower - upper > height) throw invalid();
+    if (!options.allowEstimatedVolume && (right - left > width || lower - upper > height)) throw invalid();
     const margin = Math.max(3, Math.min(40, Math.max(physicalWidth, bodyHeight, projectedDepth) * 0.12));
     clearRectangle(left - margin, upper - margin, right + margin, lower + margin);
     if (object.kind === "standing") {
@@ -119,7 +120,7 @@ export function roomIntegrationEditComposition(
   for (const box of replacements) {
     if (!box || ![box.xMin, box.yMin, box.xMax, box.yMax].every(value => Number.isFinite(value) && value >= 0 && value <= 1) ||
         box.xMax <= box.xMin || box.yMax <= box.yMin ||
-        (box.xMax - box.xMin) * (box.yMax - box.yMin) > 0.35) throw invalid();
+        (box.xMax - box.xMin) * (box.yMax - box.yMin) > (options.confirmedReplacement ? 0.5 : 0.35)) throw invalid();
     clearRectangle(box.xMin * width, box.yMin * height, box.xMax * width, box.yMax * height);
   }
   return { ...composition, imageWebp: composition.sceneWebp!, baseWebp: composition.sceneWebp!, maskRaw };
@@ -133,9 +134,10 @@ export function roomRefinementEditComposition(
   composition: SimpleComposition,
   objects: StorefrontPerspectiveGuideObject[],
   replacements: Array<{ xMin: number; yMin: number; xMax: number; yMax: number }> = [],
+  options: { confirmedReplacement?: boolean; allowEstimatedVolume?: boolean } = {},
 ): SimpleComposition {
   // Keep the historical validation and initial volume/replacement union intact.
-  const validated = roomIntegrationEditComposition(composition, objects, replacements);
+  const validated = roomIntegrationEditComposition(composition, objects, replacements, options);
   const { sceneWidth: width, sceneHeight: height } = validated;
   const maskRaw = Buffer.from(validated.maskRaw);
   const clearRectangle = (left: number, top: number, right: number, bottom: number) => {
@@ -146,7 +148,7 @@ export function roomRefinementEditComposition(
   for (const object of objects) {
     // Expand each object separately: distant products do not authorise editing
     // every unrelated pixel in the rectangle between them.
-    const bounds = editableBounds(roomIntegrationEditComposition(composition, [object]));
+    const bounds = editableBounds(roomIntegrationEditComposition(composition, [object], [], options));
     const extent = Math.max(object.dimensionsCm.width * object.widthPixelsPerCm!,
       object.dimensionsCm.height * object.pixelsPerCm,
       object.dimensionsCm.depth * object.widthPixelsPerCm!);
@@ -156,7 +158,7 @@ export function roomRefinementEditComposition(
   for (const box of replacements) {
     // Confirmed removal includes room for the object's immediate contact and
     // edge reconstruction, while distant architecture stays protected.
-    const margin = Math.min(32, Math.max(8, Math.ceil(Math.min(
+    const margin = options.confirmedReplacement ? 0 : Math.min(32, Math.max(8, Math.ceil(Math.min(
       (box.xMax - box.xMin) * width, (box.yMax - box.yMin) * height) * 0.15)));
     clearRectangle(box.xMin * width - margin, box.yMin * height - margin,
       box.xMax * width + margin, box.yMax * height + margin);
@@ -426,9 +428,10 @@ export async function localiseRoomIntegration(
   composition: SimpleComposition,
   objects: StorefrontPerspectiveGuideObject[],
   guide: Buffer,
+  options: { allowEstimatedVolume?: boolean } = {},
 ): Promise<StorefrontLocalRoomIntegration> {
   // Reuse V9's geometry validation without changing the caller's edit mask.
-  roomIntegrationEditComposition(composition, objects);
+  roomIntegrationEditComposition(composition, objects, [], options);
   const bounds = editableBounds(composition);
   if (!Buffer.isBuffer(guide) || !guide.length || guide.length > 32_000_000) throw invalid();
   const metadata = await sharp(guide, { limitInputPixels: 16_000_000 }).metadata();

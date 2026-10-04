@@ -21,6 +21,7 @@ async function fixture(page: Page) {
       model: "edit-by-prompt",
       requestedSize: "1024x1024",
       resultUrl: null as string | null,
+      adjustmentPreviewUrl: null as string | null,
       compositeUrl: "/fixture-room.svg",
       qualityScore: null,
       creditCharged: false,
@@ -98,17 +99,20 @@ async function placeAndSubmit(page: Page, replaceExisting = false) {
     mimeType: "image/png",
     buffer: await sharp(image).png().toBuffer(),
   });
-  await page
-    .getByRole("button", { name: "Continuer avec une échelle estimée" })
-    .click();
   const frame = page.getByRole("button", { name: /^Placer Vase Sable/ });
   await expect(frame).toBeEnabled();
   const bounds = await frame.boundingBox();
   await frame.click({
     position: { x: bounds!.width * 0.5, y: bounds!.height * 0.7 },
   });
-  if (replaceExisting)
-    await page.getByRole("checkbox", { name: /Remplacer l’objet/ }).check();
+  if (replaceExisting) {
+    await page.getByRole("checkbox", { name: /Remplacer un objet/ }).check();
+    const region = page.getByRole("button", { name: /^Entourer l’objet/ });
+    await region.click({ position: { x: bounds!.width * 0.35, y: bounds!.height * 0.3 } });
+    await region.click({ position: { x: bounds!.width * 0.65, y: bounds!.height * 0.75 } });
+    await page.getByRole("button", { name: "Confirmer la zone à remplacer" }).click();
+    await page.screenshot({ path: test.info().outputPath(`replacement-confirmed-${test.info().project.name}.png`), fullPage: true });
+  }
   await page.getByRole("button", { name: "Créer ma visualisation" }).click();
 }
 
@@ -196,7 +200,7 @@ test("a lost acceptance response survives reload and reuses exactly one idempote
   ).toBeEnabled();
   await page.reload();
   await expect(
-    page.getByRole("checkbox", { name: /Remplacer l’objet/ }),
+    page.getByRole("checkbox", { name: /Remplacer un objet/ }),
   ).toBeChecked();
   await expect(
     page.getByRole("button", { name: "Vérifier ma demande" }),
@@ -306,3 +310,252 @@ for (const outage of ["network", "503"] as const) {
     expect(state.posts).toHaveLength(1);
   });
 }
+
+
+test("photo opens direct placement without a mandatory measurement, and manual size survives reload", async ({ page }) => {
+  const state = await fixture(page);
+  await page.goto(`/visualiser?products=${productId}`);
+  await page.getByRole("checkbox").check();
+  await page.getByLabel("Choisir une photo").setInputFiles({ name: "room.png", mimeType: "image/png", buffer: await sharp(image).png().toBuffer() });
+  const frame = page.getByRole("button", { name: /^Placer Vase Sable/ });
+  await expect(frame).toBeEnabled();
+  await expect(page.getByText("Hauteur réelle de votre référence (cm)")).toHaveCount(0);
+  expect(await page.locator(".store-steps li").allTextContents()).toHaveLength(3);
+  const bounds = await frame.boundingBox();
+  await frame.click({ position: { x: bounds!.width * 0.5, y: bounds!.height * 0.7 } });
+  const size = page.getByRole("slider", { name: "Taille visuelle de Vase Sable" });
+  await size.fill("0.24");
+  await expect(page.locator(".store-visual-footprint")).toBeVisible();
+  await expect(size).toHaveValue("0.24");
+  await page.screenshot({ path: test.info().outputPath(`visual-placement-${test.info().project.name}.png`), fullPage: true });
+  await page.reload();
+  await expect(size).toHaveValue("0.24");
+  expect(state.posts).toHaveLength(0);
+  await page.getByRole("button", { name: "Créer ma visualisation" }).click();
+  await expect(page.locator(".render-progress-panel")).toBeVisible();
+  expect(JSON.parse(state.posts[0]!).simplePlacements[0].visualWidthNormalized).toBeCloseTo(0.24);
+  expect(JSON.parse(state.posts[0]!).scaleReference).toBeUndefined();
+});
+
+test("replacement is explicitly boxed and confirmed before generating", async ({ page }) => {
+  const state = await fixture(page);
+  await placeAndSubmit(page, true);
+  const request = JSON.parse(state.posts[0]!);
+  expect(request.replacementRegion).toMatchObject({ xMin: expect.any(Number), yMin: expect.any(Number), xMax: expect.any(Number), yMax: expect.any(Number) });
+  expect(request.replacementRegion.xMin).toBeCloseTo(0.35, 2);
+  expect(request.replacementRegion.yMin).toBeCloseTo(0.3, 2);
+  expect(request.replacementRegion.xMax).toBeCloseTo(0.65, 2);
+  expect(request.replacementRegion.yMax).toBeCloseTo(0.75, 2);
+  expect(request.simplePlacements[0].placementPoint.x).toBeCloseTo(0.5, 2);
+  expect(request.simplePlacements[0].placementPoint.y).toBeCloseTo(0.75, 2);
+  expect(request.simplePlacements[0].visualWidthNormalized).toBeCloseTo(0.3, 2);
+  expect(request.replaceExisting).toBe(true);
+});
+
+test("replacement can be selected entirely with the keyboard and an oversized region stays editable", async ({ page }) => {
+  const state = await fixture(page);
+  await page.goto(`/visualiser?products=${productId}`);
+  await page.getByRole("checkbox").check();
+  await page.getByLabel("Choisir une photo").setInputFiles({ name: "room.png", mimeType: "image/png", buffer: await sharp(image).png().toBuffer() });
+  await page.getByRole("checkbox", { name: /Remplacer un objet/ }).check();
+  const region = page.getByRole("button", { name: /^Entourer l’objet/ });
+  await expect(region).toBeEnabled();
+  await region.focus();
+  await region.press("Enter");
+  await region.press("ArrowLeft"); await region.press("ArrowLeft");
+  await region.press("ArrowUp"); await region.press("ArrowUp");
+  await region.press("Enter");
+  await expect(page.getByRole("button", { name: "Créer ma visualisation" })).toBeDisabled();
+  await page.getByRole("button", { name: "Confirmer la zone à remplacer" }).click();
+  await expect(page.getByRole("button", { name: "Créer ma visualisation" })).toBeEnabled();
+  await page.getByRole("button", { name: "Modifier la zone" }).click();
+  const bounds = await region.boundingBox();
+  await region.click({ position: { x: bounds!.width * 0.05, y: bounds!.height * 0.05 } });
+  await region.click({ position: { x: bounds!.width * 0.95, y: bounds!.height * 0.95 } });
+  await page.getByRole("button", { name: "Confirmer la zone à remplacer" }).click();
+  await expect(page.getByRole("alert")).toContainText("Entourez seulement l’objet");
+  await expect(page.getByRole("button", { name: "Créer ma visualisation" })).toBeDisabled();
+  expect(state.posts).toHaveLength(0);
+});
+
+test("a failed composite is hidden unless the server authorizes an adjustment preview", async ({ page }) => {
+  const state = await fixture(page);
+  state.render.status = "failed";
+  state.render.error = "Un détail de placement doit être ajusté.";
+  await placeAndSubmit(page);
+  await expect(page.getByRole("heading", { name: "Nous n’avons pas pu terminer cette visualisation." })).toBeVisible();
+  await expect(page.locator(".store-result-image")).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Ouvrir l’image" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Revenir aux emplacements" }).click();
+  state.render.adjustmentPreviewUrl = "/fixture-room.svg";
+  await page.getByRole("button", { name: "Créer ma visualisation" }).click();
+  await expect(page.getByRole("heading", { name: "Aperçu à ajuster." })).toBeVisible();
+  await expect(page.getByRole("img", { name: "Aperçu de votre article, taille et placement à ajuster" })).toBeVisible();
+  await expect(page.getByText("Cette tentative n’a pas utilisé de crédit.", { exact: false })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Bienvenue chez vous." })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Ouvrir l’image" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Ajuster placement et taille" }).click();
+  await expect(page.getByRole("slider", { name: "Taille visuelle de Vase Sable" })).toBeVisible();
+  expect(state.posts).toHaveLength(2);
+});
+
+async function openCamera(page: Page) {
+  await page.goto(`/visualiser?products=${productId}`);
+  await page.getByRole("checkbox").check();
+  await page.getByRole("button", { name: "Prendre une photo", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Cadrez votre intérieur." })).toBeVisible();
+}
+
+async function fakeCamera(page: Page, delayed = false) {
+  await page.addInitScript(({ delayed }) => {
+    const counters = { stops: 0, calls: 0, audio: true, release: null as null | (() => void) };
+    (window as unknown as { cameraTest: typeof counters }).cameraTest = counters;
+    Object.defineProperty(navigator.mediaDevices, "getUserMedia", { configurable: true, value: async (constraints: MediaStreamConstraints) => {
+      counters.calls++; counters.audio = constraints.audio as boolean;
+      const canvas = document.createElement("canvas"); canvas.width = 1000; canvas.height = 800;
+      const context = canvas.getContext("2d")!; context.fillStyle = "#e6d5bb"; context.fillRect(0, 0, 1000, 800);
+      const stream = canvas.captureStream(15);
+      stream.getTracks().forEach(track => { const original = track.stop.bind(track); track.stop = () => { counters.stops++; original(); }; });
+      if (delayed) await new Promise<void>(resolve => { counters.release = resolve; });
+      // Keep a canvas frame source alive until the receiving video plays.
+      let frames = 0; const draw = () => { context.fillRect(0, 0, 1000, 800); if (frames++ < 80) requestAnimationFrame(draw); }; draw();
+      return stream;
+    }});
+  }, { delayed });
+}
+
+test("denied camera permission keeps gallery upload available without a paid request", async ({ page }) => {
+  const state = await fixture(page);
+  await page.addInitScript(() => Object.defineProperty(navigator.mediaDevices, "getUserMedia", { configurable: true, value: async () => { throw new DOMException("denied", "NotAllowedError"); } }));
+  await openCamera(page);
+  await expect(page.getByRole("alert")).toContainText("La caméra n’est pas accessible");
+  await expect(page.getByRole("button", { name: "Utiliser cette photo" })).toBeDisabled();
+  const chooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Choisir dans la galerie" }).click();
+  await (await chooser).setFiles({ name: "room.png", mimeType: "image/png", buffer: await sharp(image).png().toBuffer() });
+  await expect(page.getByRole("button", { name: /^Placer Vase Sable/ })).toBeEnabled();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(state.posts).toHaveLength(0);
+});
+
+test("closing the camera stops every acquired video track", async ({ page }) => {
+  await fixture(page); await fakeCamera(page);
+  await openCamera(page);
+  await expect(page.getByRole("button", { name: "Utiliser cette photo" })).toBeEnabled();
+  await page.getByRole("button", { name: "Fermer la caméra", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(await page.evaluate(() => (window as unknown as { cameraTest: { stops: number; calls: number; audio: boolean } }).cameraTest)).toMatchObject({ stops: 1, calls: 1, audio: false });
+});
+
+test("late camera access is stopped after the dialog was closed", async ({ page }) => {
+  await fixture(page); await fakeCamera(page, true); await openCamera(page);
+  await page.getByRole("button", { name: "Fermer la caméra", exact: true }).click();
+  await page.evaluate(() => (window as unknown as { cameraTest: { release: () => void } }).cameraTest.release());
+  await expect.poll(() => page.evaluate(() => (window as unknown as { cameraTest: { stops: number } }).cameraTest.stops)).toBe(1);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+});
+
+test("camera captures a clean JPEG through the existing upload and releases the stream", async ({ page }) => {
+  const state = await fixture(page); await fakeCamera(page);
+  let uploaded: Buffer | null = null;
+  page.on("request", (request) => { if (request.method() === "POST" && /\/v1\/scenes$/.test(new URL(request.url()).pathname)) uploaded = request.postDataBuffer(); });
+  await openCamera(page);
+  await page.getByRole("button", { name: "Angle de mur", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Angle de mur", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "Utiliser cette photo" })).toBeEnabled();
+  await page.screenshot({ path: test.info().outputPath(`camera-guide-${test.info().project.name}.png`), fullPage: true });
+  await page.getByRole("button", { name: "Utiliser cette photo" }).click();
+  await expect(page.getByRole("button", { name: /^Placer Vase Sable/ })).toBeEnabled();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(await page.evaluate(() => (window as unknown as { cameraTest: { stops: number } }).cameraTest.stops)).toBe(1);
+  expect(uploaded!.toString("latin1")).toContain('filename="mon-interieur.jpg"');
+  expect(uploaded!.toString("latin1")).toContain("Content-Type: image/jpeg");
+  const jpegStart = uploaded!.indexOf(Buffer.from([0xff, 0xd8]));
+  const jpegEnd = uploaded!.indexOf(Buffer.from([0xff, 0xd9]), jpegStart) + 2;
+  const pixels = await sharp(uploaded!.subarray(jpegStart, jpegEnd)).raw().toBuffer({ resolveWithObject: true });
+  const at = (Math.round(pixels.info.height * 0.4) * pixels.info.width + Math.round(pixels.info.width * 0.5)) * pixels.info.channels;
+  expect(Math.abs(pixels.data[at]! - 230)).toBeLessThan(5);
+  expect(Math.abs(pixels.data[at + 1]! - 213)).toBeLessThan(5);
+  expect(state.posts).toHaveLength(0);
+});
+
+
+test("multiple articles keep their visual sizes without requiring a height reference", async ({ page }) => {
+  const state = await fixture(page);
+  const second = "55555555-5555-4555-8555-555555555555";
+  await page.route("**/api/storefront/products", route => route.fulfill({ json: {
+    store: { name: "LiliDéco" }, visualization: { available: true },
+    products: [productId, second].map((id, index) => ({ id, name: index ? "Vase Terre" : "Vase Sable", objectType: "vase", widthCm: 18, heightCm: 26, depthCm: 18, material: "Grès", placementType: "table", visualizationAvailable: true, priceCents: 5600, currency: "TND", stock: 4, assetUrl: "/fixture-room.svg" })),
+  }}));
+  await page.goto(`/visualiser?products=${productId},${second}`);
+  await page.getByRole("checkbox").check();
+  await page.getByLabel("Choisir une photo").setInputFiles({ name: "room.png", mimeType: "image/png", buffer: await sharp(image).png().toBuffer() });
+  const first = page.getByRole("button", { name: /^Placer Vase Sable/ });
+  const bounds = await first.boundingBox();
+  await first.click({ position: { x: bounds!.width * 0.3, y: bounds!.height * 0.7 } });
+  await page.getByRole("button", { name: /^Placer Vase Terre/ }).click({ position: { x: bounds!.width * 0.7, y: bounds!.height * 0.7 } });
+  await page.getByRole("button", { name: "Créer ma visualisation" }).click();
+  await expect(page.locator(".render-progress-panel")).toBeVisible();
+  const request = JSON.parse(state.posts[0]!);
+  expect(request.simplePlacements).toHaveLength(2);
+  expect(request.simplePlacements.every((item: { visualWidthNormalized: number }) => item.visualWidthNormalized >= 0.02 && item.visualWidthNormalized <= 0.75)).toBe(true);
+  expect(request.replacementRegion).toBeUndefined(); expect(request.scaleReference).toBeUndefined();
+});
+
+test("closing during JPEG encoding discards the late capture without uploading", async ({ page }) => {
+  const state = await fixture(page); await fakeCamera(page);
+  await page.addInitScript(() => {
+    const original = HTMLCanvasElement.prototype.toBlob;
+    HTMLCanvasElement.prototype.toBlob = function(callback, type, quality) {
+      original.call(this, blob => setTimeout(() => callback(blob), 350), type, quality);
+    };
+  });
+  let uploads = 0;
+  page.on("request", request => { if (request.method() === "POST" && /\/v1\/scenes$/.test(new URL(request.url()).pathname)) uploads++; });
+  await openCamera(page);
+  await page.getByRole("button", { name: "Utiliser cette photo" }).click();
+  await page.getByRole("button", { name: "Fermer la caméra", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.waitForTimeout(500);
+  expect(uploads).toBe(0); expect(state.posts).toHaveLength(0);
+  expect(await page.evaluate(() => (window as unknown as { cameraTest: { stops: number } }).cameraTest.stops)).toBe(1);
+});
+
+
+test("a historical placed draft sends its displayed visual width in a new request", async ({ page }) => {
+  const state = await fixture(page);
+  await page.addInitScript(({ productId, sceneId }) => sessionStorage.setItem(`lili:storefront-visualization:v1:${productId}`, JSON.stringify({
+    version: 1, savedAt: Date.now(), productIds: [productId], sceneId, points: [{ x: 0.5, y: 0.7 }],
+    referenceBase: null, referenceTop: null, referenceHeight: "", sameDepth: false, referenceReady: true,
+    useMeasurement: false, replaceExisting: false,
+  })), { productId, sceneId });
+  await page.goto(`/visualiser?products=${productId}`);
+  await expect(page.getByRole("slider", { name: "Taille visuelle de Vase Sable" })).toHaveValue("0.18");
+  expect(state.posts).toHaveLength(0);
+  await page.getByRole("button", { name: "Créer ma visualisation" }).click();
+  await expect(page.locator(".render-progress-panel")).toBeVisible();
+  expect(JSON.parse(state.posts[0]!).simplePlacements[0].visualWidthNormalized).toBeCloseTo(0.18);
+});
+
+test("a historical uncertain request keeps its original body and key without adding visual controls", async ({ page }) => {
+  const state = await fixture(page);
+  const body = JSON.stringify({ engine: "legacy", workflow: "simple_point", mode: "insert", replaceExisting: true,
+    simplePlacements: [{ productId, placementPoint: { x: 0.5, y: 0.7 }, dimensionPair: { mode: "height_length", heightCm: 26, lengthCm: 18 }, placementKind: "standing" }],
+    placement: { sceneId, productId, mode: "insert", surfaceType: "tabletop", xNormalized: 0.5, yNormalized: 0.7 },
+    placementPoint: { x: 0.5, y: 0.7 }, surfaceType: "tabletop", outputQuality: "final", preserveBackground: true,
+    idempotencyKey: "66666666-6666-4666-8666-666666666666",
+  });
+  await page.addInitScript(({ productId, sceneId, body }) => sessionStorage.setItem(`lili:storefront-visualization:v1:${productId}`, JSON.stringify({
+    version: 1, savedAt: Date.now(), productIds: [productId], sceneId, points: [{ x: 0.5, y: 0.7 }],
+    referenceBase: null, referenceTop: null, referenceHeight: "", sameDepth: false, referenceReady: true,
+    useMeasurement: false, replaceExisting: true, pendingBody: body,
+  })), { productId, sceneId, body });
+  await page.goto(`/visualiser?products=${productId}`);
+  const verify = page.getByRole("button", { name: "Vérifier ma demande" });
+  await expect(verify).toBeEnabled(); expect(state.posts).toHaveLength(0);
+  await verify.click();
+  await expect(page.locator(".render-progress-panel")).toBeVisible();
+  expect(state.posts).toEqual([body]);
+  expect(JSON.parse(state.posts[0]!).simplePlacements[0].visualWidthNormalized).toBeUndefined();
+  expect(JSON.parse(state.posts[0]!).replacementRegion).toBeUndefined();
+});

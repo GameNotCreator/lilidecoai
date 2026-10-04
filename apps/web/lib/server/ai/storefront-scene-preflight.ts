@@ -18,6 +18,8 @@ import {
   type VisualImage,
 } from "./visual-review";
 import type { StorefrontScaleReference } from "./storefront-placement-review";
+import { confirmedStorefrontReplacementRegion } from "../storefront-visual-policy";
+import type { StorefrontReplacementRegion } from "@lili/types";
 
 export const STOREFRONT_SCENE_PREFLIGHT_VERSION = "storefront-scene-preflight-v1";
 export const STOREFRONT_POSE_PREFLIGHT_VERSION = "storefront-scene-pose-v3";
@@ -42,6 +44,7 @@ export interface StorefrontScenePreflightInput {
   /** Versioned storefront contracts permit one longer analysis, never a retry. */
   timeoutMs?: 25_000 | 35_000 | 45_000;
   reference?: StorefrontScaleReference;
+  replacementRegion?: StorefrontReplacementRegion;
   /** Opt-in: one real product height per requested point, in the same order. */
   productHeightsCm?: number[];
   /** Opt-in: projected opaque-width scale, separate from upright-height scale. Requires heights. */
@@ -146,6 +149,7 @@ export function parseStorefrontScenePreflight(
   points: StorefrontScenePreflightInput["points"],
   productHeightsCm?: StorefrontScenePreflightInput["productHeightsCm"],
   productWidthsCm?: StorefrontScenePreflightInput["productWidthsCm"],
+  replacementRegion?: StorefrontReplacementRegion,
 ): StorefrontScenePreflightResult {
   if (!pointsSchema.safeParse(points).success)
     throw new VisualReviewError("invalid_input", "Points de placement invalides.");
@@ -154,7 +158,11 @@ export function parseStorefrontScenePreflight(
   const parsed = preflightSchema({ productHeightsCm, productWidthsCm }).safeParse(payload);
   if (!parsed.success)
     throw new VisualReviewError("malformed", "Analyse de la pièce incomplète ou invalide.", false, true);
-  const entries = parsed.data.points;
+  const confirmedRegion = confirmedStorefrontReplacementRegion(replacementRegion,
+    replacementRegion !== undefined, points.map(entry => entry.point));
+  const entries = parsed.data.points.map((entry, index) => confirmedRegion && index === 0
+    ? { ...entry, obstacleAtPoint: true, obstacleName: "objet sélectionné", obstacleBox: confirmedRegion }
+    : entry);
   if (entries.length !== points.length ||
     entries.some((entry, index) => entry.index !== index + 1))
     throw new VisualReviewError("malformed", "L’analyse ne couvre pas exactement vos emplacements.", false, true);
@@ -227,6 +235,8 @@ export async function inspectStorefrontScene(
     throw new VisualReviewError("invalid_input", "Photo, points ou référence invalides.");
   validateProductHeights(input.points, input.productHeightsCm);
   validateProductWidths(input.points, input.productHeightsCm, input.productWidthsCm);
+  confirmedStorefrontReplacementRegion(input.replacementRegion, input.replacementRegion !== undefined,
+    input.points.map(entry => entry.point));
   if (!serverConfig.openaiApiKey || serverConfig.aiMockMode)
     throw new VisualReviewError("unavailable", "L’analyse de la pièce n’est pas configurée.");
   const startedAt = Date.now();
@@ -275,6 +285,7 @@ export async function inspectStorefrontScene(
             `The oriented room is ${width}x${height}. Numbered red rings1..${input.points.length} mark the exact requested contacts/centres: ${JSON.stringify(input.points.map(({ point, kind }, index) => ({ index: index + 1, point, kind })))}. Markers are software annotations only: never an obstacle or a size reference. Return every index exactly once in original order.`,
             "Standing contacts can be on a floor, table, shelf or counter; never assume a table merely because the object stands upright. Flat objects use a floor/support centre and wall objects a wall centre. Identify the actual visible support; use other and supportVisible:false if it cannot be identified.",
             "Check image clarity, visibility of each target/support and occupancy. A removable object at the exact point is an obstacle; structural furniture, floor, wall, table or shelf are not. If occupied, give the existing object's name and a padded box containing the marked contact and its complete silhouette. Otherwise obstacleName and obstacleBox must both be null. Ambiguous/hidden targets must not be claimed clear.",
+            ...(input.replacementRegion ? [`The customer explicitly confirmed replacing the complete movable object inside ORIGINAL ROOM box ${JSON.stringify(input.replacementRegion)}. This box is the only allowed replacement region. Do not move it, ask for a free support underneath that object, or widen it to erase surrounding furniture. Estimate the camera and support at its marked bottom; mark unsupported estimates as unknown. The server retains this confirmed box over any model-detected obstacle box.`] : []),
             "pixelsPerCm is an approximate projected span at each target depth,0.2..200, or null if not defensible. For standing or wall objects estimate the projected vertical HEIGHT of an upright physical centimetre with scene gravity, including camera pitch/roll; do not mistake top-face depth or a bounding-box height for vertical height. Flat objects use horizontal support-plane length. Cross-check visible reference sizes and camera perspective; no image-y ratio without a calibrated horizon. Do not invent hidden references or certified metric accuracy.",
             ...(input.productHeightsCm !== undefined ? [
               `Estimate the ROOM camera pose in this same ONE pass. Real product heights in centimetres, in the exact placement order: ${JSON.stringify(input.productHeightsCm)}. For each marked point, cameraElevationDegrees is the approximate viewing elevation above the horizontal plane through the TOP of a standing product of that height at that target depth: 0 means an edge-on top face, larger angles mean a more open top face, maximum85. The angle at the product top can differ from the angle down to its base. Infer it from real room evidence such as floor and wall planes, table tops, support depth, upright room edges and comparable-height objects; never derive it from a catalogue camera pose, a marker, or a pasted product. No catalogue photographs are provided here.`,
@@ -323,6 +334,6 @@ export async function inspectStorefrontScene(
   }, () => {
     if (signal?.aborted || Date.now() >= deadline)
       throw new VisualReviewError("deadline", "Le délai d’analyse de la pièce est dépassé.", false, true);
-    return parseStorefrontScenePreflight(extractStructuredReview(payload), input.points, input.productHeightsCm, input.productWidthsCm);
+    return parseStorefrontScenePreflight(extractStructuredReview(payload), input.points, input.productHeightsCm, input.productWidthsCm, input.replacementRegion);
   });
 }

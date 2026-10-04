@@ -199,6 +199,7 @@ export async function normalizeStorefrontRender(
       placementPoint: point,
       dimensionPair: productDimensionPair(dto),
       placementKind: productPlacementKind(dto),
+      ...(item.visualWidthNormalized !== undefined ? { visualWidthNormalized: item.visualWidthNormalized } : {}),
     };
   });
   let referenceScale:
@@ -259,6 +260,7 @@ export async function normalizeStorefrontRender(
     idempotencyKey: input.idempotencyKey,
     ...(referenceScale ? { scaleReference: referenceScale.reference } : {}),
     ...(input.replaceExisting === true ? { replaceExisting: true } : {}),
+    ...(input.replacementRegion ? { replacementRegion: input.replacementRegion } : {}),
     simplePlacements: simplePlacements.map((item) => ({
       ...item,
       ...(referenceScale ? { pixelsPerCm: referenceScale.pixelsPerCm } : {}),

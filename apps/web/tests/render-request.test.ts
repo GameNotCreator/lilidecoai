@@ -145,3 +145,21 @@ describe("render request replay", () => {
     expect(() => buildRetryInput(render)).toThrow(/version/);
   });
 });
+
+
+describe("visual v9 snapshot", () => {
+  it("detaches and replays visual width and the exact confirmed region without adding a measurement", () => {
+    const original = request();
+    original.simplePlacements = original.simplePlacements!.slice(0, 1);
+    original.simplePlacements[0]!.visualWidthNormalized = 0.15;
+    original.replaceExisting = true;
+    original.replacementRegion = { xMin: 0.1, yMin: 0.6, xMax: 0.3, yMax: 0.9 };
+    const snapshot = snapshotRenderInput(original);
+    original.replacementRegion.xMin = 0;
+    original.simplePlacements[0]!.visualWidthNormalized = 0.5;
+    const replay = buildRetryInput({ id: "source", requestSnapshot: snapshot } as RenderDocument);
+    expect(replay.simplePlacements![0]!.visualWidthNormalized).toBe(0.15);
+    expect(replay.replacementRegion!.xMin).toBe(0.1);
+    expect(replay.scaleReference).toBeUndefined();
+  });
+});

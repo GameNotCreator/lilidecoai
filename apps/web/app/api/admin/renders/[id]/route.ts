@@ -34,7 +34,9 @@ function sceneProjection(render: RenderDocument) {
   const steps = render.execution?.steps;
   // The current contract is authoritative when present, even while incomplete.
   // Never fill gaps in a newer result from an older checkpoint.
-  const step = steps && Object.hasOwn(steps, "preflight-v6") ? steps["preflight-v6"]
+  const step = steps && Object.hasOwn(steps, "manual-placement-v9") ? steps["manual-placement-v9"]
+    : steps && Object.hasOwn(steps, "preflight-v9") ? steps["preflight-v9"]
+    : steps && Object.hasOwn(steps, "preflight-v6") ? steps["preflight-v6"]
     : steps && Object.hasOwn(steps, "preflight-v5") ? steps["preflight-v5"]
     : steps && Object.hasOwn(steps, "preflight-v4") ? steps["preflight-v4"]
     : steps && Object.hasOwn(steps, "preflight-v3") ? steps["preflight-v3"]
@@ -101,6 +103,16 @@ export async function GET(
         "execution.steps.preflight-v5.output.widthPixelsPerCm": 1,
         "execution.steps.preflight-v5.output.poses.cameraElevationDegrees": 1,
         "execution.steps.preflight-v5.output.poses.cameraRollDegrees": 1,
+        "execution.steps.manual-placement-v9.status": 1,
+        "execution.steps.manual-placement-v9.output.spans.pixelsPerCm": 1,
+        "execution.steps.manual-placement-v9.output.widthPixelsPerCm": 1,
+        "execution.steps.manual-placement-v9.output.poses.cameraElevationDegrees": 1,
+        "execution.steps.manual-placement-v9.output.poses.cameraRollDegrees": 1,
+        "execution.steps.preflight-v9.status": 1,
+        "execution.steps.preflight-v9.output.spans.pixelsPerCm": 1,
+        "execution.steps.preflight-v9.output.widthPixelsPerCm": 1,
+        "execution.steps.preflight-v9.output.poses.cameraElevationDegrees": 1,
+        "execution.steps.preflight-v9.output.poses.cameraRollDegrees": 1,
         "execution.steps.preflight-v6.status": 1,
         "execution.steps.preflight-v6.output.spans.pixelsPerCm": 1,
         "execution.steps.preflight-v6.output.widthPixelsPerCm": 1,

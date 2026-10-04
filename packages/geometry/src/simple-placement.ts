@@ -21,6 +21,7 @@ export type SimplePlacementKind = "standing" | "wall" | "flat";
 
 export type SimpleScaleSource =
   | "user"
+  | "visual_size"
   | "vision"
   | "vision_coarse"
   | "vision_interpolated"

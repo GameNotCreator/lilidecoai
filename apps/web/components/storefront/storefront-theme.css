@@ -694,3 +694,17 @@
     transition: none;
   }
 }
+
+/* Visual guides share the image's coordinates and never enter the uploaded photo. */
+.store-visual-guides { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.store-visual-footprint { fill: color-mix(in srgb, var(--color-base-100) 18%, transparent); stroke: var(--color-base-content); stroke-width: 2; stroke-dasharray: 8 5; vector-effect: non-scaling-stroke; }
+.store-visual-footprint[data-active="true"] { stroke-width: 3; }
+.store-replacement-region { fill: color-mix(in srgb, var(--color-warning) 12%, transparent); stroke: var(--color-warning); stroke-width: 3; vector-effect: non-scaling-stroke; }
+.store-replacement-corner { fill: var(--color-warning); stroke: var(--color-base-100); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.store-camera-view { position: relative; aspect-ratio: 4 / 3; overflow: hidden; background: var(--color-neutral); border-radius: var(--radius-box); }
+.store-camera-view video { display: block; width: 100%; height: 100%; object-fit: contain; }
+.store-camera-guide { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.store-camera-guide path { fill: none; stroke: white; stroke-width: 0.8; filter: drop-shadow(0 1px 1px black); }
+.store-camera-guide-dashed { stroke-dasharray: 3 2; }
+.store-camera-wait { position: absolute; inset: 0; display: grid; place-content: center; color: var(--color-neutral-content); padding: 1rem; }
+.store-camera-modal .modal-box { max-height: calc(100dvh - 2rem); padding-bottom: max(1.5rem, env(safe-area-inset-bottom)); }

@@ -461,6 +461,7 @@ export function planSimplePlacements(
   sceneWidth: number,
   sceneHeight: number,
   specs: SimplePlacementSpec[],
+  options: { allowEstimatedFrameCrop?: boolean } = {},
 ): SimpleCompositePlacement[] {
   const results = specs.map((spec) =>
     computeSimplePlacement({
@@ -498,10 +499,9 @@ export function planSimplePlacements(
   for (const placement of placements) {
     const visible = placement.visible;
     if (
-      !visible ||
-      visible.width < MIN_VISIBLE_PX ||
-      visible.height < MIN_VISIBLE_PX ||
-      placement.croppedByFrame > MAX_CROPPED_BY_FRAME
+      !visible || visible.width < 1 || visible.height < 1 ||
+      (!options.allowEstimatedFrameCrop && (visible.width < MIN_VISIBLE_PX ||
+      visible.height < MIN_VISIBLE_PX || placement.croppedByFrame > MAX_CROPPED_BY_FRAME))
     ) {
       throw new SimpleCompositeError(
         `L’objet ${placement.objectIndex + 1} ne tient pas dans le cadre à cet endroit : placez le point plus bas ou plus au centre.`,
@@ -591,7 +591,7 @@ export async function compositeObjectsOnScene(
   sceneWidth: number,
   sceneHeight: number,
   objects: SimpleCompositeObjectInput[],
-  options: { lighting?: SceneLightingEstimate | null } = {},
+  options: { lighting?: SceneLightingEstimate | null; allowEstimatedFrameCrop?: boolean } = {},
 ): Promise<SimpleComposition> {
   const lighting = options.lighting ?? null;
   const metadata = await Promise.all(
@@ -610,7 +610,7 @@ export async function compositeObjectsOnScene(
       baseRowFraction: object.baseRowFraction,
     },
   }));
-  const placements = planSimplePlacements(sceneWidth, sceneHeight, specs);
+  const placements = planSimplePlacements(sceneWidth, sceneHeight, specs, options);
 
   const placed: PlacedOverlay[] = await Promise.all(
     placements.map(async (placement, index) => {
