@@ -61,6 +61,31 @@ export const storefrontReplacementRegionSchema = z.object({
   (region.xMax - region.xMin) * (region.yMax - region.yMin) <= 0.5,
   { message: "Tracez une zone visible contenant au maximum la moitié de la photo." });
 export type StorefrontReplacementRegion = z.infer<typeof storefrontReplacementRegionSchema>;
+/** Placement is independent of the optional region used to remove an old object. */
+export const manualPlacementBoxSchema = z.object({
+  xMin: z.number().finite().min(0).max(1), yMin: z.number().finite().min(0).max(1),
+  xMax: z.number().finite().min(0).max(1), yMax: z.number().finite().min(0).max(1),
+}).strict().refine(box => box.xMax - box.xMin >= 0.005 && box.yMax - box.yMin >= 0.005,
+  { message: "Choisissez deux coins suffisamment espacés pour le produit." });
+export const manualPlacementPlaneSchema = z.tuple([
+  normalizedPointSchema, normalizedPointSchema, normalizedPointSchema, normalizedPointSchema,
+]).refine(points => {
+  const turns = points.map((a, i) => {
+    const b = points[(i + 1) % 4]!; const c = points[(i + 2) % 4]!;
+    return (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+  });
+  const area = Math.abs(points.reduce((sum, a, i) => {
+    const b = points[(i + 1) % 4]!; return sum + a.x * b.y - b.x * a.y;
+  }, 0)) / 2;
+  return area >= 0.001 && (turns.every(turn => turn > 1e-6) || turns.every(turn => turn < -1e-6));
+}, { message: "Choisissez quatre coins qui forment un plan sans croisement." });
+export const manualPlacementSchema = z.object({
+  /** Photo coordinates without a plane; unit-plane UV coordinates with a plane. */
+  box: manualPlacementBoxSchema,
+  /** Top-left, top-right, bottom-right, bottom-left corners in the photo. */
+  plane: manualPlacementPlaneSchema.optional(),
+}).strict();
+export type ManualPlacement = z.infer<typeof manualPlacementSchema>;
 const dimensionValueCmSchema = z.number().finite().positive().max(1_500);
 const dimensionReferenceSchema = z.object({
   axis: z.enum(["width", "height"]),
@@ -93,10 +118,14 @@ export const simplePlacementSchema = z
      */
     pixelsPerCm: z.number().finite().min(0.2).max(200).optional(),
     visualWidthNormalized: storefrontVisualWidthSchema.optional(),
+    manualPlacement: manualPlacementSchema.optional(),
   })
-  .refine((value) => value.dimensionPair || value.dimensionReference, {
+  .refine((value) => value.dimensionPair || value.dimensionReference || value.manualPlacement, {
     message: "Indiquez deux dimensions pour cet objet.",
     path: ["dimensionPair"],
+  }).refine(value => !value.manualPlacement || value.placementKind === "standing" || !!value.manualPlacement.plane, {
+    message: "Délimitez le plan avec quatre coins pour un objet plat ou mural.",
+    path: ["manualPlacement", "plane"],
   });
 export const dimensionsCmSchema = z.object({
   width: z.number().finite().positive().max(1_500),
@@ -205,15 +234,16 @@ export const renderRequestSchema = z
       });
     }
     const visualControls = value.replacementRegion !== undefined ||
-      value.simplePlacements?.some(item => item.visualWidthNormalized !== undefined);
+      value.simplePlacements?.some(item => item.visualWidthNormalized !== undefined || item.manualPlacement !== undefined);
     if (visualControls && (value.workflow !== "simple_point" || !value.simplePlacements?.length)) {
       context.addIssue({ code: "custom", message: "Le patron visuel s’utilise avec les articles du placement simple.", path: ["simplePlacements"] });
     }
     if (value.replacementRegion) {
       const anchor = value.simplePlacements?.[0]?.placementPoint;
       const region = value.replacementRegion;
-      if (value.simplePlacements?.length !== 1 || value.replaceExisting !== true || !anchor || anchor.x < region.xMin || anchor.x > region.xMax ||
-          anchor.y < region.yMin || anchor.y > region.yMax) {
+      const manual = value.simplePlacements?.every(item => !!item.manualPlacement);
+      if (value.replaceExisting !== true || (!manual && (value.simplePlacements?.length !== 1 || !anchor || anchor.x < region.xMin || anchor.x > region.xMax ||
+          anchor.y < region.yMin || anchor.y > region.yMax))) {
         context.addIssue({ code: "custom", message: "Confirmez le remplacement et placez le point dans la zone sélectionnée.", path: ["replacementRegion"] });
       }
     }

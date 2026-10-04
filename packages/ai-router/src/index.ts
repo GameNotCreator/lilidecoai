@@ -98,7 +98,7 @@ export interface ProviderAttemptResult {
 
 export interface ImageGenerationRequest {
   /** Omitted on historical jobs. An oriented edit never adds a catalogue image. */
-  operation?: "legacy_composition" | "oriented_harmonization" | "storefront_integration";
+  operation?: "legacy_composition" | "oriented_harmonization" | "storefront_integration" | "manual_composition" | "manual_cleanup";
   scene: Uint8Array;
   productCutout: Uint8Array;
   composition: Uint8Array;

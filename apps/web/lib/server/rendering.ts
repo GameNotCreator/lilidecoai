@@ -27,6 +27,7 @@ import {
 } from "@lili/ai-router";
 import type { Db } from "mongodb";
 import sharp from "sharp";
+import { storefrontReplacementRegionSchema, type ManualPlacement } from "@lili/types";
 
 import { estimateOpenAICost, estimateOpenAIProductViewCost } from "./ai/openai";
 import { spatialVisionAdmissionPolicy } from "./ai/openai-vision-cost";
@@ -36,12 +37,13 @@ import {
   reviewVisualRender,
   VISUAL_REVIEW_VERSION,
 } from "./ai/visual-review";
-import { reviewStorefrontPlacement, storefrontPlacementReviewAllowance, STOREFRONT_PLACEMENT_REVIEW_VERSION, STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_ROOM_INTEGRATION_REVIEW_VERSION, type StorefrontPlacementReviewInput } from "./ai/storefront-placement-review";
+import { reviewStorefrontPlacement, storefrontPlacementReviewAllowance, STOREFRONT_MANUAL_PLACEMENT_REVIEW_VERSION, STOREFRONT_PLACEMENT_REVIEW_VERSION, STOREFRONT_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION, STOREFRONT_ROOM_INTEGRATION_REVIEW_VERSION, type StorefrontPlacementReviewInput } from "./ai/storefront-placement-review";
 import { perspectiveEditComposition, restorePerspectiveBackground } from "./storefront-realistic-composite";
 import { buildStorefrontPerspectiveGuide, type StorefrontPerspectiveGuideObject } from "./storefront-perspective-guide";
 import { localiseStorefrontPerspectiveGuide } from "./storefront-perspective-guide-window";
 import { composeStorefrontIsolatedProducts, harmonizeStorefrontIsolatedProducts, STOREFRONT_ISOLATED_COMPOSITE_VERSION, type StorefrontIsolatedComposition } from "./storefront-isolated-composite";
 import { confirmedReplacementRemovalFrame, confirmedReplacementRemovalPrompt } from "./storefront-replacement";
+import { composeManualProducts, localiseManualComposition, manualEditContracts, manualPhotographicPrompt, manualCleanupPrompt, MANUAL_COMPOSITION_VERSION, MANUAL_COMPOSITION_PROMPT_VERSION, MANUAL_CLEANUP_PROMPT_VERSION } from "./manual-composition";
 import { roomIntegrationEditComposition, roomRefinementEditComposition, prepareRoomRefinementBase, prepareNativeRoomRefinementFrame, buildNativeRoomRefinementGuide, localiseRoomIntegration, restoreRoomIntegrationBackground, restoreLocalRoomIntegrationBackground, STOREFRONT_ROOM_INTEGRATION_COMPOSITE_VERSION, STOREFRONT_LOCAL_ROOM_INTEGRATION_COMPOSITE_VERSION } from "./storefront-room-integration";
 import { confirmedStorefrontReplacementRegion, resolveStorefrontVisualScale } from "./storefront-visual-policy";
 import { inspectStorefrontScene, storefrontScenePreflightAllowance, STOREFRONT_SCENE_PREFLIGHT_VERSION, STOREFRONT_POSE_PREFLIGHT_VERSION, STOREFRONT_WIDTH_POSE_PREFLIGHT_VERSION, type StorefrontScenePose } from "./ai/storefront-scene-preflight";
@@ -204,6 +206,7 @@ interface SimpleRenderObject {
   /** Scale confirmed by the customer, which wins over the vision estimate. */
   pixelsPerCm: number | null;
   visualWidthNormalized?: number;
+  manualPlacement?: ManualPlacement;
 }
 
 interface ResolvedRenderInput extends Omit<RenderInput, "placement"> {
@@ -352,6 +355,7 @@ export async function createRender(
 
   const simplePointWorkflow = input.workflow === "simple_point";
   const fastStorefront = simplePointWorkflow && !spatial && input.mode !== "replace" && publicSessionId?.startsWith("storefront:") === true;
+  const manualStorefront = fastStorefront && input.simplePlacements?.some(item => item.manualPlacement !== undefined) === true;
   let simpleObjects: SimpleRenderObject[] = [];
   if (simplePointWorkflow) {
     if (input.mode === "replace")
@@ -424,14 +428,24 @@ export async function createRender(
           simplePointPlacementKind(selectedProduct.objectType),
         pixelsPerCm,
         ...(item.visualWidthNormalized !== undefined ? { visualWidthNormalized: item.visualWidthNormalized } : {}),
+        ...(item.manualPlacement ? { manualPlacement: item.manualPlacement } : {}),
       };
     });
-    const hasVisualControls = input.replacementRegion !== undefined ||
+    const hasVisualControls = input.replacementRegion !== undefined || simpleObjects.some(item => item.manualPlacement) ||
       simpleObjects.some(item => item.visualWidthNormalized !== undefined);
     if (hasVisualControls && !fastStorefront)
       throw new RenderError("Le patron visuel s’utilise dans le placement simple de la boutique.", 422);
     try {
-      confirmedStorefrontReplacementRegion(input.replacementRegion, input.replaceExisting,
+      if (manualStorefront) {
+        if (simpleObjects.some(item => !item.manualPlacement) || input.scaleReference)
+          throw new Error("Chaque produit doit avoir sa sélection manuelle, sans référence de mesure.");
+        if (input.replaceExisting === true && !input.replacementRegion)
+          throw new Error("Sélectionnez explicitement la zone de l’ancien objet à supprimer.");
+        if (input.replacementRegion) {
+          if (input.replaceExisting !== true) throw new Error("Confirmez la zone à supprimer avant le rendu.");
+          storefrontReplacementRegionSchema.parse(input.replacementRegion);
+        }
+      } else confirmedStorefrontReplacementRegion(input.replacementRegion, input.replaceExisting,
         simpleObjects.map(item => item.placementPoint));
       for (const item of simpleObjects)
         resolveStorefrontVisualScale(item.visualWidthNormalized, scene.widthPx, item.product.widthCm);
@@ -446,6 +460,7 @@ export async function createRender(
       placementKind: item.placementKind,
       ...(item.pixelsPerCm !== null ? { pixelsPerCm: item.pixelsPerCm } : {}),
       ...(item.visualWidthNormalized !== undefined ? { visualWidthNormalized: item.visualWidthNormalized } : {}),
+      ...(item.manualPlacement ? { manualPlacement: item.manualPlacement } : {}),
     }));
     input.mode = "insert";
     input.placementPoint = firstSimpleObject.placementPoint;
@@ -458,7 +473,9 @@ export async function createRender(
       ...(hasVisualControls ? { scaleEvidence: "user_visual_size", metricVerified: false,
         ...(input.replacementRegion ? { replacementRegion: input.replacementRegion } : {}) } : {}),
     };
-    input.userInstructions = buildSimplePointPrompt({
+    input.userInstructions = manualStorefront
+      ? "Placement et taille visuels confirmés manuellement ; intégration photographique locale."
+      : buildSimplePointPrompt({
       objects: simpleObjects.map((item) => ({
         objectLabel: item.product.name,
         category: simplePointCategoryLabel(item.product.objectType),
@@ -494,7 +511,7 @@ export async function createRender(
   const selectedProvider = selectEditingProvider(
     mode,
     outputQuality,
-    oriented ? "myarchitectai" : spatial
+    oriented ? "myarchitectai" : manualStorefront ? "openai" : spatial
       ? "openai"
       : simplePointWorkflow
         ? resolveSimplePointImageProvider(simpleObjects.length, serverConfig)
@@ -617,6 +634,14 @@ export async function createRender(
     createdAt: now,
     updatedAt: now,
   };
+  if (manualStorefront && render.engineVersions) {
+    render.promptVersion = MANUAL_COMPOSITION_PROMPT_VERSION;
+    render.engineVersions = { ...render.engineVersions, placementGeometry: MANUAL_COMPOSITION_VERSION,
+      composite: MANUAL_COMPOSITION_VERSION, scaleEstimation: "manual-visual-no-metric-v1",
+      quality: STOREFRONT_MANUAL_PLACEMENT_REVIEW_VERSION, prompt: MANUAL_COMPOSITION_PROMPT_VERSION };
+    render.modelChain = [{ provider: selectedProvider.route.provider, model: selectedProvider.provider.model, role: "manual_photographic_edit" }];
+    render.userInstructions = "Placement et taille visuels confirmés manuellement ; intégration photographique locale.";
+  }
   if (durableEnabled()) {
     if (oriented && render.engineVersions) {
       render.promptVersion = ORIENTED_ENGINE_VERSION;
@@ -979,6 +1004,7 @@ export async function executeDurableRender(
           item.placementKind ?? simplePointPlacementKind(product.objectType),
         pixelsPerCm: item.pixelsPerCm ?? null,
         ...(item.visualWidthNormalized !== undefined ? { visualWidthNormalized: item.visualWidthNormalized } : {}),
+        ...(item.manualPlacement ? { manualPlacement: item.manualPlacement } : {}),
       };
     },
   );
@@ -1105,6 +1131,167 @@ export function boxOverlapRatio(a: NormalizedBox, b: NormalizedBox): number {
   return smallest > 0 ? (width * height) / smallest : 0;
 }
 
+/** New manual jobs never infer pose/scale or invoke a second image provider. */
+async function runManualCompositionRender(
+  db: Db,
+  organizationId: string,
+  render: RenderDocument,
+  scene: SceneDocument,
+  objects: SimpleRenderObject[],
+  input: RenderInput,
+  requestedSize: RenderDocument["requestedSize"],
+  startedAt: number,
+) {
+  if (!render.publicSessionId?.startsWith("storefront:") || objects.some(object => !object.manualPlacement) ||
+      render.engineVersions?.composite !== MANUAL_COMPOSITION_VERSION ||
+      render.engineVersions?.quality !== STOREFRONT_MANUAL_PLACEMENT_REVIEW_VERSION ||
+      (render.engineVersions?.editProvider !== "openai" && !(serverConfig.aiMockMode && render.engineVersions?.editProvider === "mock")))
+    throw new RenderError("Le contrat de composition manuelle est incomplet. Recréez le placement.", 422);
+  const deadlineMs = Math.min(renderDeadline(startedAt), render.createdAt.getTime() + 180_000);
+  const checkDeadline = () => {
+    if (Date.now() >= deadlineMs)
+      throw new DurableExecutionError("Le délai maximal de trois minutes est dépassé. Corrigez le placement ou réessayez.", "deadline");
+  };
+  const setStage = async (pipelineState: NonNullable<RenderDocument["pipelineState"]>, pipelineStage: string) => {
+    checkDeadline();
+    await advanceRender(db, render.id, { $set: { pipelineState, "placement.pipelineStage": pipelineStage, updatedAt: new Date() } });
+  };
+  const [source, cutouts, references] = await Promise.all([
+    readAsset(db, scene.assetId),
+    Promise.all(objects.map(object => readAsset(db, object.product.cutoutAssetId!))),
+    Promise.all(objects.map(object => loadProductReferences(db, object.product, { limit: 1 }))),
+  ]);
+  if (!source || cutouts.some(cutout => !cutout) || references.some(product => !product[0]))
+    throw new RenderError("Une photographie ou un détourage est introuvable.", 404);
+  const oriented = await sharp(source.buffer).rotate().webp({ lossless: true }).toBuffer({ resolveWithObject: true });
+  const width = oriented.info.width, height = oriented.info.height;
+  const room = oriented.data;
+  const compositeInputs = objects.map((object, index) => ({ cutout: cutouts[index]!.buffer,
+    placement: object.manualPlacement!, kind: object.placementKind, preparation: object.product.cutout }));
+  // Verify real alpha and shared geometry BEFORE spending on optional cleanup.
+  await setStage("computing_geometry", "composing_manual");
+  const initialComposition = await composeManualProducts(room, width, height, compositeInputs);
+  const preview = await durableStep(db, "manual-composition-preview-v2", "analysis", () => storeAsset(db, {
+    organizationId, kind: "render", visibility: privateVisibility(render.publicSessionId),
+    buffer: initialComposition.baseWebp, contentType: "image/webp", expiresAt: scene.expiresAt,
+  }));
+  await advanceRender(db, render.id, { $set: { compositeAssetId: preview.id,
+    "placement.compositePlacements": initialComposition.manualPlacements,
+    "placement.sceneWidth": width, "placement.sceneHeight": height,
+    "placement.scaleEvidence": "user_visual_size", "placement.metricVerified": false, updatedAt: new Date() } });
+  const { provider } = selectEditingProvider("insert", "final", "openai", render.engineVersions.editModel);
+  const quality = "high" as const;
+  const ensureResult = (result: ProviderAttemptResult) => {
+    if (result.status === "succeeded" && result.images[0]) return;
+    const uncertain = result.estimatedCostUsd > 0 || ["timeout", "network_error", "empty_image_response", "invalid_image_response"].includes(result.error?.code ?? "");
+    throw new DurableExecutionError(result.error?.message ?? "L’intégration photographique n’a pas pu être terminée.",
+      uncertain ? "provider_unknown" : result.error?.code === "render_deadline" ? "deadline" : "permanent");
+  };
+  let workingRoom: Buffer = room;
+  let cleanupResult: ProviderAttemptResult | undefined;
+  if (input.replaceExisting === true) {
+    if (!input.replacementRegion) throw new RenderError("Confirmez la zone à nettoyer.", 422);
+    await setStage("removing_target", "removing_obstacle");
+    const removal = await confirmedReplacementRemovalFrame(room, width, height, input.replacementRegion, { requestedSize });
+    const compositionPng = await sharp(removal.padded.imageWebp).png().toBuffer();
+    cleanupResult = await durableStep(db, "manual-cleanup-image-v1", "image", async () => {
+      checkDeadline();
+      await assertRenderBudget(db, render.id, estimatedImageEditCost(requestedSize, quality, provider.model) * 2 + storefrontPlacementReviewAllowance().estimatedCostUsd);
+      const result = await provider.edit({ operation: "manual_cleanup", scene: new Uint8Array(room),
+        productCutout: new Uint8Array(), composition: new Uint8Array(compositionPng), protectionMask: new Uint8Array(removal.padded.maskPng),
+        targetMask: { data: new Uint8Array(removal.padded.maskPng), mimeType: "image/png", role: "target_mask" },
+        references: [{ data: new Uint8Array(compositionPng), mimeType: "image/png", role: "composition" }],
+        prompt: manualCleanupPrompt(removal.padded.padded), quality, size: requestedSize,
+        lighting: { direction: "automatic", temperature: "neutral", hardness: "balanced" },
+        placement: { operation: "remove" }, idempotencyKey: `${input.idempotencyKey}:manual-cleanup-v1`, deadlineMs,
+        mode: "replace", outputQuality: "final", preserveBackground: true });
+      await recordProviderAttempt(db, render, result, "manual_cleanup", MANUAL_CLEANUP_PROMPT_VERSION, false, 1);
+      ensureResult(result);
+      return result;
+    });
+    await assertRenderActive(db, render.id);
+    workingRoom = await durableStep(db, "manual-cleaned-room-v1", "analysis", () =>
+      restoreRoomIntegrationBackground(removal.composition, removal.padded, Buffer.from(cleanupResult!.images[0]!.data)));
+    await captureStage(db, render, "scene_cleaned", workingRoom, "image/webp", scene.expiresAt);
+  }
+  checkDeadline();
+  const composition = workingRoom === room ? initialComposition : await composeManualProducts(workingRoom, width, height, compositeInputs);
+  const local = await localiseManualComposition(composition);
+  const padded = await padCompositionForAspect(local.composition, requestedSize, { exactRasterAspect: true });
+  const compositionPng = await sharp(padded.imageWebp).png().toBuffer();
+  const promptContracts = manualEditContracts(composition, local.window, padded);
+  await advanceRender(db, render.id, { $set: { "placement.manualEditWindow": local.window,
+    "placement.manualEditContracts": promptContracts, updatedAt: new Date() } });
+  await captureStage(db, render, "model_input", compositionPng, "image/png", scene.expiresAt);
+  await captureStage(db, render, "model_mask", padded.maskPng, "image/png", scene.expiresAt);
+  await setStage("generating_final", "integrating_product");
+  const result = await durableStep(db, "manual-final-image-v6", "image", async () => {
+    checkDeadline();
+    await assertRenderBudget(db, render.id, estimatedImageEditCost(requestedSize, quality, provider.model) + storefrontPlacementReviewAllowance().estimatedCostUsd);
+    const edited = await provider.edit({ operation: "manual_composition", scene: new Uint8Array(workingRoom),
+      productCutout: new Uint8Array(cutouts[0]!.buffer), composition: new Uint8Array(compositionPng), protectionMask: new Uint8Array(padded.maskPng),
+      targetMask: { data: new Uint8Array(padded.maskPng), mimeType: "image/png", role: "target_mask" },
+      references: [{ data: new Uint8Array(compositionPng), mimeType: "image/png", role: "composition" },
+        ...references.map(product => product[0]!), { data: new Uint8Array(workingRoom), mimeType: "image/webp", role: "room_original" }],
+      prompt: manualPhotographicPrompt(objects.length, padded.padded, promptContracts), quality, size: requestedSize,
+      lighting: { direction: "automatic", temperature: "neutral", hardness: "balanced" },
+      placement: { operation: "place", objectCount: objects.length }, idempotencyKey: `${input.idempotencyKey}:manual-final-v6`, deadlineMs,
+      mode: "insert", outputQuality: "final", preserveBackground: true });
+    await recordProviderAttempt(db, render, edited, "manual_photographic_edit", MANUAL_COMPOSITION_PROMPT_VERSION, false, 1);
+    ensureResult(edited);
+    return edited;
+  });
+  await assertRenderActive(db, render.id);
+  await captureStage(db, render, "model_output", Buffer.from(result.images[0]!.data), "image/webp", scene.expiresAt);
+  const finalBuffer = await durableStep(db, "manual-restored-result-v6", "analysis", () =>
+    restoreLocalRoomIntegrationBackground(composition, local.window, padded, Buffer.from(result.images[0]!.data),
+      { edgeFeatherPx: objects.every(object => object.placementKind !== "standing") ? 5 : 3 }));
+  const candidate = await durableStep(db, "manual-candidate-v6", "analysis", () => storeAsset(db, {
+    organizationId, kind: "render", visibility: privateVisibility(render.publicSessionId), buffer: finalBuffer,
+    contentType: "image/webp", expiresAt: scene.expiresAt,
+  }));
+  await advanceRender(db, render.id, { $set: { compositeAssetId: candidate.id, updatedAt: new Date() } });
+  await setStage("quality_check", "checking_placement");
+  const reviewInput: StorefrontPlacementReviewInput = {
+    manualPlacement: true, realism: true, fastReview: true, roomIntegration: true,
+    room: { data: room, mimeType: "image/webp" }, composition: { data: composition.baseWebp, mimeType: "image/webp" },
+    generated: { data: finalBuffer, mimeType: "image/webp" }, replacement: Boolean(input.replacementRegion), deadlineMs,
+    products: objects.map((object, index) => ({ id: `${object.product.id}:${index}`, name: object.product.name,
+      image: references[index]![0]!, expectedBox: composition.manualPlacements[index]!.box,
+      placementPoint: composition.manualPlacements[index]!.contact, placementKind: object.placementKind,
+      scaleVerified: false })),
+    instructions: `La taille et l’emplacement choisis sont visuels, pas métriques. Contrats réellement composés : ${JSON.stringify(composition.manualPlacements)}. ${input.replacementRegion ? `L’ancien objet doit être effectivement retiré dans cette zone indépendante : ${JSON.stringify(input.replacementRegion)}. Le meuble support doit subsister.` : "Aucun objet existant ne doit être supprimé."} Les meubles au premier plan doivent occulter le produit quand nécessaire.`,
+  };
+  const decision = serverConfig.aiMockMode ? simulatedQualityDecision() : await durableStep(db, "manual-final-review-v6", "analysis", () =>
+    measureProviderCall(db, render, { step: "manual_integration_review", provider: "openai", model: serverConfig.openaiVisionModel,
+      ...storefrontPlacementReviewAllowance(), promptVersion: STOREFRONT_MANUAL_PLACEMENT_REVIEW_VERSION },
+      () => reviewStorefrontPlacement(reviewInput), { maxAttempts: 1, respectRetryable: true }), { maxAttempts: 1, respectRetryable: true });
+  await advanceRender(db, render.id, { $set: { qualityDecision: decision, qualityScore: decision.score, updatedAt: new Date() } });
+  if (decision.status !== "accepted" && !(serverConfig.aiMockMode && decision.status === "simulated"))
+    await captureStage(db, render, "final_rejected", finalBuffer, "image/webp", scene.expiresAt);
+  requireAcceptedQuality(decision, serverConfig.aiMockMode);
+  checkDeadline();
+  const totals = await renderUsageTotals(db, render.id);
+  const update = { status: "succeeded" as const, pipelineState: "completed" as const, resultAssetId: candidate.id,
+    compositeAssetId: candidate.id, provider: result.provider, model: result.model,
+    qualityDecision: decision, qualityScore: decision.score, qualityChecks: decision.checks,
+    estimatedCostUsd: totals.estimatedCostUsd, attemptCount: cleanupResult ? 2 : 1, latencyMs: Date.now() - startedAt,
+    promptVersion: MANUAL_COMPOSITION_PROMPT_VERSION,
+    modelChain: [...(cleanupResult ? [{ provider: cleanupResult.provider, model: cleanupResult.model, role: "selected_cleanup" }] : []),
+      { provider: result.provider, model: result.model, role: "manual_photographic_edit" },
+      { provider: "openai", model: serverConfig.openaiVisionModel, role: "manual_integration_review" }],
+    audit: { scaleSources: objects.map(() => "manual_visual"), scaleFallbackFired: false,
+      cutoutSources: objects.map(object => object.product.cutout?.source ?? "unknown"),
+      cutoutWarnings: objects.flatMap(object => object.product.cutout?.warnings ?? []),
+      obstaclesRemoved: input.replacementRegion ? 1 : 0, obstaclesSkipped: 0 },
+    placement: { ...input.placement, pipelineStage: "complete", operation: "place", objectCount: objects.length,
+      compositePlacements: composition.manualPlacements, sceneWidth: width, sceneHeight: height,
+      manualEditWindow: local.window, manualEditContracts: promptContracts,
+      scaleEvidence: "user_visual_size", metricVerified: false }, updatedAt: new Date() };
+  const creditCharged = await completeRender(db, render, update);
+  return renderResponse({ ...render, ...update, creditCharged });
+}
+
 async function runSimplePointRender(
   db: Db,
   organizationId: string,
@@ -1115,6 +1302,8 @@ async function runSimplePointRender(
   requestedSize: RenderDocument["requestedSize"],
   startedAt: number,
 ) {
+  if (render.engineVersions?.prompt?.startsWith("manual-photographic-edit-"))
+    return runManualCompositionRender(db, organizationId, render, scene, simpleObjects, input, requestedSize, startedAt);
   const fastStorefront = render.publicSessionId?.startsWith("storefront:") === true &&
     render.engineVersions?.quality === STOREFRONT_PLACEMENT_REVIEW_VERSION && input.mode !== "replace";
   const detailRealisticReview = render.engineVersions?.quality === STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION;

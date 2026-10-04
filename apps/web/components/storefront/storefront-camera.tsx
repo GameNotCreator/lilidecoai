@@ -4,16 +4,17 @@ import { Camera, ImagePlus, X } from "lucide-react";
 
 type Guide = "surface" | "corner" | "none";
 
-export function StorefrontCamera({ onClose, onCapture, onChooseExisting }: {
+export function StorefrontCamera({ onClose, onCapture, onChooseExisting, placementKind = "standing" }: {
   onClose: () => void;
   onCapture: (file: File) => void;
   onChooseExisting: () => void;
+  placementKind?: "standing" | "flat" | "wall";
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const video = useRef<HTMLVideoElement>(null);
   const stream = useRef<MediaStream | null>(null);
   const mounted = useRef(false);
-  const [guide, setGuide] = useState<Guide>("surface");
+  const [guide, setGuide] = useState<Guide>(() => placementKind === "wall" ? "corner" : "surface");
   const [ready, setReady] = useState(false);
   const [capturing, setCapturing] = useState(false);
   const [aspectRatio, setAspectRatio] = useState(4 / 3);
@@ -40,8 +41,10 @@ export function StorefrontCamera({ onClose, onCapture, onChooseExisting }: {
         if (active) setError("La caméra n’est pas accessible. Vous pouvez autoriser son accès dans votre navigateur ou choisir une photo dans votre galerie.");
       }
     };
-    void start();
-    return () => { active = false; mounted.current = false; stop(); };
+    // Defer acquisition one task so React's development effect replay does not
+    // open two camera requests; closing before acquisition also cancels it.
+    const startup = setTimeout(() => void start(), 0);
+    return () => { clearTimeout(startup); active = false; mounted.current = false; stop(); };
   }, []);
 
   async function capture() {
@@ -75,7 +78,10 @@ export function StorefrontCamera({ onClose, onCapture, onChooseExisting }: {
     <div className="modal-box w-full max-w-3xl">
       <div className="store-camera-heading flex items-start justify-between gap-3 mb-3">
         <div><h2 id="store-camera-title" className="text-xl! leading-tight!">Cadrez votre intérieur.</h2>
-          <p className="text-sm text-base-content/70 mt-2">Le guide aide au cadrage. La taille sera ajustable sur la photo.</p></div>
+          <p className="text-sm text-base-content/70 mt-2">{placementKind === "wall"
+            ? "Gardez les bords du mur visibles. Vous repérerez ensuite son plan avec quatre coins."
+            : placementKind === "flat" ? "Gardez un rectangle du sol visible. Quatre coins guideront la perspective du produit."
+              : "Gardez le support visible. La boîte et la taille du produit seront ajustables sur la photo."}</p></div>
         <button type="button" className="btn btn-ghost btn-square min-h-11 shrink-0" aria-label="Fermer la caméra" onClick={() => { stop(); onClose(); }}><X size={20} aria-hidden="true" /></button>
       </div>
       <div className="store-camera-view" style={{ aspectRatio, width: `min(100%, ${aspectRatio * 50}dvh)` }}>

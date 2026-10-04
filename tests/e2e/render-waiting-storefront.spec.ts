@@ -157,85 +157,18 @@ for (const width of [320, 375, 1280]) {
       .locator('input[type="file"]')
       .first()
       .setInputFiles({ name: "room.png", mimeType: "image/png", buffer: room });
-    const referenceFrame = page.getByRole("button", {
-      name: /Choisir le bas de la référence/,
-    });
-    await expect(referenceFrame).toBeVisible();
-    await expect(referenceFrame).toBeEnabled();
-    const referenceBounds = await referenceFrame.boundingBox();
-    if (!perspective) {
-      await referenceFrame.click({
-        position: {
-          x: referenceBounds!.width * 0.5,
-          y: referenceBounds!.height * 0.7,
-        },
-      });
-      const topFrame = page.getByRole("button", {
-        name: /Choisir le sommet de la référence/,
-      });
-      await topFrame.click({
-        position: {
-          x: referenceBounds!.width * 0.5,
-          y: referenceBounds!.height * 0.5,
-        },
-      });
-      await page
-        .getByLabel("Hauteur réelle de votre référence (cm)")
-        .fill("30");
-      await page.getByRole("checkbox", { name: /Ma référence repose/ }).check();
-      const confirmReference = page.getByRole("button", {
-        name: "Confirmer cette hauteur et placer les articles",
-      });
-      expect(
-        (await confirmReference.boundingBox())!.height,
-      ).toBeGreaterThanOrEqual(44);
-      expect(
-        await page.evaluate(
-          () => document.documentElement.scrollWidth <= innerWidth,
-        ),
-      ).toBe(true);
-      await page.screenshot({
-        path: `artifacts/reference-height-2026-10-02/reference-${width}.png`,
-        fullPage: true,
-      });
-      await confirmReference.click();
-    } else {
-      await page
-        .getByRole("button", { name: "Continuer avec une échelle estimée" })
-        .click();
-      await expect(
-        page.getByText("Taille estimée à partir de votre photo.", {
-          exact: true,
-        }),
-      ).toBeVisible();
-      await expect(
-        page.getByRole("checkbox", { name: /Ma référence repose/ }),
-      ).toHaveCount(0);
-      expect(
-        await page.evaluate(
-          () => document.documentElement.scrollWidth <= innerWidth,
-        ),
-      ).toBe(true);
+    const placement = page.locator(".store-placement-frame");
+    await expect(placement).toBeEnabled();
+    const bounds = await placement.boundingBox();
+    await expect(page.getByLabel("Hauteur réelle de votre référence (cm)")).toHaveCount(0);
+    await expect(page.locator(".store-selected-unit")).toHaveCount(selectedCount);
+    for (let index = 0; index < selectedCount; index++) {
+      await placement.click({ position: { x: bounds!.width * (0.25 + index * 0.15), y: bounds!.height * 0.45 } });
+      await placement.click({ position: { x: bounds!.width * (0.4 + index * 0.15), y: bounds!.height * 0.7 } });
     }
-    const placement = page.getByRole("button", { name: /Placer Grenade/ });
-    await expect(placement).toBeVisible();
-    await expect(page.locator(".store-selected-unit")).toHaveCount(
-      selectedCount,
-    );
-    for (let index = 0; index < selectedCount; index++)
-      await placement.click({
-        position: {
-          x: referenceBounds!.width * (0.45 + index * 0.05),
-          y: referenceBounds!.height * 0.7,
-        },
-      });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.getByRole("button", { name: "Créer ma visualisation" }).click();
-    if (perspective) expect(admittedBody).not.toHaveProperty("scaleReference");
-    else
-      expect(admittedBody.scaleReference).toMatchObject({
-        realHeightCm: 30,
-        sameDepthConfirmed: true,
-      });
+    expect(admittedBody).not.toHaveProperty("scaleReference");
     expect(admittedBody.simplePlacements).toHaveLength(selectedCount);
     const panel = page.locator(".render-progress-panel");
     await expect(
@@ -250,7 +183,7 @@ for (const width of [320, 375, 1280]) {
     );
     const skeleton = panel.locator(".skeleton");
     await expect(skeleton).toBeVisible();
-    await expect(panel.getByText(/Temps écoulé/)).not.toBeVisible();
+    await expect(panel.getByText(/Temps écoulé/)).toBeVisible();
     await expect(panel.locator('[data-state="complete"]')).toHaveCount(1);
     await expect(panel.locator('[data-state="active"]')).toHaveCount(1);
     await expect(panel.getByRole("listitem")).toHaveCount(perspective ? 4 : 3);
@@ -296,14 +229,14 @@ for (const width of [320, 375, 1280]) {
     trackingAvailable = true;
     if (perspective) {
       stage = "generating_final";
-      await panel.getByRole("button", { name: "Vérifier maintenant" }).click();
+      await panel.getByRole("button", { name: /Vérifier maintenant|Actualiser le suivi/ }).click();
       await expect(
         panel.getByRole("heading", { name: "Adaptation de la perspective" }),
       ).toBeVisible();
     }
     stage = "quality_check";
     if (!perspective)
-      await panel.getByRole("button", { name: "Vérifier maintenant" }).click();
+      await panel.getByRole("button", { name: /Vérifier maintenant|Actualiser le suivi/ }).click();
     await expect(
       panel.getByRole("heading", { name: "Vérification du placement" }),
     ).toBeVisible();
@@ -312,7 +245,7 @@ for (const width of [320, 375, 1280]) {
     ).toHaveCount(0);
     if (width === 320) {
       // A server response with an already exhausted request budget must stop
-      // the waiting clock, request its latest state, and never invent failure.
+      // the active animation, request its latest state, and never invent failure.
       acceptedAt = new Date(Date.now() - 181_000).toISOString();
       await expect(
         panel.getByText("Le délai de 3 minutes est atteint.", { exact: true }),
@@ -329,16 +262,14 @@ for (const width of [320, 375, 1280]) {
         }),
       ).toHaveCount(0);
       await panel.getByText("Détails de la demande", { exact: true }).click();
-      await expect(
-        panel.getByText("Limite atteinte · 3 min", { exact: true }),
-      ).toBeVisible();
-      await expect(panel.getByText(/Temps écoulé/)).toHaveCount(0);
+      await expect(panel.getByText(/Temps écoulé/)).toBeVisible();
+      await expect(panel.getByText("Le délai de 3 minutes est atteint.", { exact: true })).toBeVisible();
       await panel.screenshot({
         path: "artifacts/render-waiting-2026-09-30/deadline-320.png",
         animations: "disabled",
       });
       expired = true;
-      await panel.getByRole("button", { name: "Vérifier maintenant" }).click();
+      await panel.getByRole("button", { name: /Vérifier maintenant|Actualiser le suivi/ }).click();
       await expect(
         page.getByRole("heading", {
           name: "Nous n’avons pas pu terminer cette visualisation.",

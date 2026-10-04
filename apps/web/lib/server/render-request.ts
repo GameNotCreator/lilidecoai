@@ -66,6 +66,7 @@ export interface RenderInput {
     placementKind?: SimplePlacementKind;
     pixelsPerCm?: number;
     visualWidthNormalized?: number;
+    manualPlacement?: import("@lili/types").ManualPlacement;
   }>;
 }
 

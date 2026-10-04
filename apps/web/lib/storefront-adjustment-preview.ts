@@ -7,7 +7,7 @@ export function canShowStorefrontAdjustmentPreview(
   replacement = false,
 ): boolean {
   const parsed = qualityDecisionSchema.safeParse(value);
-  if (!parsed.success || parsed.data.version !== "storefront-room-integration-review-v5" ||
+  if (!parsed.success || !["storefront-room-integration-review-v5", "storefront-manual-integration-review-v6"].includes(parsed.data.version) ||
       parsed.data.status !== "rejected" || parsed.data.score === null ||
       productIds.length < 1 || productIds.length > 3 || new Set(productIds).size !== productIds.length) return false;
   const checks = parsed.data.checks;

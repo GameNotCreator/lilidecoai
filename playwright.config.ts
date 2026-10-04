@@ -18,7 +18,7 @@ export default defineConfig({
     { name: "mobile", use: { ...devices["iPhone 14"] } },
   ],
   webServer: {
-    command: "node node_modules/next/dist/bin/next dev apps/web --port 3100",
+    command: "node node_modules/next/dist/bin/next dev apps/web --webpack --port 3100",
     url: "http://127.0.0.1:3100/v1/health",
     reuseExistingServer: false,
     timeout: 120_000,

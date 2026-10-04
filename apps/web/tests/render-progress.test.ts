@@ -14,6 +14,14 @@ function input(
 }
 
 describe("truthful render progress", () => {
+  it("recognizes manual photographic placement and describes the chosen selection", () => {
+    const versions = { quality: "storefront-manual-integration-review-v6", placementGeometry: "manual", composite: "manual",
+      scaleEstimation: "visual", prompt: "manual-photographic-edit-v1", mockMode: false, imageQuality: "high", editModel: "image", visionModel: "vision" };
+    expect(isStorefrontPlacementRender({ engineVersions: versions })).toBe(true);
+    const result = renderProgress(input({ engineVersions: versions, placement: { pipelineStage: "computing_geometry" } }));
+    expect(result.title).toBe("Préparation du placement choisi");
+    expect(result.detail).toContain("taille visuelle");
+  });
   it("announces only confirmed terminal states, including cancellation", () => {
     expect(renderTerminalAnnouncement("processing")).toBe("");
     expect(renderTerminalAnnouncement("queued")).toBe("");

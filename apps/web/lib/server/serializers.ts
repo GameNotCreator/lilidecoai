@@ -3,6 +3,7 @@ import type { ProductDocument, RenderDocument, SceneDocument } from "./types";
 import { effectiveRenderDeadline } from "./storefront-render-deadline";
 import { canShowStorefrontAdjustmentPreview } from "../storefront-adjustment-preview";
 import { STOREFRONT_PADDED_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_OPENAI_PROMPT_VERSION } from "./storefront-hybrid";
+import { MANUAL_COMPOSITION_PROMPT_VERSION } from "./manual-composition";
 
 export const STOREFRONT_BUDGET_UNAVAILABLE_MESSAGE =
   "La visualisation est momentanément indisponible dans la boutique. Réessayez un peu plus tard.";
@@ -134,7 +135,7 @@ export function renderResponse(render: RenderDocument) {
     compositeUrl: assetUrl(render.compositeAssetId),
     adjustmentPreviewUrl: render.status === "failed" && render.creditCharged !== true &&
       render.publicSessionId?.startsWith("storefront:") && render.engineVersions?.mockMode === false &&
-      [STOREFRONT_PADDED_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_OPENAI_PROMPT_VERSION].includes(render.engineVersions?.prompt ?? "") &&
+      [MANUAL_COMPOSITION_PROMPT_VERSION, STOREFRONT_PADDED_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_OPENAI_PROMPT_VERSION].includes(render.engineVersions?.prompt ?? "") &&
       canShowStorefrontAdjustmentPreview(render.qualityDecision,
         (render.requestSnapshot?.input.simplePlacements ?? []).map((item, index) => `${item.productId}:${index}`),
         render.requestSnapshot?.input.replaceExisting === true)

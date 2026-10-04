@@ -86,7 +86,7 @@ describe("explicit MyArchitectAI image selection", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("does not enable the public workflow until independent vision is available", async () => {
+  it("requires OpenAI image availability for the public manual workflow regardless of the historical provider preference", async () => {
     vi.stubEnv("SIMPLE_POINT_IMAGE_PROVIDER", "myarchitectai");
     vi.stubEnv("MYARCHITECTAI_API_KEY", "test-key");
     const { serverConfig } = await import("../lib/server/config");
@@ -95,9 +95,11 @@ describe("explicit MyArchitectAI image selection", () => {
     expect(storefrontVisualization().available).toBe(false);
     serverConfig.openaiApiKey = "vision-only-key";
     expect(serverConfig.openAIImageEnabled).toBe(false);
+    expect(storefrontVisualization().available).toBe(false);
+    serverConfig.openAIImageEnabled = true;
     expect(storefrontVisualization().available).toBe(true);
     serverConfig.myArchitectAIApiKey = undefined;
-    expect(storefrontVisualization().available).toBe(false);
+    expect(storefrontVisualization().available).toBe(true);
   }, 15_000);
 
   it("fences jobs when the chosen image service or its allowance changes", async () => {

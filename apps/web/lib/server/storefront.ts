@@ -2,6 +2,8 @@ import "server-only";
 
 import type { Db } from "mongodb";
 import sharp from "sharp";
+import { manualPlacementSchema } from "@lili/types";
+import { fitManualProductBox, manualPlacementAnchor } from "@lili/geometry";
 import {
   storefrontProductSchema,
   productDimensionPair,
@@ -56,10 +58,7 @@ export function storefrontVisualization() {
     process.env.STOREFRONT_VISUALIZATION_ENABLED !== "false" &&
     (serverConfig.aiMockMode
       ? process.env.NODE_ENV !== "production"
-      : Boolean(serverConfig.openaiApiKey) &&
-        (serverConfig.simplePointImageProvider === "myarchitectai"
-          ? Boolean(serverConfig.myArchitectAIApiKey)
-          : Boolean(serverConfig.openAIImageEnabled)));
+      : Boolean(serverConfig.openaiApiKey) && Boolean(serverConfig.openAIImageEnabled));
   return available
     ? { available }
     : { available, reason: "La visualisation est momentanément indisponible." };
@@ -165,6 +164,19 @@ export async function normalizeStorefrontRender(
       id: { $in: ids },
     })
     .toArray();
+  const manual = objects.some(item => item.manualPlacement !== undefined);
+  if (manual && (objects.some(item => !item.manualPlacement) || input.scaleReference))
+    throw new ApiInputError("Chaque article doit avoir sa sélection manuelle, sans référence de mesure.");
+  const manualScene = manual ? await collections(db).scenes.findOne({
+    id: input.placement.sceneId, organizationId: tenant.organizationId, publicSessionId: tenant.publicSessionId,
+    status: { $ne: "deleted" }, expiresAt: { $gt: new Date() },
+  }) : null;
+  if (manual && !manualScene)
+    throw new AuthError("Votre photo n’est plus disponible. Envoyez-la à nouveau.", 403);
+  const manualSource = manualScene ? await readAsset(db, manualScene.assetId) : null;
+  if (manual && !manualSource)
+    throw new ApiInputError("Votre photo n’est plus disponible. Envoyez-la à nouveau.");
+  const manualFrame = manualSource ? (await sharp(manualSource.buffer).metadata()).autoOrient : undefined;
   const simplePlacements = objects.map((item) => {
     const product = products.find((p) => p.id === item.productId);
     if (!product)
@@ -188,7 +200,16 @@ export async function normalizeStorefrontRender(
         409,
       );
     }
-    const point = item.placementPoint;
+    const kind = productPlacementKind(dto);
+    let manualPlacement;
+    if (item.manualPlacement) {
+      const parsed = manualPlacementSchema.safeParse(item.manualPlacement);
+      if (!parsed.success || (kind === "standing" ? Boolean(parsed.data.plane) : !parsed.data.plane))
+        throw new ApiInputError("Choisissez une boîte pour l’objet debout ou les quatre coins du plan pour le tapis et l’objet mural.");
+      manualPlacement = fitManualProductBox(parsed.data, product.cutout!.widthPx / product.cutout!.heightPx,
+        manualFrame!.width, manualFrame!.height, kind);
+    }
+    const point = manualPlacement ? manualPlacementAnchor(manualPlacement, kind) : item.placementPoint;
     if (
       !point ||
       ![point.x, point.y].every((n) => Number.isFinite(n) && n >= 0 && n <= 1)
@@ -198,7 +219,8 @@ export async function normalizeStorefrontRender(
       productId: product.id,
       placementPoint: point,
       dimensionPair: productDimensionPair(dto),
-      placementKind: productPlacementKind(dto),
+      placementKind: kind,
+      ...(manualPlacement ? { manualPlacement } : {}),
       ...(item.visualWidthNormalized !== undefined ? { visualWidthNormalized: item.visualWidthNormalized } : {}),
     };
   });

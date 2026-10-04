@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import sharp from "sharp";
+import { manualPlacementAnchor, manualPlacementQuad, type ManualPlacement } from "@lili/geometry";
 vi.mock("server-only", () => ({}));
 const config = vi.hoisted(() => ({
     openaiApiKey: "test-only",
@@ -18,6 +19,7 @@ import {
   STOREFRONT_FAST_REALISTIC_PLACEMENT_REVIEW_VERSION,
   STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION,
   STOREFRONT_ROOM_INTEGRATION_REVIEW_VERSION,
+  STOREFRONT_MANUAL_PLACEMENT_REVIEW_VERSION,
   storefrontRoomIntegrationReviewSchema,
   storefrontRealisticPlacementReviewSchema,
   type StorefrontPlacementReviewInput,
@@ -292,6 +294,71 @@ function roomIntegrated(withReference = false) {
     } },
   })) };
 }
+
+describe("manual visual-size photographic qualification", () => {
+  const options = { realism: true, roomIntegration: true, manualPlacement: true };
+  const manual = () => ({ ...roomIntegrated(), physicalScale: null });
+  it("keeps unknown real-world scale informational while verifying chosen visual size", () => {
+    const data = { ...manual(), physicalScale: { passed: false, score: 0.2, reason: "Dimensions réelles inconnues." } };
+    expect(parseStorefrontPlacementReview(data, [realisticProduct], options)).toMatchObject({
+      status: "accepted", version: STOREFRONT_MANUAL_PLACEMENT_REVIEW_VERSION,
+    });
+    expect(parseStorefrontPlacementReview(manual(), [realisticProduct], options).feedback).toContain("estimation visuelle");
+    expect(() => parseStorefrontPlacementReview(data, [realisticProduct], { ...options, scaleReference: measuredReference })).toThrow();
+  });
+  it.each(["identity", "noDuplicate", "contact", "occlusion", "photographicCoherence", "supportIntegration", "scale"] as const)("still rejects an observed %s defect", name => {
+    const data = manual();
+    data.products[0]!.checks[name] = { passed: false, score: 0.95, reason: "Défaut observé." };
+    expect(parseStorefrontPlacementReview(data, [realisticProduct], options).status).toBe("rejected");
+  });
+  it("rejects resizing despite a claimed valid anchor and model acceptance", () => {
+    const data = manual();
+    data.products[0]!.observedBox = { xMin: 0.35, yMin: 0.15, xMax: 0.65, yMax: bounds.yMax };
+    const decision = parseStorefrontPlacementReview(data, [realisticProduct], options);
+    expect(decision.status).toBe("rejected");
+    expect(decision.checks.find(check => check.name.endsWith("geometry_scale"))?.score).toBe(0);
+  });
+  it.each(["flat", "wall"] as const)("compares projected %s bounds without mistaking UV centre for box centre", kind => {
+    const placement: ManualPlacement = { box: { xMin: 0.1, yMin: 0.1, xMax: 0.9, yMax: 0.9 },
+      plane: [{ x: 0.4, y: 0.4 }, { x: 0.6, y: 0.4 }, { x: 0.95, y: 0.95 }, { x: 0.05, y: 0.95 }] };
+    const quad = manualPlacementQuad(placement);
+    const expectedBox = { xMin: Math.min(...quad.map(p => p.x)), yMin: Math.min(...quad.map(p => p.y)),
+      xMax: Math.max(...quad.map(p => p.x)), yMax: Math.max(...quad.map(p => p.y)) };
+    const anchor = manualPlacementAnchor(placement, kind);
+    expect(Math.abs(anchor.y - (expectedBox.yMin + expectedBox.yMax) / 2)).toBeGreaterThan(0.025);
+    const expected = { ...realisticProduct, placementKind: kind, expectedBox, placementPoint: anchor };
+    const base = manual();
+    const data = { ...base, products: base.products.map(p => ({ ...p, observedBox: { ...expectedBox }, observedContact: null })) };
+    expect(parseStorefrontPlacementReview(data, [expected], options).status).toBe("accepted");
+    data.products[0]!.observedBox.yMin += 0.1;
+    data.products[0]!.observedBox.yMax += 0.1;
+    expect(parseStorefrontPlacementReview(data, [expected], options).status).toBe("rejected");
+  });
+  it("retains strict verified foreground occlusion for a partly hidden planar product", () => {
+    const expectedBox = { xMin: 0.3, yMin: 0.4, xMax: 0.7, yMax: 0.8 };
+    const expected = { ...realisticProduct, placementKind: "flat" as const, expectedBox, placementPoint: { x: 0.5, y: 0.6 } };
+    const base = manual();
+    const data = { ...base, products: base.products.map(p => ({ ...p, foregroundOccluded: true,
+      observedBox: { ...expectedBox, yMax: 0.6 }, observedContact: null })) };
+    expect(parseStorefrontPlacementReview(data, [expected], options).status).toBe("accepted");
+    data.products[0]!.checks.occlusion.score = 0.89;
+    expect(parseStorefrontPlacementReview(data, [expected], options).status).toBe("rejected");
+  });
+  it("keeps removal evidence mandatory and independent of approximate scale", () => {
+    const data = { ...manual(), replacementComplete: { passed: false, score: 0.95, reason: "Ancien objet encore visible." } };
+    expect(parseStorefrontPlacementReview(data, [realisticProduct], { ...options, replacement: true }).status).toBe("rejected");
+  });
+  it("sends concise manual evidence instructions without a measured-height request", async () => {
+    const fetcher = vi.fn<typeof globalThis.fetch>(async () => Response.json(envelope(manual())));
+    vi.stubGlobal("fetch", fetcher);
+    await reviewStorefrontPlacement({ ...realisticInput(), ...options });
+    const request = JSON.parse(fetcher.mock.calls[0]![1]!.body as string);
+    expect(request.text.format.name).toBe("storefront_manual_integration_review");
+    expect(request.input[0].content[0].text).toContain("physicalScale is informational");
+    expect(request.input[0].content[0].text.split(/\s+/).length).toBeLessThan(230);
+    expect(request.input[1].content[0].text).not.toContain("User-measured");
+  });
+});
 
 describe("storefront photographic placement qualification", () => {
   it("accepts a corrected pose and box only when the actual placement anchor stays fixed", () => {

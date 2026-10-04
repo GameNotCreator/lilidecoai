@@ -69,6 +69,7 @@ import { createRender } from "../lib/server/rendering";
 import { getOrEstimateSceneScale } from "../lib/server/scale-estimation";
 import { stopRender } from "../lib/server/render-lifecycle";
 import * as storefrontPlacementReview from "../lib/server/ai/storefront-placement-review";
+import * as imageProviders from "../lib/server/ai";
 
 const db = {} as Db;
 let renders: ReturnType<typeof documentStore>;
@@ -502,6 +503,125 @@ beforeEach(async () => {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+describe("manual storefront render orchestration", () => {
+  async function manualRequest() {
+    scenes.rows[0]!.publicSessionId = "storefront:visitor-1";
+    const alpha = Buffer.alloc(32 * 64 * 4);
+    for (let y = 0; y < 64; y++) for (let x = 0; x < 32; x++) {
+      const offset = (y * 32 + x) * 4;
+      alpha[offset] = 170; alpha[offset + 1] = 102; alpha[offset + 2] = 51;
+      alpha[offset + 3] = y < 8 && (x < 8 || x >= 24) ? 0 : 255;
+    }
+    const cutout = await sharp(alpha, { raw: { width: 32, height: 64, channels: 4 } }).png().toBuffer();
+    const read = mocks.read.getMockImplementation()!;
+    mocks.read.mockImplementation(async (...args) => {
+      const original = await read(...args);
+      return String(args[1]).startsWith("cutout") ? { ...original, buffer: cutout } : original;
+    });
+    request.simplePlacements = [{ ...request.simplePlacements![0]!,
+      manualPlacement: { box: { xMin: 0.55, yMin: 0.4, xMax: 0.65, yMax: 0.65 } } }];
+    vi.mocked(storefrontPlacementReview.reviewStorefrontPlacement).mockResolvedValue({
+      version: "storefront-manual-integration-review-v6", status: "accepted", score: 0.95,
+      feedback: "Produit et intégration observés conformes.", checks: [{ name: "product_identity", score: 0.95, reason: "Conforme" }] });
+  }
+  it("pins a single OpenAI final edit and skips all scale/pose/preflight calls for confirmed manual geometry", async () => {
+    await manualRequest();
+    const selection = vi.spyOn(imageProviders, "selectEditingProvider");
+    Object.assign(mocks.config, { simplePointImageProvider: "myarchitectai", myArchitectAIApiKey: undefined });
+    try {
+      const result = await createRender(db, "org", request, "storefront:visitor-1");
+      expect(result).toMatchObject({ status: "succeeded", promptVersion: "manual-photographic-edit-v6",
+        engineVersions: { composite: "manual-alpha-homography-local-v5", scaleEstimation: "manual-visual-no-metric-v1",
+          quality: "storefront-manual-integration-review-v6" } });
+      expect(selection.mock.calls.every(call => call[2] === "openai")).toBe(true);
+      expect(mocks.edit).toHaveBeenCalledOnce();
+      expect(mocks.edit.mock.calls[0]![0]).toMatchObject({ operation: "manual_composition", quality: "high" });
+      const edit = mocks.edit.mock.calls[0]![0] as ImageEditingRequest;
+      expect(edit.prompt).toContain("contacts en fractions 0..1 du canevas entier");
+      expect(mocks.edit.mock.calls[0]![0].prompt).toContain("anses, poignées, pieds, couvercle");
+      const inputFrame = await sharp(Buffer.from(edit.composition)).metadata();
+      const maskFrame = await sharp(Buffer.from(edit.protectionMask)).metadata();
+      expect(inputFrame.width).toBe(maskFrame.width);
+      expect(inputFrame.height).toBe(maskFrame.height);
+      expect(inputFrame.width).toBeLessThan(400);
+      expect(inputFrame.height).toBeLessThan(300);
+      expect(Buffer.from(edit.references![0]!.data)).toEqual(Buffer.from(edit.composition));
+      expect(await sharp(Buffer.from(edit.references!.at(-1)!.data)).metadata()).toMatchObject({ width: 400, height: 300 });
+      expect(vi.mocked(getOrEstimateSceneScale)).not.toHaveBeenCalled();
+      expect(preflightRequest).toBeNull();
+      expect(scenePreflightNames).toEqual([]);
+      const review = vi.mocked(storefrontPlacementReview.reviewStorefrontPlacement).mock.calls[0]![0];
+      expect(review).toMatchObject({ manualPlacement: true, roomIntegration: true, realism: true });
+      expect(await sharp(Buffer.from(review.generated.data)).metadata()).toMatchObject({ width: 400, height: 300 });
+      expect(await sharp(Buffer.from(review.composition.data)).metadata()).toMatchObject({ width: 400, height: 300 });
+      expect(review.products[0]).not.toHaveProperty("dimensionsCm");
+      expect(mocks.capture).toHaveBeenCalledOnce();
+    } finally {
+      delete (mocks.config as Record<string, unknown>).simplePointImageProvider;
+      delete (mocks.config as Record<string, unknown>).myArchitectAIApiKey;
+    }
+  });
+  it("transports the normalized crop contract to native output size and reviews the restored full frame", async () => {
+    await manualRequest();
+    const edit = mocks.edit.getMockImplementation()!;
+    mocks.edit.mockImplementation(async (input: ImageEditingRequest) => ({ ...await edit(input),
+      images: [{ data: await sharp(input.composition).resize(1536, 1024).png().toBuffer(), mimeType: "image/png" }] }));
+    await createRender(db, "org", request, "storefront:visitor-1");
+    const input = mocks.edit.mock.calls[0]![0] as ImageEditingRequest;
+    const contracts = JSON.parse(input.prompt.split("sortie : ")[1]!.split(".\n")[0]!) as Array<{
+      kind: string; quad: Array<{ x: number; y: number }>; contact: { x: number; y: number };
+    }>;
+    expect(contracts[0]!.kind).toBe("standing");
+    const metadata = await sharp(input.composition).metadata();
+    const raw = await sharp(input.composition).removeAlpha().raw().toBuffer();
+    const quad = contracts[0]!.quad;
+    const x = Math.floor((quad[0]!.x + quad[1]!.x) / 2 * metadata.width!);
+    const y = Math.floor((quad[0]!.y + quad[3]!.y) / 2 * metadata.height!);
+    expect([...raw.subarray((y * metadata.width! + x) * 3, (y * metadata.width! + x) * 3 + 3)]).toEqual([170, 102, 51]);
+    const review = vi.mocked(storefrontPlacementReview.reviewStorefrontPlacement).mock.calls[0]![0];
+    expect(review.products[0]!.expectedBox).toMatchObject({ yMax: 0.65 });
+    expect(await sharp(Buffer.from(review.generated.data)).metadata()).toMatchObject({ width: 400, height: 300 });
+    expect(renders.rows[0]!.placement).toMatchObject({ manualEditWindow: { width: expect.any(Number) },
+      manualEditContracts: contracts, metricVerified: false });
+    expect(mocks.edit).toHaveBeenCalledOnce();
+  });
+  it("cleans only the independent erase region before composition and uses one provider without a pose pass", async () => {
+    await manualRequest();
+    request.replaceExisting = true;
+    request.replacementRegion = { xMin: 0.1, yMin: 0.3, xMax: 0.3, yMax: 0.7 };
+    const result = await createRender(db, "org", request, "storefront:visitor-1");
+    expect(result).toMatchObject({ status: "succeeded", audit: { obstaclesRemoved: 1 } });
+    expect(mocks.edit).toHaveBeenCalledTimes(2);
+    expect(mocks.edit.mock.calls.map(call => call[0].operation)).toEqual(["manual_cleanup", "manual_composition"]);
+    expect(mocks.edit.mock.calls[0]![0].references).toHaveLength(1);
+    expect(mocks.edit.mock.calls[0]![0].references[0].role).toBe("composition");
+    expect(vi.mocked(getOrEstimateSceneScale)).not.toHaveBeenCalled();
+    expect((renders.rows[0]!.placement as Record<string, unknown>).metricVerified).toBe(false);
+  });
+  it("keeps an uncertain image outcome billable and does not replay or capture the customer credit", async () => {
+    await manualRequest();
+    mocks.edit.mockResolvedValue({ provider: "openai", model: "test-image", status: "failed", durationMs: 20,
+      estimatedCostUsd: 0.1, attemptCount: 1, images: [], error: { code: "timeout", message: "issue incertaine", retryable: true }, safety: { blocked: false } });
+    await expect(createRender(db, "org", request, "storefront:visitor-1")).rejects.toMatchObject({ code: "provider_unknown" });
+    expect(mocks.edit).toHaveBeenCalledOnce();
+    expect(mocks.capture).not.toHaveBeenCalled();
+    expect(attempts.rows.find(row => row.stage === "manual_photographic_edit")).toMatchObject({ usageOutcome: "unknown", estimatedCostUsd: 0.1 });
+  });
+  it("keeps a rejected candidate private for correction without a second image call or accepted result", async () => {
+    await manualRequest();
+    vi.mocked(storefrontPlacementReview.reviewStorefrontPlacement).mockResolvedValue({
+      version: "storefront-manual-integration-review-v6", status: "rejected", score: 0.3,
+      feedback: "Le meuble devant le produit doit rester visible.", checks: [{ name: "product_occlusion", score: 0.3, reason: "Meuble masqué" }] });
+    await expect(createRender(db, "org", request, "storefront:visitor-1")).rejects.toThrow("contrôle qualité");
+    expect(renders.rows[0]).toMatchObject({ status: "failed", qualityDecision: { status: "rejected" }, compositeAssetId: expect.any(String) });
+    expect(renders.rows[0]).not.toHaveProperty("resultAssetId");
+    expect((renders.rows[0]!.qualityDecision as Record<string, unknown>).feedback).toContain("meuble");
+    expect(mocks.edit).toHaveBeenCalledOnce();
+    expect(mocks.capture).not.toHaveBeenCalled();
+    expect(mocks.store.mock.calls.every(call => call[1].visibility.ownerSessionId === "storefront:visitor-1")).toBe(true);
+  });
 });
 
 describe("restricted spatial admission", () => {

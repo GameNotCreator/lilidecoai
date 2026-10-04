@@ -137,35 +137,9 @@ test("catalogue product flows through a private photo and a mock render", async 
   const sceneResponse = await uploaded;
   expect(sceneResponse.status()).toBe(201);
   const scene = await sceneResponse.json();
-  const referenceFrame = page.getByRole("button", {
-    name: /Choisir le bas de la référence/,
-  });
-  await expect(referenceFrame).toBeEnabled();
-  const referenceBounds = await referenceFrame.boundingBox();
-  await referenceFrame.click({
-    position: {
-      x: referenceBounds!.width * 0.5,
-      y: referenceBounds!.height * 0.6,
-    },
-  });
-  await page
-    .getByRole("button", { name: /Choisir le sommet de la référence/ })
-    .click({
-      position: {
-        x: referenceBounds!.width * 0.5,
-        y: referenceBounds!.height * 0.4,
-      },
-    });
-  await page.getByLabel("Hauteur réelle de votre référence (cm)").fill("30");
-  await page.getByRole("checkbox", { name: /Ma référence repose/ }).check();
-  await page
-    .getByRole("button", {
-      name: "Confirmer cette hauteur et placer les articles",
-    })
-    .click();
-  await expect(
-    page.getByRole("button", { name: /^Placer Vase Sable/ }),
-  ).toBeVisible();
+  const frame = page.locator(".store-placement-frame");
+  await expect(frame).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Affiner la taille avec une hauteur connue" })).toHaveCount(0);
   const stranger = await browser.newContext();
   const session = await stranger.request.post(
     `${origin}/api/storefront/session`,
@@ -183,11 +157,9 @@ test("catalogue product flows through a private photo and a mock render", async 
     ).status(),
   ).toBe(404);
   await stranger.close();
-  const frame = page.getByRole("button", { name: /^Placer Vase Sable/ });
   const bounds = await frame.boundingBox();
-  await frame.click({
-    position: { x: bounds!.width * 0.5, y: bounds!.height * 0.6 },
-  });
+  await frame.click({ position: { x: bounds!.width * 0.65, y: bounds!.height * 0.4 } });
+  await frame.click({ position: { x: bounds!.width * 0.35, y: bounds!.height * 0.6 } });
   const create = page.waitForResponse(
     (response) =>
       response.url().endsWith("/v1/renders/final") &&

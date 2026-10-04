@@ -1,5 +1,7 @@
 import "server-only";
 
+import sharp from "sharp";
+
 import type {
   ImageEditingProvider,
   ImageEditingRequest,
@@ -67,11 +69,13 @@ export class OpenAIImageProvider
     if ("generateProductView" in request && request.generateProductView === true)
       return this.runProductView(request);
     const startedAt = Date.now();
+    const manualEdit = request.operation === "manual_composition" || request.operation === "manual_cleanup";
+    const manualCleanup = request.operation === "manual_cleanup";
     const roomRefinement = "storefrontRoomRefinement" in request && request.storefrontRoomRefinement === true;
     const roomContactGuide = "storefrontRoomRefinementContactGuide" in request && request.storefrontRoomRefinementContactGuide === true;
     const timeoutMs = Math.min(
-      roomRefinement ? 85_000 : 180_000,
-      (request.deadlineMs ?? startedAt + 225_000) - startedAt - 45_000,
+      manualCleanup ? 55_000 : roomRefinement ? 85_000 : manualEdit ? 120_000 : 180_000,
+      (request.deadlineMs ?? startedAt + 225_000) - startedAt - (manualCleanup ? 100_000 : 45_000),
     );
     if (timeoutMs < 10_000)
       return failure(
@@ -92,6 +96,32 @@ export class OpenAIImageProvider
     const productReferences = references.filter((reference) =>
       reference.role.startsWith("product_"),
     );
+    if (manualEdit) {
+      const compositions = references.filter(reference => reference.role === "composition");
+      const rooms = references.filter(reference => reference.role === "room_original");
+      const mask = "targetMask" in request ? request.targetMask : undefined;
+      if (productIsolation || roomRefinement || compositions.length !== 1 || compositions[0]!.mimeType !== "image/png" ||
+          !mask || mask.mimeType !== "image/png" || !mask.data.length ||
+          (manualCleanup ? productReferences.length !== 0 || rooms.length !== 0 || references.length !== 1
+            : productReferences.length < 1 || productReferences.length > 3 || rooms.length !== 1 || references.length !== productReferences.length + 2))
+        return failure(this.model, crypto.randomUUID(), 0, "invalid_input", "La composition PNG, son masque et ses références sont incomplets.", false);
+      try {
+        const [imageMetadata, maskMetadata] = await Promise.all([
+          sharp(Buffer.from(compositions[0]!.data), { limitInputPixels: 16_000_000 }).metadata(),
+          sharp(Buffer.from(mask.data), { limitInputPixels: 16_000_000 }).metadata(),
+        ]);
+        if (imageMetadata.format !== "png" || maskMetadata.format !== "png" || !maskMetadata.hasAlpha ||
+            imageMetadata.width !== maskMetadata.width || imageMetadata.height !== maskMetadata.height ||
+            (imageMetadata.pages ?? 1) !== 1 || (maskMetadata.pages ?? 1) !== 1)
+          throw new Error("invalid mask");
+      } catch {
+        return failure(this.model, crypto.randomUUID(), 0, "invalid_input", "Le masque alpha doit correspondre exactement à la première image PNG.", false);
+      }
+      for (const [index, reference] of [compositions[0]!, ...productReferences, ...rooms].entries())
+        body.append("image[]", new Blob([toArrayBuffer(reference.data)], { type: reference.mimeType }),
+          `${index === 0 ? "composition" : reference.role === "room_original" ? "room-original" : `product-${index}`}.${extension(reference.mimeType)}`);
+      body.append("mask", new Blob([toArrayBuffer(mask.data)], { type: "image/png" }), "mask.png");
+    }
     if (roomRefinement && (productIsolation || references.length !== (roomContactGuide ? 4 : 3) || productReferences.length !== 1 || !productReferences[0]!.data.length ||
         references.filter(reference => reference.role === "composition").length !== 1 ||
         !references.some(reference => reference.role === "composition" && reference.mimeType === "image/png" && reference.data.length > 0) ||
@@ -102,7 +132,9 @@ export class OpenAIImageProvider
         !request.targetMask || request.targetMask.mimeType !== "image/png" || !request.targetMask.data.length))
       return failure(this.model, crypto.randomUUID(), Date.now() - startedAt, "invalid_input",
         "Une composition locale PNG, son masque, le catalogue et la pièce guidée sont requis.", false);
-    if (productIsolation) {
+    if (manualEdit) {
+      // The mask above always applies to the first composition image.
+    } else if (productIsolation) {
       if (productReferences.length === 0)
         return failure(
           this.model,
@@ -198,6 +230,9 @@ export class OpenAIImageProvider
     body.append("background", productIsolation ? "transparent" : "opaque");
     body.append("output_format", "webp");
     body.append("output_compression", "100");
+    // GPT Image 2 omits this unsupported parameter. Historical jobs keep
+    // their previous serialization; native 1/1.5 manual edits preserve inputs.
+    if (manualEdit && /^gpt-image-1(?:\.5)?$/.test(this.model)) body.append("input_fidelity", "high");
 
     let response: Response | undefined;
     let refinementPayload: unknown;
@@ -212,7 +247,7 @@ export class OpenAIImageProvider
         body,
         signal,
       });
-      if (roomRefinement) {
+      if (roomRefinement || manualEdit) {
         refinementPayload = await response.json();
         if (signal.aborted) throw signal.reason;
         if (!refinementPayload || typeof refinementPayload !== "object" || Array.isArray(refinementPayload))
@@ -230,14 +265,14 @@ export class OpenAIImageProvider
         timeout
           ? "OpenAI a dépassé le temps de traitement autorisé."
           : "Impossible de joindre le service d’image OpenAI.",
-        !roomRefinement,
+        !roomRefinement && !manualEdit,
         // A dropped connection cannot prove the provider did not run the job.
         estimateOpenAICost(request.quality, request.size, this.model),
       );
     }
     const requestId =
       response.headers.get("x-request-id") ?? crypto.randomUUID();
-    const payload = (roomRefinement ? refinementPayload : await response.json().catch(() => ({}))) as {
+    const payload = (roomRefinement || manualEdit ? refinementPayload : await response.json().catch(() => ({}))) as {
       data?: Array<{ b64_json?: string }>;
       usage?: Record<string, unknown>;
       error?: {
@@ -262,7 +297,7 @@ export class OpenAIImageProvider
             ? "La demande ne respecte pas les exigences de sécurité."
             : (payload.error?.message?.slice(0, 300) ??
                 `Erreur OpenAI ${response.status}.`),
-          !roomRefinement && (response.status === 408 ||
+          !roomRefinement && !manualEdit && (response.status === 408 ||
             response.status === 429 ||
             response.status >= 500),
           response.status >= 500 || response.status === 408
@@ -289,7 +324,7 @@ export class OpenAIImageProvider
         estimateOpenAICost(request.quality, request.size, this.model),
       );
     }
-    if (roomRefinement && (payload.data?.length !== 1 || typeof encoded !== "string" || encoded.length > 70_000_000 ||
+    if ((roomRefinement || manualEdit) && (payload.data?.length !== 1 || typeof encoded !== "string" || encoded.length > 70_000_000 ||
         encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)))
       return failure(this.model, requestId, Date.now() - startedAt, "invalid_image_response",
         "La réponse image ne respecte pas le contrat de composition locale.", false,

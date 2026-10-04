@@ -15,7 +15,8 @@ import {
   X,
 } from "lucide-react";
 import { renderSchema, type Render } from "@lili/types";
-import { normalizeTap } from "@lili/geometry";
+import { fitManualProductBox, isManualPlaneValid, manualPlacementAnchor, manualPlacementQuad, moveManualPlacement,
+  normalizeManualBox, normalizeTap, projectManualPhotoPointToPlane, resizeManualPlacement, type ManualPlacement } from "@lili/geometry";
 import { z } from "zod";
 import { ApiError } from "@/lib/api-errors";
 import { getRender } from "@/lib/api";
@@ -32,7 +33,6 @@ import {
   productPlacementKind,
   safeStorefrontUrl,
   visualizationProblem,
-  computeStorefrontReferenceScale,
   type StorefrontProduct,
 } from "@/lib/storefront";
 import {
@@ -49,7 +49,8 @@ import {
 } from "@/lib/storefront-visualization-draft";
 import { useStorefrontCatalog } from "./catalog-state";
 import { StorefrontCamera } from "./storefront-camera";
-import { fitStorefrontVisualPoint, storefrontVisualFootprint, type StorefrontReplacementRegion } from "@/lib/storefront-visual-footprint";
+import { storefrontVisualFootprint, type StorefrontReplacementRegion } from "@/lib/storefront-visual-footprint";
+import { ManualProductPreview } from "./manual-product-preview";
 import {
   CatalogError,
   CatalogLoading,
@@ -129,22 +130,18 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
   const [consent, setConsent] = useState(false);
   const [scene, setScene] = useState<Scene | null>(null);
   const [sceneImageReady, setSceneImageReady] = useState(false);
-  const [referenceBase, setReferenceBase] = useState<Point | null>(null);
-  const [referenceTop, setReferenceTop] = useState<Point | null>(null);
-  const [referenceHeight, setReferenceHeight] = useState("");
-  const [sameDepth, setSameDepth] = useState(false);
-  const [referenceReady, setReferenceReady] = useState(true);
-  const [useMeasurement, setUseMeasurement] = useState(false);
+  const [manualPlacements, setManualPlacements] = useState<Array<ManualPlacement | null>>(() => products.map(() => null));
+  const [planeCorners, setPlaneCorners] = useState<Point[][]>(() => products.map(() => []));
+  const [placementFirstCorner, setPlacementFirstCorner] = useState<Point | null>(null);
+  const [placementAction, setPlacementAction] = useState<"select" | "move">("select");
+  const [cutoutAspects, setCutoutAspects] = useState<Array<number | null>>(() => products.map(product =>
+    product.cutout ? product.cutout.widthPx / product.cutout.heightPx : null));
   const [replaceExisting, setReplaceExisting] = useState(false);
   const [cameraOpen, setCameraOpen] = useState(false);
-  const [visualWidths, setVisualWidths] = useState<Array<number | null>>(() => products.map(() => null));
   const [replacementRegion, setReplacementRegion] = useState<StorefrontReplacementRegion | null>(null);
   const [replacementConfirmed, setReplacementConfirmed] = useState(false);
   const [replacementFirstCorner, setReplacementFirstCorner] = useState<Point | null>(null);
   const [regionCorner, setRegionCorner] = useState<"first" | "second">("first");
-  const [referenceTarget, setReferenceTarget] = useState<"base" | "top">(
-    "base",
-  );
   const [points, setPoints] = useState<Array<Point | null>>(() =>
     products.map(() => null),
   );
@@ -175,17 +172,8 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
   const selectionKey = products.map((product) => product.id).join(",");
   const renderedId = pending(render) ? render!.id : null;
   const frozen = Boolean(!restored || busy || render || uncertain);
-  const allPlaced = points.length === products.length && points.every(Boolean);
+  const allPlaced = manualPlacements.length === products.length && manualPlacements.every(Boolean);
   const step = render ? 3 : !scene ? 1 : 2;
-  const scaleReference =
-    referenceBase && referenceTop
-      ? {
-          realHeightCm: Number(referenceHeight.replace(",", ".")),
-          basePoint: referenceBase,
-          topPoint: referenceTop,
-          sameDepthConfirmed: sameDepth,
-        }
-      : null;
   const activeProduct = products[activeIndex] ?? products[0]!;
   const units = useMemo(
     () =>
@@ -234,14 +222,15 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
         setConsent(true);
         setScene(photo);
         setPoints(saved.points);
-        setReferenceBase(saved.referenceBase);
-        setReferenceTop(saved.referenceTop);
-        setReferenceHeight(saved.referenceHeight);
-        setSameDepth(saved.sameDepth);
-        setReferenceReady(saved.referenceReady);
-        setUseMeasurement(saved.useMeasurement);
+        setManualPlacements(saved.manualPlacements ?? products.map((product, index) => {
+          const point = saved!.points[index];
+          if (!point || productPlacementKind(product) !== "standing") return null;
+          // Historical point drafts migrate their visible guide, never a real measurement.
+          const guide = storefrontVisualFootprint(product, photo, point, saved!.visualWidths?.[index] ?? 0.18);
+          return { box: { xMin: guide.xMin, yMin: guide.yMin, xMax: guide.xMin + guide.width, yMax: guide.yMin + guide.height } };
+        }));
+        setPlaneCorners(saved.planeCorners ?? saved.productIds.map(() => []));
         setReplaceExisting(saved.replaceExisting);
-        setVisualWidths(saved.visualWidths ?? saved.productIds.map(() => null));
         setReplacementRegion(saved.replacementRegion ?? null);
         setReplacementConfirmed(Boolean(saved.replacementConfirmed));
         setRender(latest);
@@ -272,7 +261,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
       timeout = undefined;
       controller.abort();
     };
-  }, [selectionKey, restoreAttempt]);
+  }, [selectionKey, restoreAttempt, products]);
 
   function restartAfterLostAccess() {
     if (!restoreUnavailable || restored) return;
@@ -290,18 +279,14 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
     setConsent(false);
     setScene(null);
     setSceneImageReady(false);
-    setReferenceBase(null);
-    setReferenceTop(null);
-    setReferenceHeight("");
-    setSameDepth(false);
-    setReferenceReady(true);
-    setUseMeasurement(false);
+    setManualPlacements(products.map(() => null));
+    setPlaneCorners(products.map(() => []));
+    setPlacementFirstCorner(null);
+    setPlacementAction("select");
     setReplaceExisting(false);
-    setVisualWidths(products.map(() => null));
     setReplacementRegion(null);
     setReplacementConfirmed(false);
     setReplacementFirstCorner(null);
-    setReferenceTarget("base");
     setPoints(products.map(() => null));
     setActiveIndex(0);
     setKeyboardPoint({ x: 0.5, y: 0.7 });
@@ -327,14 +312,15 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
             productIds: selectionKey.split(","),
             sceneId: scene.id,
             points,
-            referenceBase,
-            referenceTop,
-            referenceHeight,
-            sameDepth,
-            referenceReady,
-            useMeasurement,
+            referenceBase: null,
+            referenceTop: null,
+            referenceHeight: "",
+            sameDepth: false,
+            referenceReady: true,
+            useMeasurement: false,
+            manualPlacements,
+            planeCorners,
             replaceExisting,
-            visualWidths,
             replacementRegion: replacementRegion && (replacementRegion.xMax - replacementRegion.xMin) * (replacementRegion.yMax - replacementRegion.yMin) <= 0.5 && replacementRegion.xMax > replacementRegion.xMin && replacementRegion.yMax > replacementRegion.yMin ? replacementRegion : null,
             replacementConfirmed,
             ...(render ? { renderId: render.id } : {}),
@@ -344,14 +330,9 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
       scene,
       selectionKey,
       points,
-      referenceBase,
-      referenceTop,
-      referenceHeight,
-      sameDepth,
-      referenceReady,
-      useMeasurement,
+      manualPlacements,
+      planeCorners,
       replaceExisting,
-      visualWidths,
       replacementRegion,
       replacementConfirmed,
       render,
@@ -422,18 +403,14 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
       );
       setScene(uploaded);
       setSceneImageReady(false);
-      setReferenceBase(null);
-      setReferenceTop(null);
-      setReferenceHeight("");
-      setSameDepth(false);
-      setReferenceReady(true);
-      setUseMeasurement(false);
+      setManualPlacements(products.map(() => null));
+      setPlaneCorners(products.map(() => []));
+      setPlacementFirstCorner(null);
+      setPlacementAction("select");
       setReplaceExisting(false);
-      setVisualWidths(products.map(() => null));
       setReplacementRegion(null);
       setReplacementConfirmed(false);
       setReplacementFirstCorner(null);
-      setReferenceTarget("base");
       setPoints(products.map(() => null));
       setActiveIndex(0);
       pendingBody.current = null;
@@ -452,68 +429,63 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
     frame.current?.focus({ preventScroll: true });
     frame.current?.scrollIntoView({ block: "nearest", behavior: "instant" });
   }
-  function choosePoint(point: Point) {
-    if (frozen) return;
-    if (!referenceReady) {
-      if (referenceTarget === "base") {
-        setReferenceBase(point);
-        setReferenceTarget("top");
-      } else setReferenceTop(point);
-      setError("");
-      return;
-    }
-    if (replaceExisting && products.length === 1 && !replacementConfirmed) {
+  function updatePlacement(index: number, placement: ManualPlacement) {
+    setManualPlacements(current => current.map((item, i) => i === index ? placement : item));
+    setPoints(current => current.map((item, i) => i === index ? manualPlacementAnchor(placement, productPlacementKind(products[index]!)) : item));
+    pendingBody.current = null;
+    setError("");
+  }
+  function choosePoint(photoPoint: Point) {
+    if (frozen || !scene) return;
+    if (replaceExisting && !replacementConfirmed) {
       if (regionCorner === "first" || !replacementFirstCorner) {
-        setReplacementFirstCorner(point);
+        setReplacementFirstCorner(photoPoint);
         setReplacementRegion(null);
         setRegionCorner("second");
-      } else {
-        setReplacementRegion({
-          xMin: Math.min(replacementFirstCorner.x, point.x),
-          yMin: Math.min(replacementFirstCorner.y, point.y),
-          xMax: Math.max(replacementFirstCorner.x, point.x),
-          yMax: Math.max(replacementFirstCorner.y, point.y),
-        });
-      }
+      } else setReplacementRegion(normalizeManualBox(replacementFirstCorner, photoPoint));
       setError("");
       pendingBody.current = null;
       return;
     }
-    if (scene) point = fitStorefrontVisualPoint(activeProduct, scene, point);
-    if (replaceExisting && replacementRegion) {
-      // The selected support point stays in the region explicitly approved by the user.
-      point = {
-        x: Math.max(replacementRegion.xMin, Math.min(replacementRegion.xMax, point.x)),
-        y: Math.max(replacementRegion.yMin, Math.min(replacementRegion.yMax, point.y)),
-      };
-    }
-    if (scene && useMeasurement) {
-      try {
-        computeStorefrontReferenceScale(
-          scaleReference,
-          scene.widthPx,
-          scene.heightPx,
-          [point],
-        );
-      } catch {
-        setUseMeasurement(false);
-        setError("La taille sera estimée avec le patron visuel. Vous pouvez déplacer librement l’article.");
+    const kind = productPlacementKind(activeProduct);
+    const corners = planeCorners[activeIndex] ?? [];
+    if (kind !== "standing" && corners.length < 4) {
+      const next = [...corners, photoPoint];
+      if (next.length === 4 && !isManualPlaneValid(next)) {
+        setError("Les coins se croisent ou sont trop proches. Recommencez le plan en suivant son contour.");
+        return;
       }
+      setPlaneCorners(current => current.map((item, i) => i === activeIndex ? next : item));
+      setError("");
+      pendingBody.current = null;
+      return;
     }
-    const next = [...points];
-    next[activeIndex] = point;
-    setPoints(next);
-    if (scene) {
-      setVisualWidths((current) => current.map((width, index) => index === activeIndex
-        ? storefrontVisualFootprint(products[index]!, scene, point, width ?? 0.18).width
-        : width));
+    const plane = kind !== "standing" && isManualPlaneValid(corners) ? [...corners] as [Point, Point, Point, Point] : undefined;
+    const point = plane ? projectManualPhotoPointToPlane(photoPoint, plane) : photoPoint;
+    if (!point || point.x < 0 || point.x > 1 || point.y < 0 || point.y > 1) {
+      setError("Choisissez un emplacement à l’intérieur du plan délimité.");
+      return;
     }
-    setError("");
-    pendingBody.current = null;
-    const following = next.findIndex((p, index) => index > activeIndex && !p);
-    const remaining = next.findIndex((p) => !p);
-    if (following >= 0 || remaining >= 0)
-      setActiveIndex(following >= 0 ? following : remaining);
+    const current = manualPlacements[activeIndex];
+    if (placementAction === "move" && current) {
+      updatePlacement(activeIndex, moveManualPlacement(current, point, kind));
+      return;
+    }
+    if (!placementFirstCorner) {
+      setPlacementFirstCorner(point);
+      setError("");
+      return;
+    }
+    const box = normalizeManualBox(placementFirstCorner, point);
+    if (box.xMax - box.xMin < 0.01 || box.yMax - box.yMin < 0.01) {
+      setError("Choisissez le coin opposé un peu plus loin pour définir la taille.");
+      return;
+    }
+    updatePlacement(activeIndex, { box, ...(plane ? { plane } : {}) });
+    setPlacementFirstCorner(null);
+    setPlacementAction("move");
+    const following = manualPlacements.findIndex((p, i) => i > activeIndex && !p);
+    if (following >= 0) { setActiveIndex(following); setPlacementAction("select"); }
   }
   function tap(event: MouseEvent<HTMLButtonElement>) {
     if (event.detail === 0) {
@@ -530,26 +502,12 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
   async function generate() {
     if (
       !scene ||
-      !referenceReady ||
-      !allPlaced ||
-      (!pendingBody.current && replaceExisting && products.length === 1 && !replacementConfirmed) ||
+      (!pendingBody.current && !allPlaced) ||
+      (!pendingBody.current && replaceExisting && !replacementConfirmed) ||
       requestLock.current ||
       render
     )
       return;
-    try {
-      if (useMeasurement)
-        computeStorefrontReferenceScale(
-          scaleReference,
-          scene.widthPx,
-          scene.heightPx,
-          points.filter((point): point is Point => !!point),
-        );
-    } catch {
-      setUseMeasurement(false);
-      setError("La taille de votre article sera estimée avec le patron visuel. Relancez quand vous êtes prêt.");
-      return;
-    }
     requestLock.current = true;
     setSubmitting(true);
     setBusy(
@@ -574,15 +532,12 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
         mode: "insert",
         replaceExisting,
         ...(replaceExisting && replacementConfirmed && replacementRegion ? { replacementRegion } : {}),
-        ...(useMeasurement ? { scaleReference } : {}),
         simplePlacements: products.map((product, index) => ({
           productId: product.id,
           placementPoint: points[index],
           dimensionPair: productDimensionPair(product),
           placementKind: productPlacementKind(product),
-          ...(!useMeasurement ? {
-            visualWidthNormalized: storefrontVisualFootprint(product, scene, points[index]!, visualWidths[index] ?? 0.18).width,
-          } : {}),
+          manualPlacement: manualPlacements[index],
         })),
         placement: {
           sceneId: scene.id,
@@ -694,29 +649,42 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
   // and background checks. A failed composite alone is never exposed here.
   const adjustmentUrl = render?.status === "failed"
     ? safeStorefrontUrl(render.adjustmentPreviewUrl) : null;
-  const activePoint = points[activeIndex];
-  const activeFootprint = scene && activePoint
-    ? storefrontVisualFootprint(activeProduct, scene, activePoint, visualWidths[activeIndex] ?? 0.18)
-    : null;
+  const activePlacement = manualPlacements[activeIndex];
+  const activeKind = productPlacementKind(activeProduct);
+  const activePlane = planeCorners[activeIndex] ?? [];
+  const needsPlane = activeKind !== "standing" && activePlane.length < 4;
+  const fittedPlacements = manualPlacements.map((placement, index) => {
+    if (!placement || !scene) return null;
+    const product = products[index]!;
+    const fallbackRatio = product.widthCm / (productPlacementKind(product) === "flat" ? product.depthCm : product.heightCm);
+    return fitManualProductBox(placement, cutoutAspects[index] ?? fallbackRatio, scene.widthPx, scene.heightPx, productPlacementKind(product));
+  });
+  const instruction = replaceExisting && !replacementConfirmed
+    ? `Zone à retirer : choisissez le ${replacementFirstCorner ? "coin opposé" : "premier coin"} autour de l’objet. Le placement du produit reste indépendant.`
+    : needsPlane
+      ? `${activeKind === "flat" ? "Sol" : "Mur"} : choisissez ${["le coin en haut à gauche", "le coin en haut à droite", "le coin en bas à droite", "le coin en bas à gauche"][activePlane.length]} du plan visible (${activePlane.length + 1}/4). Suivez un rectangle réel dans la pièce.`
+      : placementAction === "move" && activePlacement
+        ? `Touchez ${activeKind === "standing" ? "le nouveau point de contact avec le support" : "le nouveau centre dans le plan"} pour déplacer le produit. Sa taille est conservée.`
+        : `Choisissez ${placementFirstCorner ? "le coin opposé" : "un premier coin"} de la boîte du nouveau produit. Les deux sens de sélection fonctionnent.`;
   function confirmReplacement() {
-    if (!replacementRegion || !scene) return;
+    if (!replacementRegion) return;
     const width = replacementRegion.xMax - replacementRegion.xMin;
     const height = replacementRegion.yMax - replacementRegion.yMin;
     if (width < 0.02 || height < 0.02 || width * height > 0.5) {
-      setError("Entourez seulement l’objet à remplacer, avec un peu d’espace autour.");
+      setError("Entourez seulement l’objet à retirer, avec un peu d’espace autour. Préservez le meuble qui le supporte.");
       return;
     }
-    const point = fitStorefrontVisualPoint(activeProduct, scene, { x: (replacementRegion.xMin + replacementRegion.xMax) / 2, y: replacementRegion.yMax });
-    setReplacementRegion({
-      xMin: Math.min(replacementRegion.xMin, point.x), yMin: Math.min(replacementRegion.yMin, point.y),
-      xMax: Math.max(replacementRegion.xMax, point.x), yMax: Math.max(replacementRegion.yMax, point.y),
-    });
-    setPoints([point]);
-    setKeyboardPoint(point);
-    setVisualWidths([storefrontVisualFootprint(activeProduct, scene, point, width).width]);
     setReplacementConfirmed(true);
     setError("");
     pendingBody.current = null;
+  }
+  function nudgePlacement(dx: number, dy: number) {
+    if (!activePlacement || frozen) return;
+    const b = activePlacement.box;
+    updatePlacement(activeIndex, moveManualPlacement(activePlacement, {
+      x: (b.xMin + b.xMax) / 2 + dx,
+      y: (activeKind === "standing" ? b.yMax : (b.yMin + b.yMax) / 2) + dy,
+    }, activeKind));
   }
   return (
     <>
@@ -742,10 +710,12 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
             <button
               className="store-selected-unit"
               key={key}
-              disabled={frozen || !scene || !referenceReady}
+              disabled={frozen || !scene}
               aria-pressed={activeIndex === index && !render}
               onClick={() => {
                 setActiveIndex(index);
+                setPlacementFirstCorner(null);
+                setPlacementAction(manualPlacements[index] ? "move" : "select");
                 focusPlacement();
               }}
             >
@@ -768,12 +738,12 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
           ))}
           <p className="store-small-note">
             Les dimensions du catalogue sont conservées. La taille dans votre
-            photo est estimée. Vous pouvez ajouter un repère de hauteur pour
-            l’affiner.
+            photo est une estimation visuelle. Choisissez sa boîte, puis ajustez
+            le patron et sa taille.
           </p>
         </aside>
         <section className="store-workspace" aria-label="Votre intérieur">
-          {error && (!scene || referenceReady || render) && (
+          {error && (
             <p role="alert" className="store-error">
               {error}
             </p>
@@ -868,7 +838,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
           ) : render ? (
             <div className="store-render-result">
               <span className="store-sr-only" role="status" aria-live="polite">
-                {adjustmentUrl ? "Votre aperçu est disponible. Vous pouvez ajuster sa taille ou son placement." : renderTerminalAnnouncement(
+                {adjustmentUrl ? "Aperçu non validé. Corrigez la taille, le placement ou le plan avant une nouvelle tentative." : renderTerminalAnnouncement(
                   render.status === "succeeded" && !resultUrl
                     ? undefined
                     : render.status,
@@ -900,7 +870,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
                       ? "Bienvenue chez vous."
                       : render.status === "cancelled"
                         ? "La visualisation a été annulée."
-                        : adjustmentUrl ? "Aperçu à ajuster." : "Nous n’avons pas pu terminer cette visualisation."}
+                        : adjustmentUrl ? "Aperçu à corriger." : "Nous n’avons pas pu terminer cette visualisation."}
                   </h2>
                   {(render.status === "succeeded" && resultUrl) || adjustmentUrl ? (
                     <>
@@ -915,7 +885,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
                           }
                         />
                         <span>
-                          {showOriginal ? "Votre photo" : adjustmentUrl ? "Aperçu à ajuster" : "Votre visualisation"}
+                          {showOriginal ? "Votre photo" : adjustmentUrl ? "Aperçu non validé" : "Votre visualisation"}
                         </span>
                       </div>
                       <div className="store-result-actions">
@@ -939,9 +909,10 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
                       </div>
                       <p className="store-small-note">
                         {adjustmentUrl
-                          ? "Votre article est visible. Ajustez son placement ou sa taille pour améliorer l’aperçu. Cette tentative n’a pas utilisé de crédit."
+                          ? `Corrigez la boîte, la taille ou les quatre coins du plan pour améliorer l’intégration. ${render.creditCharged ? "Le crédit de cette tentative a été utilisé." : "Cette tentative n’a pas utilisé de crédit."}`
                           : "Image d’inspiration à échelle approximative. Vérifiez les dimensions et l’espace disponible avant votre achat."}
                       </p>
+                      {adjustmentUrl && <p className="store-help" role="status">{render.qualityDecision?.feedback || render.error || "L’intégration doit être corrigée avant de valider ce résultat."}</p>}
                     </>
                   ) : (
                     <p className="store-help">
@@ -949,7 +920,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
                         "Votre sélection et votre photo restent disponibles pour ajuster les emplacements."}
                     </p>
                   )}
-                  <button className="store-text-link" onClick={editAgain}>
+                  <button className="store-text-link min-h-11" onClick={editAgain}>
                     <RotateCcw size={16} />
                     {adjustmentUrl ? "Ajuster placement et taille" : "Revenir aux emplacements"}
                   </button>
@@ -971,437 +942,125 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
             <>
               <div className="store-workspace-heading">
                 <div>
-                  <p className="store-kicker">
-                    {referenceReady
-                      ? `POINT ${activeIndex + 1} · ${activeProduct.name}`
-                      : "LA TAILLE DANS VOTRE PIÈCE"}
-                  </p>
-                  <h2>
-                    {!referenceReady
-                      ? "Affiner la taille, si vous le souhaitez."
-                      : allPlaced
-                        ? "Chaque pièce a sa place."
-                        : "Où l’imaginez-vous ?"}
-                  </h2>
-                  <p>
-                    {!referenceReady
-                      ? referenceTarget === "base"
-                        ? "Vous pouvez continuer avec une taille estimée. Si vous connaissez une hauteur dans la pièce, indiquez son bas puis son sommet pour affiner l’échelle."
-                        : "Touchez maintenant le sommet de cet objet, puis indiquez sa hauteur."
-                      : replaceExisting && products.length === 1 && !replacementConfirmed
-                        ? "Choisissez deux coins opposés autour de l’objet à retirer, puis confirmez la zone."
-                        : productPlacementKind(activeProduct) === "standing"
-                        ? useMeasurement
-                          ? "Touchez l’endroit où le bord inférieur visible de l’article doit rencontrer le sol ou le meuble, à la même profondeur que votre référence."
-                          : "Touchez l’endroit où le bord inférieur visible de l’article doit rencontrer le sol ou le meuble."
-                        : "Touchez le centre de l’emplacement souhaité."}
-                  </p>
+                  <p className="store-kicker">ARTICLE {activeIndex + 1} · {activeProduct.name}</p>
+                  <h2>{allPlaced ? "Chaque pièce a sa place." : "Dessinez-lui une place."}</h2>
+                  <p id="store-placement-help" role="status" aria-live="polite">{instruction}</p>
                 </div>
-                <button
-                  className="store-text-link"
-                  disabled={frozen}
-                  onClick={() => photoInput.current?.click()}
-                >
-                  Changer la photo
-                </button>
-                <input
-                  ref={photoInput}
-                  type="file"
-                  accept="image/jpeg,image/png,image/webp"
-                  className="store-sr-only"
-                  disabled={frozen}
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    event.target.value = "";
-                    if (file) void uploadPhoto(file);
-                  }}
-                />
+                <button type="button" className="store-text-link min-h-11" disabled={frozen}
+                  onClick={() => photoInput.current?.click()}>Changer la photo</button>
+                <input ref={photoInput} type="file" accept="image/jpeg,image/png,image/webp" className="store-sr-only" disabled={frozen}
+                  onChange={event => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void uploadPhoto(file); }} />
               </div>
-              {!referenceReady && (
-                <button
-                  type="button"
-                  className="btn min-h-11 h-auto w-full whitespace-normal mb-4"
-                  disabled={frozen}
+              <div className="flex flex-wrap gap-2 my-4" role="group" aria-label="Corriger le placement">
+                <button type="button" className="btn min-h-11 h-auto whitespace-normal" disabled={frozen || needsPlane}
+                  aria-pressed={placementAction === "select"} onClick={() => {
+                    setPlacementAction("select"); setPlacementFirstCorner(null); focusPlacement();
+                  }}>{activePlacement ? "Modifier la boîte · 2 coins" : "Choisir la boîte · 2 coins"}</button>
+                <button type="button" className="btn min-h-11 h-auto whitespace-normal" disabled={frozen || !activePlacement}
+                  aria-pressed={placementAction === "move"} onClick={() => {
+                    setPlacementAction("move"); setPlacementFirstCorner(null); focusPlacement();
+                  }}>Déplacer le produit</button>
+                {activeKind !== "standing" && <button type="button" className="btn min-h-11 h-auto whitespace-normal" disabled={frozen || !activePlane.length}
                   onClick={() => {
-                    setUseMeasurement(false);
-                    setReferenceReady(true);
-                    setError("");
-                    focusPlacement();
-                  }}
-                >
-                  Revenir au placement avec une taille estimée
-                </button>
-              )}
-              {!referenceReady && (
-                <div className="flex flex-col gap-2 sm:flex-row mb-4">
-                  <button
-                    type="button"
-                    className="btn min-h-11 h-auto whitespace-normal"
-                    aria-pressed={referenceTarget === "base"}
-                    disabled={frozen}
-                    onClick={() => setReferenceTarget("base")}
-                  >
-                    {referenceBase ? "Modifier le bas" : "1. Choisir le bas"}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn min-h-11 h-auto whitespace-normal"
-                    aria-pressed={referenceTarget === "top"}
-                    disabled={frozen}
-                    onClick={() => setReferenceTarget("top")}
-                  >
-                    {referenceTop
-                      ? "Modifier le sommet"
-                      : "2. Choisir le sommet"}
-                  </button>
-                </div>
-              )}
-              <button
-                ref={frame}
-                className="store-placement-frame"
-                style={{ aspectRatio: `${scene.widthPx} / ${scene.heightPx}` }}
-                onClick={tap}
-                disabled={frozen || !sceneImageReady}
-                aria-label={
-                  referenceReady
-                    ? replaceExisting && products.length === 1 && !replacementConfirmed
-                      ? `Entourer l’objet à remplacer : choisir le ${regionCorner === "first" ? "premier" : "second"} coin. Au clavier, utilisez les flèches puis Entrée.`
-                      : `Placer ${activeProduct.name} sur la photo. Au clavier, utilisez les flèches puis Entrée.`
-                    : `Choisir ${referenceTarget === "base" ? "le bas" : "le sommet"} de la référence sur la photo. Au clavier, utilisez les flèches puis Entrée.`
-                }
-                onKeyDown={(event) => {
-                  if (
-                    frozen ||
-                    ![
-                      "ArrowLeft",
-                      "ArrowRight",
-                      "ArrowUp",
-                      "ArrowDown",
-                    ].includes(event.key)
-                  )
-                    return;
+                    setPlaneCorners(current => current.map((corners, i) => i === activeIndex ? [] : corners));
+                    setManualPlacements(current => current.map((placement, i) => i === activeIndex ? null : placement));
+                    setPoints(current => current.map((point, i) => i === activeIndex ? null : point));
+                    setPlacementFirstCorner(null); setPlacementAction("select"); pendingBody.current = null; setError(""); focusPlacement();
+                  }}>Recommencer le plan · 4 coins</button>}
+                {needsPlane && activePlane.length > 0 && <button type="button" className="btn min-h-11" disabled={frozen} onClick={() => {
+                  setPlaneCorners(current => current.map((corners, i) => i === activeIndex ? corners.slice(0, -1) : corners)); setError(""); focusPlacement();
+                }}>Annuler le dernier coin</button>}
+              </div>
+              <button ref={frame} className="store-placement-frame" style={{ aspectRatio: `${scene.widthPx} / ${scene.heightPx}` }}
+                onClick={tap} disabled={frozen || !sceneImageReady}
+                aria-label={`${instruction} Au clavier, utilisez les flèches puis Entrée.`} aria-describedby="store-placement-help"
+                onKeyDown={event => {
+                  if (frozen || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
                   event.preventDefault();
-                  setKeyboardPoint((p) => ({
-                    x: Math.max(
-                      0.02,
-                      Math.min(
-                        0.98,
-                        p.x +
-                          (event.key === "ArrowRight"
-                            ? 0.02
-                            : event.key === "ArrowLeft"
-                              ? -0.02
-                              : 0),
-                      ),
-                    ),
-                    y: Math.max(
-                      0.02,
-                      Math.min(
-                        0.98,
-                        p.y +
-                          (event.key === "ArrowDown"
-                            ? 0.02
-                            : event.key === "ArrowUp"
-                              ? -0.02
-                              : 0),
-                      ),
-                    ),
+                  setKeyboardPoint(p => ({
+                    x: Math.max(0.001, Math.min(0.999, p.x + (event.key === "ArrowRight" ? 0.02 : event.key === "ArrowLeft" ? -0.02 : 0))),
+                    y: Math.max(0.001, Math.min(0.999, p.y + (event.key === "ArrowDown" ? 0.02 : event.key === "ArrowUp" ? -0.02 : 0))),
                   }));
-                }}
-              >
+                }}>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={scene.imageUrl}
-                  alt={
-                    referenceReady
-                      ? "Votre pièce : choisissez les emplacements de votre sélection"
-                      : "Votre pièce : indiquez les extrémités d’une hauteur connue"
-                  }
-                  draggable={false}
-                  onLoad={() => setSceneImageReady(true)}
-                />
-                {referenceReady && sceneImageReady && (
-                  <svg aria-hidden="true" viewBox={`0 0 ${scene.widthPx} ${scene.heightPx}`} className="store-visual-guides">
-                    {points.map((point, index) => {
-                      if (!point || useMeasurement) return null;
-                      const box = storefrontVisualFootprint(products[index]!, scene, point, visualWidths[index] ?? 0.18);
-                      return <rect key={index} className="store-visual-footprint" data-active={activeIndex === index}
-                        x={box.xMin * scene.widthPx} y={box.yMin * scene.heightPx}
-                        width={box.width * scene.widthPx} height={box.height * scene.heightPx} />;
-                    })}
-                    {replaceExisting && replacementRegion && <rect className="store-replacement-region"
-                      x={replacementRegion.xMin * scene.widthPx} y={replacementRegion.yMin * scene.heightPx}
-                      width={(replacementRegion.xMax - replacementRegion.xMin) * scene.widthPx}
-                      height={(replacementRegion.yMax - replacementRegion.yMin) * scene.heightPx} />}
-                    {replaceExisting && !replacementConfirmed && replacementFirstCorner && <circle
-                      className="store-replacement-corner" cx={replacementFirstCorner.x * scene.widthPx}
-                      cy={replacementFirstCorner.y * scene.heightPx} r={scene.widthPx / 70} />}
-                  </svg>
-                )}
-                {referenceBase &&
-                  referenceTop &&
-                  (!referenceReady || useMeasurement) && (
-                    <svg
-                      aria-hidden="true"
-                      viewBox={`0 0 ${scene.widthPx} ${scene.heightPx}`}
-                      className="absolute inset-0 h-full w-full pointer-events-none text-primary"
-                    >
-                      <line
-                        x1={referenceBase.x * scene.widthPx}
-                        y1={referenceBase.y * scene.heightPx}
-                        x2={referenceTop.x * scene.widthPx}
-                        y2={referenceTop.y * scene.heightPx}
-                        stroke="currentColor"
-                        strokeWidth={Math.max(scene.widthPx / 250, 3)}
-                        strokeDasharray="12 8"
-                      />
-                    </svg>
-                  )}
-                {[
-                  { point: referenceBase, label: "B" },
-                  { point: referenceTop, label: "H" },
-                ].map(
-                  ({ point, label }) =>
-                    point &&
-                    (!referenceReady || useMeasurement) && (
-                      <span
-                        key={label}
-                        className="store-placement-pin"
-                        style={{
-                          left: `${point.x * 100}%`,
-                          top: `${point.y * 100}%`,
-                        }}
-                        aria-hidden="true"
-                      >
-                        {label}
-                      </span>
-                    ),
-                )}
-                {points.map(
-                  (point, index) =>
-                    point && (
-                      <span
-                        key={index}
-                        className="store-placement-pin"
-                        data-active={index === activeIndex}
-                        style={{
-                          left: `${point.x * 100}%`,
-                          top: `${point.y * 100}%`,
-                        }}
-                        aria-hidden="true"
-                      >
-                        {index + 1}
-                      </span>
-                    ),
-                )}
-                <span
-                  className="store-keyboard-cursor"
-                  style={{
-                    left: `${keyboardPoint.x * 100}%`,
-                    top: `${keyboardPoint.y * 100}%`,
-                  }}
-                  aria-hidden="true"
-                >
-                  <Plus size={20} />
-                </span>
+                <img src={scene.imageUrl} alt="Votre pièce : choisissez la boîte du nouveau produit et sa perspective" draggable={false}
+                  onLoad={() => setSceneImageReady(true)} />
+                {sceneImageReady && fittedPlacements.map((placement, index) => {
+                  const product = products[index]!; const url = safeStorefrontUrl(product.cutoutUrl);
+                  return placement && url ? <ManualProductPreview key={`${product.id}-${index}`} placement={placement} url={url} name={product.name} onAspect={ratio => {
+                    setCutoutAspects(current => current[index] === ratio ? current : current.map((value, i) => i === index ? ratio : value));
+                  }} /> : null;
+                })}
+                {sceneImageReady && <svg aria-hidden="true" viewBox={`0 0 ${scene.widthPx} ${scene.heightPx}`} className="store-visual-guides">
+                  {manualPlacements.map((placement, index) => {
+                    if (!placement) return null;
+                    const quad = manualPlacementQuad(placement);
+                    return <polygon key={index} className="store-visual-footprint" data-active={activeIndex === index}
+                      points={quad.map(p => `${p.x * scene.widthPx},${p.y * scene.heightPx}`).join(" ")} />;
+                  })}
+                  {activePlane.length > 0 && <polyline className="text-info" fill="none" stroke="currentColor" strokeWidth={scene.widthPx / 300} strokeDasharray="10 7"
+                    points={[...activePlane, ...(activePlane.length === 4 ? [activePlane[0]!] : [])].map(p => `${p.x * scene.widthPx},${p.y * scene.heightPx}`).join(" ")} />}
+                  {replaceExisting && replacementRegion && <rect className="store-replacement-region"
+                    x={replacementRegion.xMin * scene.widthPx} y={replacementRegion.yMin * scene.heightPx}
+                    width={(replacementRegion.xMax - replacementRegion.xMin) * scene.widthPx} height={(replacementRegion.yMax - replacementRegion.yMin) * scene.heightPx} />}
+                  {replaceExisting && !replacementConfirmed && replacementFirstCorner && <circle className="store-replacement-corner"
+                    cx={replacementFirstCorner.x * scene.widthPx} cy={replacementFirstCorner.y * scene.heightPx} r={scene.widthPx / 70} />}
+                </svg>}
+                {activePlane.map((point, index) => <span key={`plane-${index}`} className="store-placement-pin" style={{ left: `${point.x * 100}%`, top: `${point.y * 100}%` }} aria-hidden="true">{index + 1}</span>)}
+                {placementFirstCorner && (() => {
+                  const point = activeKind !== "standing" && isManualPlaneValid(activePlane)
+                    ? manualPlacementQuad({ box: { xMin: placementFirstCorner.x, xMax: placementFirstCorner.x, yMin: placementFirstCorner.y, yMax: placementFirstCorner.y }, plane: [...activePlane] as [Point, Point, Point, Point] })[0]
+                    : placementFirstCorner;
+                  return <span className="store-placement-pin" style={{ left: `${point.x * 100}%`, top: `${point.y * 100}%` }} aria-hidden="true">A</span>;
+                })()}
+                {points.map((point, index) => point && <span key={`product-${index}`} className="store-placement-pin" data-active={index === activeIndex}
+                  style={{ left: `${point.x * 100}%`, top: `${point.y * 100}%` }} aria-hidden="true">{index + 1}</span>)}
+                <span className="store-keyboard-cursor" style={{ left: `${keyboardPoint.x * 100}%`, top: `${keyboardPoint.y * 100}%` }} aria-hidden="true"><Plus size={20} /></span>
               </button>
-              {!referenceReady ? (
-                <form
-                  className="my-4 flex flex-col gap-4 min-w-0"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    try {
-                      computeStorefrontReferenceScale(
-                        scaleReference,
-                        scene.widthPx,
-                        scene.heightPx,
-                      );
-                      setReferenceReady(true);
-                      setUseMeasurement(true);
-                      setError("");
-                      focusPlacement();
-                    } catch (reason) {
-                      setError(
-                        reason instanceof Error
-                          ? reason.message
-                          : "Vérifiez votre référence.",
-                      );
-                    }
-                  }}
-                >
-                  {error && (
-                    <p
-                      role="alert"
-                      id="store-reference-error"
-                      className="store-error"
-                    >
-                      {error}
-                    </p>
-                  )}
-                  <label className="flex flex-col gap-2 min-w-0">
-                    <span>Hauteur réelle de votre référence (cm)</span>
-                    <input
-                      className="input min-h-11 w-full min-w-0 text-base"
-                      type="text"
-                      inputMode="decimal"
-                      required
-                      value={referenceHeight}
-                      disabled={frozen}
-                      aria-describedby={`store-reference-help${error ? " store-reference-error" : ""}`}
-                      onChange={(event) =>
-                        setReferenceHeight(event.target.value)
-                      }
-                      placeholder="Exemple : 30"
-                    />
-                  </label>
-                  <p
-                    id="store-reference-help"
-                    className="text-sm text-base-content/70"
-                  >
-                    Mesurez une hauteur verticale : une bouteille, une boîte ou
-                    un meuble dont vous connaissez la hauteur. Ne mesurez pas
-                    une longueur qui part vers le fond de la pièce.
-                  </p>
-                  <label className="flex gap-3 items-start min-h-11 py-2 cursor-pointer text-sm">
-                    <input
-                      type="checkbox"
-                      required
-                      className="mt-1 shrink-0 w-5 h-5 accent-primary"
-                      checked={sameDepth}
-                      disabled={frozen}
-                      onChange={(event) => setSameDepth(event.target.checked)}
-                    />
-                    <span>
-                      Ma référence repose sur le même sol ou meuble, près des
-                      articles à placer et à la même profondeur.
-                    </span>
-                  </label>
-                  <button
-                    className="btn min-h-11 h-auto whitespace-normal"
-                    type="submit"
-                    disabled={frozen || !referenceBase || !referenceTop}
-                  >
-                    Confirmer cette hauteur et placer les articles
-                  </button>
-                </form>
-              ) : (
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between my-4">
-                  <p className="text-sm">
-                    {useMeasurement
-                      ? `Repère de hauteur : ${referenceHeight} cm. Gardez les articles près du point B.`
-                      : "Taille estimée à partir de votre photo."}
-                  </p>
-                  <button
-                    type="button"
-                    className="store-text-link min-h-11"
-                    disabled={frozen}
-                    onClick={() => {
-                      setReferenceReady(false);
-                      setActiveIndex(0);
-                      pendingBody.current = null;
-                    }}
-                  >
-                    {useMeasurement
-                      ? "Modifier le repère"
-                      : "Affiner la taille avec une hauteur connue"}
-                  </button>
+              <div className="store-placement-status" role="status" aria-live="polite">
+                <MapPin size={17} aria-hidden="true" /><span>{manualPlacements.filter(Boolean).length} emplacement(s) choisi(s) sur {products.length}.
+                  {allPlaced ? " Vous pouvez encore ajuster chaque article." : ` À présent : ${activeProduct.name}.`}</span>
+              </div>
+              {activePlacement && <div className="store-visual-size my-4 flex flex-col gap-3">
+                <label htmlFor="store-visual-width" className="text-sm font-medium">Taille visuelle de {activeProduct.name}</label>
+                <input id="store-visual-width" className="range min-h-11 w-full" type="range" min="0.01"
+                  max={Math.max(0.01, resizeManualPlacement(activePlacement, 1, activeKind).box.xMax - resizeManualPlacement(activePlacement, 1, activeKind).box.xMin)} step="0.005"
+                  value={activePlacement.box.xMax - activePlacement.box.xMin} disabled={frozen} aria-describedby="store-visual-size-help"
+                  onChange={event => updatePlacement(activeIndex, resizeManualPlacement(activePlacement, Number(event.target.value), activeKind))} />
+                <p id="store-visual-size-help" className="text-sm text-base-content/70">Le vrai produit détouré garde ses proportions dans la boîte. La taille est une estimation visuelle, sans mesure en centimètres.
+                  {activeKind !== "standing" && " La perspective suit les quatre coins du plan choisi ; ce repérage reste visuel."}</p>
+                {!safeStorefrontUrl(activeProduct.cutoutUrl) && <p className="text-sm text-base-content/70">Le patron indique l’emplacement. L’aperçu détouré de cet article est momentanément indisponible.</p>}
+                <div className="flex flex-wrap gap-2" role="group" aria-label="Déplacer le produit par petits pas">
+                  {([["Gauche", -0.02, 0], ["Droite", 0.02, 0], ["Haut", 0, -0.02], ["Bas", 0, 0.02]] as const).map(([label, dx, dy]) =>
+                    <button key={label} type="button" className="btn min-h-11" disabled={frozen} onClick={() => nudgePlacement(dx, dy)}>{label}</button>)}
                 </div>
-              )}
-              {referenceReady && (
-                <>
-                  <div
-                    className="store-placement-status"
-                    role="status"
-                    aria-live="polite"
-                  >
-                    <MapPin size={17} />
-                    <span>
-                      {points.filter(Boolean).length} emplacement
-                      {points.filter(Boolean).length > 1 ? "s" : ""} choisi
-                      {points.filter(Boolean).length > 1 ? "s" : ""} sur{" "}
-                      {products.length}.
-                      {allPlaced
-                        ? " Vous pouvez encore les modifier en sélectionnant un article."
-                        : ` À présent : ${activeProduct.name}.`}
-                    </span>
-                  </div>
-                  {allPlaced && (
-                    <p className="store-scale-note">
-                      {useMeasurement
-                        ? "Votre repère de hauteur sera utilisé avec les dimensions du catalogue. Les articles doivent rester à la même profondeur que ce repère."
-                        : "Taille estimée. Vérifiez l’espace disponible avant votre achat."}
-                    </p>
-                  )}
-                  {useMeasurement && <button type="button" className="btn min-h-11 my-3" disabled={frozen} onClick={() => {
-                    setUseMeasurement(false); pendingBody.current = null;
-                  }}>Ajuster la taille à l’écran</button>}
-                  {activeFootprint && !useMeasurement && (
-                    <div className="store-visual-size my-4 flex flex-col gap-3">
-                      <label htmlFor="store-visual-width" className="text-sm font-medium">Taille visuelle de {activeProduct.name}</label>
-                      <input id="store-visual-width" className="range min-h-11 w-full" type="range" min="0.02" max={Math.max(0.02, activeFootprint.maxWidth)} step="0.005"
-                        value={activeFootprint.width} disabled={frozen} aria-describedby="store-visual-size-help"
-                        onChange={(event) => {
-                          const width = Number(event.target.value);
-                          setUseMeasurement(false);
-                          setVisualWidths((current) => current.map((value, index) => index === activeIndex ? width : value));
-                          pendingBody.current = null;
-                        }} />
-                      <p id="store-visual-size-help" className="text-sm text-base-content/70">Le patron indique l’espace souhaité dans la photo. Glissez le curseur, ou utilisez les flèches au clavier. C’est une estimation visuelle.</p>
-                    </div>
-                  )}
-                  <label className="my-4 flex min-h-11 items-start gap-3 text-sm cursor-pointer">
-                    <input type="checkbox" className="checkbox mt-1 shrink-0" checked={replaceExisting} disabled={frozen}
-                      onChange={(event) => {
-                        setReplaceExisting(event.target.checked);
-                        setReplacementConfirmed(false);
-                        setReplacementRegion(null);
-                        setReplacementFirstCorner(null);
-                        setRegionCorner("first");
-                        pendingBody.current = null;
-                        if (event.target.checked) focusPlacement();
-                      }} />
-                    <span>{products.length > 1 ? "Remplacer les objets aux emplacements choisis" : "Remplacer un objet présent dans la photo"}
-                      <small className="mt-1 block text-base-content/70">{products.length > 1
-                        ? "Les objets repérés seront retirés pour accueillir votre sélection."
-                        : "Entourez l’objet à retirer en choisissant deux coins sur la photo."}</small>
-                    </span>
-                  </label>
-                  {replaceExisting && products.length === 1 && <div className="my-4 flex flex-col gap-3" aria-label="Zone à remplacer">
-                    <p role="status" className="text-sm">{replacementConfirmed ? "Zone confirmée. Ajustez le patron à la taille du nouvel article." : replacementRegion
-                      ? "Vérifiez la zone entourée, puis confirmez-la." : regionCorner === "first" ? "Choisissez le premier coin autour de l’objet." : "Choisissez le coin opposé autour de l’objet."}</p>
-                    <div className="flex flex-wrap gap-2">
-                      <button type="button" className="btn min-h-11" disabled={frozen} onClick={() => {
-                        setReplacementConfirmed(false); setReplacementFirstCorner(null); setReplacementRegion(null); setRegionCorner("first"); focusPlacement();
-                      }}>{replacementConfirmed ? "Modifier la zone" : "Recommencer la zone"}</button>
-                      {!replacementConfirmed && <button type="button" className="btn min-h-11" disabled={frozen || !replacementRegion} onClick={confirmReplacement}>Confirmer la zone à remplacer</button>}
-                    </div>
-                  </div>}
-                  <div className="store-generate-row">
-                    <button
-                      className="store-text-link"
-                      disabled={frozen || !points.some(Boolean)}
-                      onClick={() => {
-                        setPoints(products.map(() => null));
-                        setActiveIndex(0);
-                        pendingBody.current = null;
-                      }}
-                    >
-                      <RotateCcw size={16} />
-                      Replacer les articles
-                    </button>
-                    <button
-                      className="store-button"
-                      disabled={!allPlaced || !!busy || (!uncertain && replaceExisting && products.length === 1 && !replacementConfirmed)}
-                      onClick={() => void generate()}
-                    >
-                      <ScanLine size={18} />
-                      {uncertain
-                        ? "Vérifier ma demande"
-                        : "Créer ma visualisation"}
-                    </button>
-                  </div>
-                </>
-              )}
+              </div>}
+              <label className="my-4 flex min-h-11 items-start gap-3 text-sm cursor-pointer">
+                <input type="checkbox" className="checkbox mt-1 shrink-0" checked={replaceExisting} disabled={frozen} onChange={event => {
+                  setReplaceExisting(event.target.checked); setReplacementConfirmed(false); setReplacementRegion(null); setReplacementFirstCorner(null);
+                  setRegionCorner("first"); setPlacementFirstCorner(null); pendingBody.current = null; if (event.target.checked) focusPlacement();
+                }} />
+                <span>Retirer un objet présent dans la photo <small className="mt-1 block text-base-content/70">Facultatif : entourez l’objet à supprimer avec deux coins. Cette zone est séparée de la boîte du nouveau produit.</small></span>
+              </label>
+              {replaceExisting && <div className="my-4 flex flex-col gap-3" aria-label="Zone à retirer">
+                <p role="status" className="text-sm">{replacementConfirmed ? "Zone de retrait confirmée. Le meuble de support et le reste de la pièce seront préservés."
+                  : replacementRegion ? "Vérifiez la zone entourée, puis confirmez le retrait." : regionCorner === "first" ? "Choisissez le premier coin autour de l’objet à retirer." : "Choisissez le coin opposé autour de l’objet à retirer."}</p>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" className="btn min-h-11" disabled={frozen} onClick={() => {
+                    setReplacementConfirmed(false); setReplacementFirstCorner(null); setReplacementRegion(null); setRegionCorner("first"); focusPlacement();
+                  }}>{replacementConfirmed ? "Modifier la zone de retrait" : "Recommencer la zone de retrait"}</button>
+                  {!replacementConfirmed && <button type="button" className="btn min-h-11" disabled={frozen || !replacementRegion} onClick={confirmReplacement}>Confirmer la zone à retirer</button>}
+                </div>
+              </div>}
+              <p className="store-scale-note">Taille estimée dans la photo. Vérifiez les dimensions du catalogue et l’espace disponible avant votre achat.</p>
+              <div className="store-generate-row">
+                <button className="store-text-link min-h-11" disabled={frozen || !points.some(Boolean)} onClick={() => {
+                  setManualPlacements(products.map(() => null)); setPoints(products.map(() => null)); setActiveIndex(0); setPlacementFirstCorner(null);
+                  setPlacementAction("select"); pendingBody.current = null;
+                }}><RotateCcw size={16} aria-hidden="true" />Replacer les articles</button>
+                <button className="store-button min-h-11" disabled={(!uncertain && !allPlaced) || !!busy || (!uncertain && replaceExisting && !replacementConfirmed)}
+                  onClick={() => void generate()}><ScanLine size={18} aria-hidden="true" />{uncertain ? "Vérifier ma demande" : "Créer ma visualisation"}</button>
+              </div>
             </>
           )}
           {busy && (
@@ -1412,7 +1071,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
           )}
         </section>
       </div>
-      {cameraOpen && <StorefrontCamera onClose={() => setCameraOpen(false)} onCapture={(file) => {
+      {cameraOpen && <StorefrontCamera placementKind={activeKind} onClose={() => setCameraOpen(false)} onCapture={(file) => {
         setCameraOpen(false);
         void uploadPhoto(file);
       }} onChooseExisting={() => { setCameraOpen(false); photoInput.current?.click(); }} />}

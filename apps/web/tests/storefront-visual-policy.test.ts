@@ -4,6 +4,7 @@ import { canShowStorefrontAdjustmentPreview } from "../lib/storefront-adjustment
 import { confirmedStorefrontReplacementRegion, resolveStorefrontVisualScale } from "../lib/server/storefront-visual-policy";
 import { renderResponse } from "../lib/server/serializers";
 import type { RenderDocument } from "../lib/server/types";
+import { MANUAL_COMPOSITION_PROMPT_VERSION } from "../lib/server/manual-composition";
 vi.mock("server-only", () => ({}));
 vi.mock("../lib/server/assets", () => ({ assetUrl: (id?: string) => id ? `/api/assets/${id}` : null }));
 
@@ -59,6 +60,15 @@ describe("visual placement controls", () => {
   });
 });
 describe("owner-only adjustment candidate", () => {
+  it("allows a manual candidate with complete identity and room evidence, never an accepted final", () => {
+    const review = { ...decision(), version: "storefront-manual-integration-review-v6" };
+    expect(canShowStorefrontAdjustmentPreview(review, [placementId])).toBe(true);
+    expect(canShowStorefrontAdjustmentPreview({ ...review, status: "accepted" }, [placementId])).toBe(false);
+    const row = { id: "manual-render", status: "failed", publicSessionId: "storefront:owner", createdAt: new Date(),
+      engineVersions: { prompt: MANUAL_COMPOSITION_PROMPT_VERSION, mockMode: false }, compositeAssetId: "candidate", creditCharged: false,
+      qualityDecision: review, requestSnapshot: { version: 1, input: { ...request, workflow: "simple_point" } } } as RenderDocument;
+    expect(renderResponse(row)).toMatchObject({ adjustmentPreviewUrl: "/api/assets/candidate", resultUrl: null, creditCharged: false });
+  });
   it("permits geometric advice while retaining the refused quality status", () => {
     const review = decision();
     expect(canShowStorefrontAdjustmentPreview(review, [placementId])).toBe(true);

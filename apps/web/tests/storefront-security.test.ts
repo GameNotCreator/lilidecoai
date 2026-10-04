@@ -203,6 +203,45 @@ beforeEach(async () => {
   mocks.render.mockResolvedValue({ id: "render" });
 });
 describe("public concept store boundary", () => {
+  it("preserves manual placement, fits the authentic cutout in actual source pixels and discards metric/client kind overrides", async () => {
+    const request = input();
+    delete request.scaleReference;
+    request.simplePlacements![0]!.manualPlacement = { box: { xMin: 0.2, yMin: 0.1, xMax: 0.8, yMax: 0.7 } };
+    request.simplePlacements![0]!.placementPoint = { x: 0, y: 0 };
+    const normalized = await normalizeStorefrontRender(db, tenant, request);
+    expect(normalized.simplePlacements![0]).toMatchObject({ placementKind: "standing",
+      dimensionPair: { mode: "height_length", heightCm: 30, lengthCm: 20 }, placementPoint: { x: 0.5, y: 0.7 } });
+    const fitted = normalized.simplePlacements![0]!.manualPlacement!.box;
+    expect((fitted.xMax - fitted.xMin) * 1000 / ((fitted.yMax - fitted.yMin) * 1500)).toBeCloseTo(40 / 60);
+    expect(normalized.simplePlacements![0]).not.toHaveProperty("pixelsPerCm");
+    expect(normalized).not.toHaveProperty("scaleReference");
+  });
+  it("keeps erase selection independent of product placement and rejects a plane chosen for the wrong catalogue kind", async () => {
+    const request = input(); delete request.scaleReference;
+    request.simplePlacements![0]!.manualPlacement = { box: { xMin: 0.6, yMin: 0.3, xMax: 0.9, yMax: 0.8 } };
+    request.replaceExisting = true;
+    request.replacementRegion = { xMin: 0.1, yMin: 0.2, xMax: 0.3, yMax: 0.7 };
+    const normalized = await normalizeStorefrontRender(db, tenant, request);
+    expect(normalized.replacementRegion).toEqual(request.replacementRegion);
+    expect(normalized.simplePlacements![0]!.placementPoint.x).toBeGreaterThan(request.replacementRegion.xMax);
+    products.rows[0]!.objectType = "rug";
+    await expect(normalizeStorefrontRender(db, tenant, request)).rejects.toThrow("quatre coins");
+  });
+  it("scopes manual source reads to the visitor and cannot substitute another visitor's frame", async () => {
+    const request = input(); delete request.scaleReference;
+    request.simplePlacements![0]!.manualPlacement = { box: { xMin: 0.2, yMin: 0.1, xMax: 0.8, yMax: 0.7 } };
+    scenes.rows[0]!.publicSessionId = "storefront:other";
+    mocks.readAsset.mockClear();
+    await expect(normalizeStorefrontRender(db, tenant, request)).rejects.toThrow("photo");
+    expect(mocks.readAsset).not.toHaveBeenCalled();
+  });
+  it("rejects mixed manual/legacy placements and measured height in the manual flow", async () => {
+    const request = input(2);
+    request.simplePlacements![0]!.manualPlacement = { box: { xMin: 0.2, yMin: 0.1, xMax: 0.4, yMax: 0.7 } };
+    await expect(normalizeStorefrontRender(db, tenant, request)).rejects.toThrow("sans référence");
+    delete request.scaleReference;
+    await expect(normalizeStorefrontRender(db, tenant, request)).rejects.toThrow("Chaque article");
+  });
   it.each([undefined, false, true])("only preserves explicit replacement consent (%s)", async (replaceExisting) => {
     const normalized = await normalizeStorefrontRender(db, tenant, { ...input(), replaceExisting });
     if (replaceExisting === true) expect(normalized.replaceExisting).toBe(true);

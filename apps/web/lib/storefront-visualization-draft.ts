@@ -1,4 +1,4 @@
-import { renderRequestSchema } from "@lili/types";
+import { manualPlacementSchema, normalizedPointSchema, renderRequestSchema } from "@lili/types";
 import { z } from "zod";
 
 const point = z.object({
@@ -12,6 +12,8 @@ const draftSchema = z
     productIds: z.array(z.string().uuid()).min(1).max(3),
     sceneId: z.string().uuid(),
     points: z.array(point.nullable()).min(1).max(3),
+    manualPlacements: z.array(manualPlacementSchema.nullable()).min(1).max(3).optional(),
+    planeCorners: z.array(z.array(normalizedPointSchema).max(4)).min(1).max(3).optional(),
     referenceBase: point.nullable(),
     referenceTop: point.nullable(),
     referenceHeight: z.string().max(20),
@@ -34,7 +36,11 @@ const draftSchema = z
       context.addIssue({ code: "custom", message: "Sélection incohérente." });
     if (draft.visualWidths && draft.visualWidths.length !== draft.productIds.length)
       context.addIssue({ code: "custom", message: "Tailles incohérentes." });
-    if (draft.replacementConfirmed && (!draft.replaceExisting || draft.productIds.length !== 1 || !draft.replacementRegion))
+    if (draft.manualPlacements && draft.manualPlacements.length !== draft.productIds.length)
+      context.addIssue({ code: "custom", message: "Placements incohérents." });
+    if (draft.planeCorners && draft.planeCorners.length !== draft.productIds.length)
+      context.addIssue({ code: "custom", message: "Plans incohérents." });
+    if (draft.replacementConfirmed && (!draft.replaceExisting || (!draft.manualPlacements && draft.productIds.length !== 1) || !draft.replacementRegion))
       context.addIssue({ code: "custom", message: "Zone de remplacement incohérente." });
     if (!draft.pendingBody) return;
     try {

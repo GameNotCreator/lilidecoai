@@ -66,6 +66,27 @@ const storage = () => {
   };
 };
 
+it("restores a four-point plane and a separate deletion region without a known height", () => {
+  const tab = storage();
+  const plane: [{ x: number; y: number }, { x: number; y: number }, { x: number; y: number }, { x: number; y: number }] =
+    [{ x: 0.2, y: 0.4 }, { x: 0.8, y: 0.4 }, { x: 0.95, y: 0.9 }, { x: 0.05, y: 0.9 }];
+  const saved = draft({
+    manualPlacements: [{ box: { xMin: 0.2, yMin: 0.2, xMax: 0.8, yMax: 0.8 }, plane }],
+    planeCorners: [plane], replaceExisting: true, replacementConfirmed: true,
+    replacementRegion: { xMin: 0.8, yMin: 0.1, xMax: 0.95, yMax: 0.3 },
+  });
+  expect(saveStorefrontDraft(tab, saved)).toBe(true);
+  expect(readStorefrontDraft(tab, [productId], 1000)).toEqual(saved);
+});
+
+it("rejects a persisted manual placement whose plane crosses itself", () => {
+  const tab = storage();
+  expect(saveStorefrontDraft(tab, draft({ manualPlacements: [{
+    box: { xMin: 0.2, yMin: 0.2, xMax: 0.8, yMax: 0.8 },
+    plane: [{ x: 0.1, y: 0.1 }, { x: 0.9, y: 0.9 }, { x: 0.9, y: 0.1 }, { x: 0.1, y: 0.9 }],
+  }] }))).toBe(false);
+});
+
 describe("storefront reload recovery", () => {
   it("keeps the exact uncertain submission and key across reload without storing credentials or photo bytes", () => {
     const tab = storage();

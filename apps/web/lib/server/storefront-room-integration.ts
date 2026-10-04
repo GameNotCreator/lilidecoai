@@ -304,8 +304,11 @@ export async function restoreRoomIntegrationBackground(
   composition: SimpleComposition,
   padded: PaddedComposition,
   generated: Buffer,
+  options: { edgeFeatherPx?: number } = {},
 ): Promise<Buffer> {
   validateComposition(composition);
+  const feather = options.edgeFeatherPx ?? 3;
+  if (!Number.isSafeInteger(feather) || feather < 1 || feather > 8) throw invalid();
   const { sceneWidth: width, sceneHeight: height } = composition;
   if (!Buffer.isBuffer(composition.maskRaw) || composition.maskRaw.length !== width * height * 4 ||
       !padded || !dimension(padded.paddedWidth) || !dimension(padded.paddedHeight) ||
@@ -343,15 +346,15 @@ export async function restoreRoomIntegrationBackground(
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       if (!editable(x, y)) continue;
-      let distance = 3;
-      for (let radius = 1; radius <= 3; radius++) {
+      let distance = feather;
+      for (let radius = 1; radius <= feather; radius++) {
         if (!editable(x - radius, y) || !editable(x + radius, y) ||
             !editable(x, y - radius) || !editable(x, y + radius)) {
           distance = radius - 1;
           break;
         }
       }
-      const blend = distance / 3;
+      const blend = distance / feather;
       const offset = (y * width + x) * 3;
       for (let channel = 0; channel < 3; channel++)
         output[offset + channel] = Math.round(room.data[offset + channel]! * (1 - blend) + edited[offset + channel]! * blend);
@@ -468,9 +471,10 @@ export async function restoreLocalRoomIntegrationBackground(
   window: StorefrontRoomIntegrationWindow,
   paddedLocal: PaddedComposition,
   generated: Buffer,
+  options: { edgeFeatherPx?: number } = {},
 ): Promise<Buffer> {
   const localComposition = await cropRoomComposition(originalComposition, window);
-  const localEdited = await restoreRoomIntegrationBackground(localComposition, paddedLocal, generated);
+  const localEdited = await restoreRoomIntegrationBackground(localComposition, paddedLocal, generated, options);
   const [room, edited] = await Promise.all([
     sharp(originalComposition.sceneWebp!).removeAlpha().toColourspace("srgb").raw().toBuffer(),
     sharp(localEdited).removeAlpha().toColourspace("srgb").raw().toBuffer(),

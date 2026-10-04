@@ -29,7 +29,8 @@ export function isStorefrontPlacementRender(
     render.engineVersions?.quality === "storefront-realistic-placement-v2" ||
     render.engineVersions?.quality === "storefront-realistic-placement-v3" ||
     render.engineVersions?.quality === "storefront-realistic-detail-v4" ||
-    render.engineVersions?.quality === "storefront-room-integration-review-v5"
+    render.engineVersions?.quality === "storefront-room-integration-review-v5" ||
+    render.engineVersions?.quality === "storefront-manual-integration-review-v6"
   );
 }
 
@@ -255,7 +256,9 @@ export function renderProgress(render: ProgressInput) {
     render.engineVersions?.quality === "storefront-realistic-placement-v2" ||
     render.engineVersions?.quality === "storefront-realistic-placement-v3" ||
     render.engineVersions?.quality === "storefront-realistic-detail-v4" ||
-    render.engineVersions?.quality === "storefront-room-integration-review-v5";
+    render.engineVersions?.quality === "storefront-room-integration-review-v5" ||
+    render.engineVersions?.quality === "storefront-manual-integration-review-v6";
+  const manualPlacement = render.engineVersions?.quality === "storefront-manual-integration-review-v6";
   const copies = perspectivePlacement
     ? perspectiveStageCopy
     : sourcePixelPlacement
@@ -274,7 +277,17 @@ export function renderProgress(render: ProgressInput) {
         ? placementStage
         : render.pipelineState
       : placementStage || render.pipelineState || "";
-  const copy = stage.startsWith("removing_object_")
+  const manualCopy: StageCopy | undefined = manualPlacement
+    ? stage === "composing_manual" ? { title: "Montage du produit détouré", detail: "Le produit est placé à la taille et à l’emplacement que vous avez choisis.", phase: 1 }
+      : stage === "removing_obstacle" ? stageCopy.removing_target
+      : stage === "integrating_product" ? { title: "Intégration photographique", detail: "La perspective, la lumière, les ombres et les occultations sont adaptées autour du produit.", phase: 2 }
+      : ["analyzing_scene", "computing_geometry", "estimating_scale"].includes(stage)
+        ? { title: "Préparation du placement choisi", detail: "Votre sélection fixe la taille visuelle et la position du produit détouré.", phase: 0 }
+        : undefined
+    : undefined;
+  const copy = manualCopy
+    ? manualCopy
+    : stage.startsWith("removing_object_")
     ? copies.removing_target
     : (copies[stage] ?? copies[render.pipelineState ?? ""]);
   const queued = render.status === "queued";

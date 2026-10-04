@@ -99,18 +99,17 @@ async function placeAndSubmit(page: Page, replaceExisting = false) {
     mimeType: "image/png",
     buffer: await sharp(image).png().toBuffer(),
   });
-  const frame = page.getByRole("button", { name: /^Placer Vase Sable/ });
+  const frame = page.locator(".store-placement-frame");
   await expect(frame).toBeEnabled();
   const bounds = await frame.boundingBox();
-  await frame.click({
-    position: { x: bounds!.width * 0.5, y: bounds!.height * 0.7 },
-  });
+  await frame.click({ position: { x: bounds!.width * 0.4, y: bounds!.height * 0.4 } });
+  await frame.click({ position: { x: bounds!.width * 0.6, y: bounds!.height * 0.7 } });
   if (replaceExisting) {
-    await page.getByRole("checkbox", { name: /Remplacer un objet/ }).check();
-    const region = page.getByRole("button", { name: /^Entourer l’objet/ });
+    await page.getByRole("checkbox", { name: /Retirer un objet/ }).check();
+    const region = page.locator(".store-placement-frame");
     await region.click({ position: { x: bounds!.width * 0.35, y: bounds!.height * 0.3 } });
     await region.click({ position: { x: bounds!.width * 0.65, y: bounds!.height * 0.75 } });
-    await page.getByRole("button", { name: "Confirmer la zone à remplacer" }).click();
+    await page.getByRole("button", { name: "Confirmer la zone à retirer" }).click();
     await page.screenshot({ path: test.info().outputPath(`replacement-confirmed-${test.info().project.name}.png`), fullPage: true });
   }
   await page.getByRole("button", { name: "Créer ma visualisation" }).click();
@@ -200,7 +199,7 @@ test("a lost acceptance response survives reload and reuses exactly one idempote
   ).toBeEnabled();
   await page.reload();
   await expect(
-    page.getByRole("checkbox", { name: /Remplacer un objet/ }),
+    page.getByRole("checkbox", { name: /Retirer un objet/ }),
   ).toBeChecked();
   await expect(
     page.getByRole("button", { name: "Vérifier ma demande" }),
@@ -317,12 +316,13 @@ test("photo opens direct placement without a mandatory measurement, and manual s
   await page.goto(`/visualiser?products=${productId}`);
   await page.getByRole("checkbox").check();
   await page.getByLabel("Choisir une photo").setInputFiles({ name: "room.png", mimeType: "image/png", buffer: await sharp(image).png().toBuffer() });
-  const frame = page.getByRole("button", { name: /^Placer Vase Sable/ });
+  const frame = page.locator(".store-placement-frame");
   await expect(frame).toBeEnabled();
   await expect(page.getByText("Hauteur réelle de votre référence (cm)")).toHaveCount(0);
   expect(await page.locator(".store-steps li").allTextContents()).toHaveLength(3);
   const bounds = await frame.boundingBox();
-  await frame.click({ position: { x: bounds!.width * 0.5, y: bounds!.height * 0.7 } });
+  await frame.click({ position: { x: bounds!.width * 0.4, y: bounds!.height * 0.4 } });
+  await frame.click({ position: { x: bounds!.width * 0.6, y: bounds!.height * 0.7 } });
   const size = page.getByRole("slider", { name: "Taille visuelle de Vase Sable" });
   await size.fill("0.24");
   await expect(page.locator(".store-visual-footprint")).toBeVisible();
@@ -333,7 +333,7 @@ test("photo opens direct placement without a mandatory measurement, and manual s
   expect(state.posts).toHaveLength(0);
   await page.getByRole("button", { name: "Créer ma visualisation" }).click();
   await expect(page.locator(".render-progress-panel")).toBeVisible();
-  expect(JSON.parse(state.posts[0]!).simplePlacements[0].visualWidthNormalized).toBeCloseTo(0.24);
+  expect(JSON.parse(state.posts[0]!).simplePlacements[0].manualPlacement.box.xMax - JSON.parse(state.posts[0]!).simplePlacements[0].manualPlacement.box.xMin).toBeCloseTo(0.24);
   expect(JSON.parse(state.posts[0]!).scaleReference).toBeUndefined();
 });
 
@@ -347,8 +347,8 @@ test("replacement is explicitly boxed and confirmed before generating", async ({
   expect(request.replacementRegion.xMax).toBeCloseTo(0.65, 2);
   expect(request.replacementRegion.yMax).toBeCloseTo(0.75, 2);
   expect(request.simplePlacements[0].placementPoint.x).toBeCloseTo(0.5, 2);
-  expect(request.simplePlacements[0].placementPoint.y).toBeCloseTo(0.75, 2);
-  expect(request.simplePlacements[0].visualWidthNormalized).toBeCloseTo(0.3, 2);
+  expect(request.simplePlacements[0].placementPoint.y).toBeCloseTo(0.7, 2);
+  expect(request.simplePlacements[0].manualPlacement.box.xMax - request.simplePlacements[0].manualPlacement.box.xMin).toBeCloseTo(0.2, 2);
   expect(request.replaceExisting).toBe(true);
 });
 
@@ -357,8 +357,8 @@ test("replacement can be selected entirely with the keyboard and an oversized re
   await page.goto(`/visualiser?products=${productId}`);
   await page.getByRole("checkbox").check();
   await page.getByLabel("Choisir une photo").setInputFiles({ name: "room.png", mimeType: "image/png", buffer: await sharp(image).png().toBuffer() });
-  await page.getByRole("checkbox", { name: /Remplacer un objet/ }).check();
-  const region = page.getByRole("button", { name: /^Entourer l’objet/ });
+  await page.getByRole("checkbox", { name: /Retirer un objet/ }).check();
+  const region = page.locator(".store-placement-frame");
   await expect(region).toBeEnabled();
   await region.focus();
   await region.press("Enter");
@@ -366,13 +366,17 @@ test("replacement can be selected entirely with the keyboard and an oversized re
   await region.press("ArrowUp"); await region.press("ArrowUp");
   await region.press("Enter");
   await expect(page.getByRole("button", { name: "Créer ma visualisation" })).toBeDisabled();
-  await page.getByRole("button", { name: "Confirmer la zone à remplacer" }).click();
+  await page.getByRole("button", { name: "Confirmer la zone à retirer" }).click();
+  await region.press("Enter");
+  for (let i = 0; i < 6; i++) await region.press("ArrowRight");
+  for (let i = 0; i < 6; i++) await region.press("ArrowUp");
+  await region.press("Enter");
   await expect(page.getByRole("button", { name: "Créer ma visualisation" })).toBeEnabled();
-  await page.getByRole("button", { name: "Modifier la zone" }).click();
+  await page.getByRole("button", { name: "Modifier la zone de retrait" }).click();
   const bounds = await region.boundingBox();
   await region.click({ position: { x: bounds!.width * 0.05, y: bounds!.height * 0.05 } });
   await region.click({ position: { x: bounds!.width * 0.95, y: bounds!.height * 0.95 } });
-  await page.getByRole("button", { name: "Confirmer la zone à remplacer" }).click();
+  await page.getByRole("button", { name: "Confirmer la zone à retirer" }).click();
   await expect(page.getByRole("alert").filter({ hasText: "Entourez seulement l’objet" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Créer ma visualisation" })).toBeDisabled();
   expect(state.posts).toHaveLength(0);
@@ -389,7 +393,7 @@ test("a failed composite is hidden unless the server authorizes an adjustment pr
   await page.getByRole("button", { name: "Revenir aux emplacements" }).click();
   state.render.adjustmentPreviewUrl = "/fixture-room.svg";
   await page.getByRole("button", { name: "Créer ma visualisation" }).click();
-  await expect(page.getByRole("heading", { name: "Aperçu à ajuster." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Aperçu à corriger." })).toBeVisible();
   await expect(page.getByRole("img", { name: "Aperçu de votre article, taille et placement à ajuster" })).toBeVisible();
   await expect(page.getByText("Cette tentative n’a pas utilisé de crédit.", { exact: false })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Bienvenue chez vous." })).toHaveCount(0);
@@ -451,7 +455,7 @@ test("denied camera permission keeps gallery upload available without a paid req
   const chooser = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "Choisir dans la galerie" }).click();
   await (await chooser).setFiles({ name: "room.png", mimeType: "image/png", buffer: await sharp(image).png().toBuffer() });
-  await expect(page.getByRole("button", { name: /^Placer Vase Sable/ })).toBeEnabled();
+  await expect(page.locator(".store-placement-frame")).toBeEnabled();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   expect(state.posts).toHaveLength(0);
 });
@@ -486,7 +490,7 @@ test("camera captures a clean JPEG through the existing upload and releases the 
   await expect(page.getByRole("button", { name: "Utiliser cette photo" })).toBeEnabled();
   await page.screenshot({ path: test.info().outputPath(`camera-guide-${test.info().project.name}.png`), fullPage: true });
   await page.getByRole("button", { name: "Utiliser cette photo" }).click();
-  await expect(page.getByRole("button", { name: /^Placer Vase Sable/ })).toBeEnabled();
+  await expect(page.locator(".store-placement-frame")).toBeEnabled();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   expect(await page.evaluate(() => (window as unknown as { cameraTest: { stops: number } }).cameraTest.stops)).toBe(1);
   expect(uploaded!.toString("latin1")).toContain('filename="mon-interieur.jpg"');
@@ -511,15 +515,17 @@ test("multiple articles keep their visual sizes without requiring a height refer
   await page.goto(`/visualiser?products=${productId},${second}`);
   await page.getByRole("checkbox").check();
   await page.getByLabel("Choisir une photo").setInputFiles({ name: "room.png", mimeType: "image/png", buffer: await sharp(image).png().toBuffer() });
-  const first = page.getByRole("button", { name: /^Placer Vase Sable/ });
+  const first = page.locator(".store-placement-frame");
   const bounds = await first.boundingBox();
-  await first.click({ position: { x: bounds!.width * 0.3, y: bounds!.height * 0.7 } });
-  await page.getByRole("button", { name: /^Placer Vase Terre/ }).click({ position: { x: bounds!.width * 0.7, y: bounds!.height * 0.7 } });
+  await first.click({ position: { x: bounds!.width * 0.2, y: bounds!.height * 0.4 } });
+  await first.click({ position: { x: bounds!.width * 0.4, y: bounds!.height * 0.7 } });
+  await first.click({ position: { x: bounds!.width * 0.6, y: bounds!.height * 0.4 } });
+  await first.click({ position: { x: bounds!.width * 0.8, y: bounds!.height * 0.7 } });
   await page.getByRole("button", { name: "Créer ma visualisation" }).click();
   await expect(page.locator(".render-progress-panel")).toBeVisible();
   const request = JSON.parse(state.posts[0]!);
   expect(request.simplePlacements).toHaveLength(2);
-  expect(request.simplePlacements.every((item: { visualWidthNormalized: number }) => item.visualWidthNormalized >= 0.02 && item.visualWidthNormalized <= 0.75)).toBe(true);
+  expect(request.simplePlacements.every((item: { manualPlacement: { box: { xMin: number; xMax: number } } }) => item.manualPlacement.box.xMax > item.manualPlacement.box.xMin)).toBe(true);
   expect(request.replacementRegion).toBeUndefined(); expect(request.scaleReference).toBeUndefined();
 });
 
@@ -556,7 +562,7 @@ test("a historical placed draft sends its displayed visual width in a new reques
   expect(state.posts).toHaveLength(0);
   await page.getByRole("button", { name: "Créer ma visualisation" }).click();
   await expect(page.locator(".render-progress-panel")).toBeVisible();
-  expect(JSON.parse(state.posts[0]!).simplePlacements[0].visualWidthNormalized).toBeCloseTo(0.18);
+  expect(JSON.parse(state.posts[0]!).simplePlacements[0].manualPlacement.box.xMax - JSON.parse(state.posts[0]!).simplePlacements[0].manualPlacement.box.xMin).toBeCloseTo(0.18);
 });
 
 test("a historical uncertain request keeps its original body and key without adding visual controls", async ({ page }) => {
@@ -597,7 +603,7 @@ test("an unavailable camera API keeps the guide and gallery usable", async ({ pa
   const chooser = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "Choisir dans la galerie" }).click();
   await (await chooser).setFiles({ name: "room.png", mimeType: "image/png", buffer: await sharp(image).png().toBuffer() });
-  await expect(page.getByRole("button", { name: /^Placer Vase Sable/ })).toBeEnabled();
+  await expect(page.locator(".store-placement-frame")).toBeEnabled();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   expect(state.posts).toHaveLength(0);
 });

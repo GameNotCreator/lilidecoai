@@ -26,6 +26,7 @@ export const storefrontProductSchema = productSchema
     stock: true,
     assetUrl: true,
     cutoutUrl: true,
+    cutout: true,
     buyUrl: true,
   })
   .extend({ visualizationAvailable: z.boolean() });
