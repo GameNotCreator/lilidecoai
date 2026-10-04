@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "mongodb";
+import sharp from "sharp";
+import { confirmedReplacementRemovalFrame } from "../lib/server/storefront-replacement";
+import { restoreRoomIntegrationBackground } from "../lib/server/storefront-room-integration";
 import type { RenderDocument } from "../lib/server/types";
 import { mongoStore } from "./helpers/mongo-store";
 
@@ -55,6 +58,35 @@ const run = <T>(call: () => Promise<T>, token = "first") =>
   durableContext.run({ render, token }, call);
 
 describe("durable checkpoint recovery", () => {
+  it("restores a real v11 provider Uint8Array in durable context and after private-asset hydration with the same full-room frame", async () => {
+    const sourceWidth = 736, sourceHeight = 552;
+    const original = await sharp({ create: { width: sourceWidth, height: sourceHeight, channels: 3, background: "#456789" } }).webp({ lossless: true }).toBuffer();
+    const generated = await sharp({ create: { width: 1536, height: 1024, channels: 3, background: "#008800" } }).webp({ lossless: true }).toBuffer();
+    const region = { xMin: 0.275, yMin: 0.595, xMax: 0.445, yMax: 0.86 };
+    const frame = await confirmedReplacementRemovalFrame(original, sourceWidth, sourceHeight, region, { requestedSize: "1536x1024" });
+    assets.rows.push({ id: "cleanup-v11-private", organizationId: "org", ownerSessionId: "visitor" });
+    mocks.store.mockResolvedValue({ id: "cleanup-v11-private" });
+    mocks.read.mockResolvedValue({ buffer: generated });
+    const provider = vi.fn(async () => ({ provider: "myarchitectai", status: "succeeded", images: [{ data: new Uint8Array(generated) }] }));
+    const first = await run(() => durableStep(db, "replacement-clean-v11", "image", provider));
+    const firstRestored = await run(() => restoreRoomIntegrationBackground(frame.composition, frame.padded, Buffer.from(first.images[0]!.data)));
+    await renders.updateOne({ id: "r" }, { $set: { "execution.token": "second" } });
+    const hydrated = await run(() => durableStep(db, "replacement-clean-v11", "image", provider), "second");
+    expect(hydrated.images[0]!.data).toBeInstanceOf(Uint8Array);
+    expect(Buffer.isBuffer(hydrated.images[0]!.data)).toBe(false);
+    const resumedRestored = await run(() => restoreRoomIntegrationBackground(frame.composition, frame.padded, Buffer.from(hydrated.images[0]!.data)), "second");
+    expect(resumedRestored).toEqual(firstRestored);
+    expect(provider).toHaveBeenCalledOnce();
+    expect(mocks.store).toHaveBeenCalledWith(db, expect.objectContaining({ organizationId: "org", visibility: { ownerSessionId: "visitor" } }));
+    const before = await sharp(original).raw().toBuffer();
+    const output = await sharp(resumedRestored).raw().toBuffer();
+    let exteriorDifferences = 0;
+    for (let pixel = 0; pixel < sourceWidth * sourceHeight; pixel++)
+      if (frame.composition.maskRaw[pixel * 4 + 3] === 255 && !output.subarray(pixel * 3, pixel * 3 + 3).equals(before.subarray(pixel * 3, pixel * 3 + 3))) exteriorDifferences++;
+    expect(exteriorDifferences).toBe(0);
+    expect([...output.subarray((400 * sourceWidth + 265) * 3, (400 * sourceWidth + 265) * 3 + 3)]).toEqual([0, 136, 0]);
+  });
+
   it("reuses the private v10 cleanup before pose and contact after lease recovery without restarting v9 room refinement", async () => {
     assets.rows.push({ id: "cleaned-room", organizationId: "org", ownerSessionId: "visitor" });
     mocks.store.mockResolvedValue({ id: "cleaned-room" });
@@ -82,7 +114,7 @@ describe("durable checkpoint recovery", () => {
     expect((row!.execution as RenderDocument["execution"])!.steps["room-refine-v9"]).toBeUndefined();
   });
 
-  it.each(["replacement-clean-v10", "pose-responses-v10", "harmonize-v10"].flatMap(key =>
+  it.each(["replacement-clean-v10", "pose-responses-v10", "harmonize-v10", "replacement-clean-v11", "pose-responses-v11", "harmonize-v11"].flatMap(key =>
     ["running", "unknown"].map(status => [key, status] as const),
   ))("never replays an uncertain v10 paid checkpoint %s/%s after recovery", async (key, status) => {
     await renders.updateOne({ id: "r" }, { $set: { [`execution.steps.${key}`]: { status, attempts: 1, startedAt: new Date() } } });

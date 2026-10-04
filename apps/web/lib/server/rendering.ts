@@ -45,7 +45,7 @@ import { confirmedReplacementRemovalFrame, confirmedReplacementRemovalPrompt } f
 import { roomIntegrationEditComposition, roomRefinementEditComposition, prepareRoomRefinementBase, prepareNativeRoomRefinementFrame, buildNativeRoomRefinementGuide, localiseRoomIntegration, restoreRoomIntegrationBackground, restoreLocalRoomIntegrationBackground, STOREFRONT_ROOM_INTEGRATION_COMPOSITE_VERSION, STOREFRONT_LOCAL_ROOM_INTEGRATION_COMPOSITE_VERSION } from "./storefront-room-integration";
 import { confirmedStorefrontReplacementRegion, resolveStorefrontVisualScale } from "./storefront-visual-policy";
 import { inspectStorefrontScene, storefrontScenePreflightAllowance, STOREFRONT_SCENE_PREFLIGHT_VERSION, STOREFRONT_POSE_PREFLIGHT_VERSION, STOREFRONT_WIDTH_POSE_PREFLIGHT_VERSION, type StorefrontScenePose } from "./ai/storefront-scene-preflight";
-import { STOREFRONT_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION, buildStorefrontHybridPosePrompt, buildStorefrontHybridPrompt, buildStorefrontRoomRefinementPrompt, buildStorefrontNativeRoomRefinementPrompt, buildStorefrontContactRoomRefinementPrompt, storefrontRoomRefinementRequired, STOREFRONT_VISUAL_OPENAI_PROMPT_VERSION, STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION, STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ALPHA_HYBRID_PROMPT_VERSION, STOREFRONT_LEGACY_HYBRID_PROMPT_VERSION } from "./storefront-hybrid";
+import { STOREFRONT_PADDED_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION, buildStorefrontHybridPosePrompt, buildStorefrontHybridPrompt, buildStorefrontRoomRefinementPrompt, buildStorefrontNativeRoomRefinementPrompt, buildStorefrontContactRoomRefinementPrompt, storefrontRoomRefinementRequired, STOREFRONT_VISUAL_OPENAI_PROMPT_VERSION, STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION, STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ALPHA_HYBRID_PROMPT_VERSION, STOREFRONT_LEGACY_HYBRID_PROMPT_VERSION } from "./storefront-hybrid";
 import { captureStage } from "./render-capture";
 import { cutoutTrust } from "./cutout-identity";
 import {
@@ -483,7 +483,7 @@ export async function createRender(
   const storefrontHybridPrompt = visualStorefront
     ? input.replaceExisting === true && input.replacementRegion && input.simplePlacements?.length === 1 &&
       input.simplePlacements[0]!.visualWidthNormalized !== undefined && !input.scaleReference
-      ? STOREFRONT_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION : STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION
+      ? STOREFRONT_PADDED_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION : STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION
     : STOREFRONT_HYBRID_PROMPT_VERSION;
   const storefrontOpenAIPrompt = visualStorefront ? STOREFRONT_VISUAL_OPENAI_PROMPT_VERSION : STOREFRONT_LOCAL_ROOM_INTEGRATION_PROMPT_VERSION;
   const outputQuality = input.outputQuality ?? "final";
@@ -736,7 +736,7 @@ export async function createRender(
   if (simplePointWorkflow) {
     if (!serverConfig.aiMockMode && deferTask) {
       const update = {
-        ...([STOREFRONT_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION, STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ALPHA_HYBRID_PROMPT_VERSION].includes(render.engineVersions?.prompt ?? "") && render.engineVersions?.editProvider === "myarchitectai"
+        ...([STOREFRONT_PADDED_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION, STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ALPHA_HYBRID_PROMPT_VERSION].includes(render.engineVersions?.prompt ?? "") && render.engineVersions?.editProvider === "myarchitectai"
           ? { provider: null, model: null }
           : { provider: selectedProvider.route.provider, model: selectedProvider.provider.model }),
         pipelineState: "generating_final" as const,
@@ -1118,19 +1118,21 @@ async function runSimplePointRender(
   const fastStorefront = render.publicSessionId?.startsWith("storefront:") === true &&
     render.engineVersions?.quality === STOREFRONT_PLACEMENT_REVIEW_VERSION && input.mode !== "replace";
   const detailRealisticReview = render.engineVersions?.quality === STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION;
-  const hybridRoomIntegration = [STOREFRONT_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION, STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ALPHA_HYBRID_PROMPT_VERSION, STOREFRONT_LEGACY_HYBRID_PROMPT_VERSION].includes(render.engineVersions?.prompt ?? "") && render.engineVersions?.editProvider === "myarchitectai";
+  const hybridRoomIntegration = [STOREFRONT_PADDED_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION, STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ALPHA_HYBRID_PROMPT_VERSION, STOREFRONT_LEGACY_HYBRID_PROMPT_VERSION].includes(render.engineVersions?.prompt ?? "") && render.engineVersions?.editProvider === "myarchitectai";
   const visualStorefront = render.publicSessionId?.startsWith("storefront:") === true &&
-    [STOREFRONT_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_OPENAI_PROMPT_VERSION].includes(render.engineVersions?.prompt ?? "");
-  const hybridSeparateReplacement = hybridRoomIntegration &&
+    [STOREFRONT_PADDED_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_OPENAI_PROMPT_VERSION].includes(render.engineVersions?.prompt ?? "");
+  const hybridPaddedReplacement = hybridRoomIntegration &&
+    render.engineVersions?.prompt === STOREFRONT_PADDED_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION;
+  const hybridSeparateReplacement = hybridPaddedReplacement || hybridRoomIntegration &&
     render.engineVersions?.prompt === STOREFRONT_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION;
   const hybridContactAnchoring = hybridRoomIntegration &&
-    [STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION].includes(render.engineVersions?.prompt ?? "");
+    [STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_PADDED_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION].includes(render.engineVersions?.prompt ?? "");
   const hybridNativeRoomFrame = hybridContactAnchoring || hybridRoomIntegration && render.engineVersions?.prompt === STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION;
   const replacementPreflightBudget = hybridContactAnchoring && input.replaceExisting === true;
   const hybridAdaptiveRoom = hybridNativeRoomFrame || hybridRoomIntegration && render.engineVersions?.prompt === STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION;
   const hybridResponsesPose = hybridAdaptiveRoom || hybridRoomIntegration && render.engineVersions?.prompt === STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION;
   const hybridPosePipeline = hybridResponsesPose || hybridRoomIntegration && render.engineVersions?.prompt === STOREFRONT_NATIVE_ALPHA_HYBRID_PROMPT_VERSION;
-  const hybridStepVersion = hybridSeparateReplacement ? "v10" : visualStorefront ? "v9" : hybridContactAnchoring ? "v6" : hybridNativeRoomFrame ? "v5" : hybridAdaptiveRoom ? "v4" : hybridResponsesPose ? "v3" : "v2";
+  const hybridStepVersion = hybridPaddedReplacement ? "v11" : hybridSeparateReplacement ? "v10" : visualStorefront ? "v9" : hybridContactAnchoring ? "v6" : hybridNativeRoomFrame ? "v5" : hybridAdaptiveRoom ? "v4" : hybridResponsesPose ? "v3" : "v2";
   const localRoomIntegration = render.engineVersions?.composite === STOREFRONT_LOCAL_ROOM_INTEGRATION_COMPOSITE_VERSION;
   const roomIntegration = localRoomIntegration || render.engineVersions?.composite === STOREFRONT_ROOM_INTEGRATION_COMPOSITE_VERSION;
   const roomIntegrationReview = render.engineVersions?.quality === STOREFRONT_ROOM_INTEGRATION_REVIEW_VERSION;
@@ -1544,25 +1546,29 @@ async function runSimplePointRender(
   if (hybridSeparateReplacement) {
     if (!manualReplacement || replacedTargets.length !== 1 || !directVisualPlacement)
       throw new DurableExecutionError("Le contrat du remplacement confirmé est incomplet.", "permanent");
-    const removal = await confirmedReplacementRemovalFrame(sceneImage, sceneWidth, sceneHeight, manualReplacement);
+    const removal = await confirmedReplacementRemovalFrame(sceneImage, sceneWidth, sceneHeight, manualReplacement,
+      hybridPaddedReplacement ? { requestedSize } : undefined);
     await setStage("removing_target", "removing_selected_object");
-    replacementCleanupResult = await durableStep(db, "replacement-clean-v10", "image", async () => {
+    replacementCleanupResult = await durableStep(db, `replacement-clean-${hybridStepVersion}`, "image", async () => {
       remainingStepTimeout(renderDeadlineMs - 125_000, 15_000);
       await assertRenderBudget(db, render.id, 2 * serverConfig.myArchitectAIEditCostUsd +
         estimateOpenAIProductViewCost() + storefrontPlacementReviewAllowance().estimatedCostUsd);
       const cleaned = await provider.edit({
         operation: "storefront_integration",
-        scene: new Uint8Array(sceneImage), composition: new Uint8Array(sceneImage),
+        scene: new Uint8Array(removal.padded.imageWebp), composition: new Uint8Array(removal.padded.imageWebp),
         productCutout: productReference.data, protectionMask: new Uint8Array(),
-        prompt: confirmedReplacementRemovalPrompt({ region: manualReplacement, frame: { width: sceneWidth, height: sceneHeight } }),
+        prompt: confirmedReplacementRemovalPrompt({ region: removal.inputRegion,
+          frame: { width: removal.padded.paddedWidth, height: removal.padded.paddedHeight },
+          ...(hybridPaddedReplacement ? { originalRoomWindow: { left: removal.padded.offsetX, top: removal.padded.offsetY, width: sceneWidth, height: sceneHeight } } : {}),
+        }),
         quality: "high", size: requestedSize,
         lighting: { direction: "automatic", temperature: "neutral", hardness: "balanced" },
         placement: { x: points[0]!.x, y: points[0]!.y, operation: "replace", objectCount: 0 },
-        idempotencyKey: `${input.idempotencyKey}:replacement-clean-v10`,
+        idempotencyKey: `${input.idempotencyKey}:replacement-clean-${hybridStepVersion}`,
         // MyArchitectAI reserves 45s internally: this permits at most 15s
         // while keeping at least 125s for pose, contact and the final review.
         deadlineMs: Math.min(renderDeadlineMs - 80_000, Date.now() + 60_000),
-        references: [{ data: new Uint8Array(sceneImage), mimeType: "image/webp", role: "composition" }],
+        references: [{ data: new Uint8Array(removal.padded.imageWebp), mimeType: "image/webp", role: "composition" }],
         mode, outputQuality: "final", preserveBackground: true,
       });
       await recordProviderAttempt(db, render, cleaned, "removing_target", imagePromptVersion, route.degradedMode, 1);
@@ -1579,7 +1585,7 @@ async function runSimplePointRender(
     assertDurableImageResult(replacementCleanupResult);
     if (Date.now() >= renderDeadlineMs)
       throw new DurableExecutionError("Le délai maximal de trois minutes est dépassé.", "deadline");
-    workingScene = await durableStep(db, "replacement-background-v10", "analysis", () =>
+    workingScene = await durableStep(db, `replacement-background-${hybridStepVersion}`, "analysis", () =>
       restoreRoomIntegrationBackground(removal.composition, removal.padded, Buffer.from(replacementCleanupResult!.images[0]!.data)),
       { maxAttempts: 1, respectRetryable: true });
   }

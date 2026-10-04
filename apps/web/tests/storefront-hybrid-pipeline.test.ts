@@ -458,10 +458,10 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-async function runHybridVersion(version: "v1" | "v2" | "v3" | "v4" | "v5" | "v6" | "v9") {
+async function runHybridVersion(version: "v1" | "v2" | "v3" | "v4" | "v5" | "v6" | "v9" | "v10") {
   const insert = renders.insertOne;
   renders.insertOne = async row => {
-    const prompt = `storefront-myarchitect-room-${version}`;
+    const prompt = version === "v10" ? "storefront-myarchitect-replacement-v10" : `storefront-myarchitect-room-${version}`;
     (row.engineVersions as NonNullable<RenderDocument["engineVersions"]>).prompt = prompt;
     row.promptVersion = prompt;
     return insert(row);
@@ -1425,24 +1425,39 @@ describe("public visual placement v9 uses a declared pixel target directly", () 
     expect(mocks.edit).toHaveBeenCalledTimes(3);
     const [cleanup, pose, contact] = mocks.edit.mock.calls.map(call => call[0]);
     expect(cleanup.prompt).toContain("FULL ORIGINAL ROOM");
-    expect(cleanup.prompt).toContain(JSON.stringify(request.replacementRegion));
+    expect(cleanup.prompt).toContain(JSON.stringify({ xMin: (0.05 * 400 + 25) / 450, yMin: 0.25,
+      xMax: (0.75 * 400 + 25) / 450, yMax: 0.85 }));
+    expect(cleanup.prompt).toContain('"left":25,"top":0,"width":400,"height":300');
     expect(cleanup.references.map((reference: { role: string }) => reference.role)).toEqual(["composition"]);
-    expect(await sharp(Buffer.from(cleanup.composition)).metadata()).toMatchObject({ width: 400, height: 300 });
+    expect(await sharp(Buffer.from(cleanup.composition)).metadata()).toMatchObject({ width: 450, height: 300 });
     expect(pose).toMatchObject({ productIsolation: true, productIsolationCameraFirst: true, generateProductView: true });
     expect(await sharp(Buffer.from(pose.composition)).metadata()).toMatchObject({ width: 400, height: 300 });
     expect(contact.prompt).not.toContain("Remove only");
     expect(mocks.edit.mock.calls.some(call => call[0].storefrontRoomRefinement)).toBe(false);
-    expect(renders.rows[0]).toMatchObject({ engineVersions: { prompt: "storefront-myarchitect-replacement-v10" },
+    expect(renders.rows[0]).toMatchObject({ engineVersions: { prompt: "storefront-myarchitect-replacement-v11" },
       modelChain: expect.arrayContaining([{ provider: "myarchitectai", model: "edit-by-prompt", role: "confirmed_object_removal" },
         { provider: "openai", model: "test-repair-image", role: "isolated_product_pose" },
         { provider: "myarchitectai", model: "edit-by-prompt", role: "contact_lighting" }]) });
     const steps = vi.mocked(durableStep).mock.calls.map(call => call[1]);
-    expect(steps).toEqual(expect.arrayContaining(["manual-placement-v10", "replacement-clean-v10", "replacement-background-v10",
-      "pose-responses-v10", "harmonize-v10", "review-v10"]));
-    expect(steps).not.toContain("room-refine-v10");
+    expect(steps).toEqual(expect.arrayContaining(["manual-placement-v11", "replacement-clean-v11", "replacement-background-v11",
+      "pose-responses-v11", "harmonize-v11", "review-v11"]));
+    expect(steps).not.toContain("room-refine-v11");
     expect(renders.rows[0]!.placement).toMatchObject({ replacementRegion: request.replacementRegion,
       replacedTargets: [{ objectIndex: 0, name: "objet sélectionné" }] });
     expect((renders.rows[0] as unknown as RenderDocument).qualityDecision!.checks).toEqual(expect.arrayContaining([expect.objectContaining({ name: "replacement_complete" })]));
+  });
+
+  it("preserves the admitted v10 unpadded cleanup and never reads v11 image checkpoints", async () => {
+    request.replaceExisting = true;
+    request.replacementRegion = { xMin: 0.05, yMin: 0.25, xMax: 0.75, yMax: 0.85 };
+    expect((await runHybridVersion("v10")).status).toBe("succeeded");
+    expect(mocks.edit).toHaveBeenCalledTimes(3);
+    const cleanup = mocks.edit.mock.calls[0]![0];
+    expect(await sharp(Buffer.from(cleanup.composition)).metadata()).toMatchObject({ width: 400, height: 300 });
+    expect(cleanup.prompt).toContain(JSON.stringify(request.replacementRegion));
+    const steps = vi.mocked(durableStep).mock.calls.map(call => call[1]);
+    expect(steps).toContain("replacement-clean-v10");
+    expect(steps).not.toContain("replacement-clean-v11");
   });
 
   it("preserves the frozen v9 replacement path and never starts v10 cleanup for an old job", async () => {
@@ -1453,10 +1468,10 @@ describe("public visual placement v9 uses a declared pixel target directly", () 
     expect(mocks.edit.mock.calls[1]![0].storefrontRoomRefinement).toBe(true);
     const steps = vi.mocked(durableStep).mock.calls.map(call => call[1]);
     expect(steps).toContain("room-refine-v9");
-    expect(steps).not.toContain("replacement-clean-v10");
+    expect(steps).not.toContain("replacement-clean-v11");
   });
 
-  it.each(["cleanup", "pose", "contact"])("never proceeds or repeats images after an uncertain v10 %s", async failedStage => {
+  it.each(["cleanup", "pose", "contact"])("never proceeds or repeats images after an uncertain v11 %s", async failedStage => {
     request.replaceExisting = true;
     request.replacementRegion = { xMin: 0.05, yMin: 0.25, xMax: 0.75, yMax: 0.85 };
     const edit = mocks.edit.getMockImplementation()!;
@@ -1492,7 +1507,7 @@ describe("public visual placement v9 uses a declared pixel target directly", () 
     expect(mocks.capture).not.toHaveBeenCalled();
   });
 
-  it("keeps a geometry-only rejected v10 replacement private and uncharged", async () => {
+  it("keeps a geometry-only rejected v11 replacement private and uncharged", async () => {
     request.replaceExisting = true;
     request.replacementRegion = { xMin: 0.05, yMin: 0.25, xMax: 0.75, yMax: 0.85 };
     reviewPayload.gateFailure = "contact";

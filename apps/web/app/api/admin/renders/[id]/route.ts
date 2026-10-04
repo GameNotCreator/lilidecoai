@@ -3,6 +3,7 @@ import { z } from "zod";
 import { withAdmin } from "@/lib/server/admin-route";
 import { collections } from "@/lib/server/mongodb";
 import type { RenderDocument } from "@/lib/server/types";
+import { STOREFRONT_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_PADDED_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION } from "@/lib/server/storefront-hybrid";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -34,7 +35,8 @@ function sceneProjection(render: RenderDocument) {
   const steps = render.execution?.steps;
   // The current contract is authoritative when present, even while incomplete.
   // Never fill gaps in a newer result from an older checkpoint.
-  const step = steps && Object.hasOwn(steps, "manual-placement-v10") ? steps["manual-placement-v10"]
+  const step = steps && Object.hasOwn(steps, "manual-placement-v11") ? steps["manual-placement-v11"]
+    : steps && Object.hasOwn(steps, "manual-placement-v10") ? steps["manual-placement-v10"]
     : steps && Object.hasOwn(steps, "manual-placement-v9") ? steps["manual-placement-v9"]
     : steps && Object.hasOwn(steps, "preflight-v9") ? steps["preflight-v9"]
     : steps && Object.hasOwn(steps, "preflight-v6") ? steps["preflight-v6"]
@@ -64,6 +66,35 @@ function sceneProjection(render: RenderDocument) {
   }));
 }
 
+const checkpointStatusSchema = z.enum(["running", "completed", "retry", "unknown", "failed"]);
+const cleanupImageSchema = z.object({
+  width: z.number().finite().int().min(1).max(8192),
+  height: z.number().finite().int().min(1).max(8192),
+  mimeType: z.enum(["image/png", "image/jpeg", "image/webp"]),
+}).refine(image => image.width * image.height <= 16_000_000);
+const cleanupOutputSchema = z.object({ images: z.array(cleanupImageSchema).length(1) });
+
+/** Never decode or select checkpoint image bytes: only their bounded raster
+ * metadata and enum states explain a failure to the authorized merchant. */
+function replacementCleanupDiagnostic(render: RenderDocument) {
+  if (!["queued", "processing", "succeeded", "failed"].includes(render.status) ||
+      render.engineVersions?.mockMode !== false ||
+      typeof render.publicSessionId !== "string" || !render.publicSessionId.startsWith("storefront:") ||
+      render.publicSessionId.length <= "storefront:".length) return null;
+  const version = render.engineVersions?.prompt === STOREFRONT_PADDED_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION ? "v11"
+    : render.engineVersions?.prompt === STOREFRONT_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION ? "v10" : null;
+  if (!version) return null;
+  const steps = render.execution?.steps;
+  const step = steps?.[`replacement-clean-${version}`];
+  if (!step) return null;
+  const status = checkpointStatusSchema.safeParse(step.status);
+  const background = checkpointStatusSchema.safeParse(steps?.[`replacement-background-${version}`]?.status);
+  const parsed = step.status === "completed" ? cleanupOutputSchema.safeParse(step.output) : null;
+  const image = parsed?.success ? parsed.data.images[0]! : null;
+  return { version, status: status.success ? status.data : null, backgroundStatus: background.success ? background.data : null,
+    width: image?.width ?? null, height: image?.height ?? null, mimeType: image?.mimeType ?? null };
+}
+
 /** Merchant diagnostics deliberately exclude visitors' photographs and tokens. */
 export async function GET(
   request: Request,
@@ -77,7 +108,7 @@ export async function GET(
         _id: 0, id: 1, status: 1, error: 1, pipelineState: 1,
         createdAt: 1, updatedAt: 1, estimatedCostUsd: 1, "usageTotals.estimatedCostUsd": 1,
         publicSessionId: 1, "engineVersions.mockMode": 1, "engineVersions.composite": 1,
-        "engineVersions.scaleEstimation": 1, "execution.deadlineAt": 1,
+        "engineVersions.scaleEstimation": 1, "engineVersions.prompt": 1, "execution.deadlineAt": 1,
         "execution.attempts": 1, "execution.errorCode": 1,
         "execution.steps.storefront-scene-preflight.status": 1,
         "execution.steps.storefront-scene-preflight.output.spans.pixelsPerCm": 1,
@@ -104,6 +135,21 @@ export async function GET(
         "execution.steps.preflight-v5.output.widthPixelsPerCm": 1,
         "execution.steps.preflight-v5.output.poses.cameraElevationDegrees": 1,
         "execution.steps.preflight-v5.output.poses.cameraRollDegrees": 1,
+        "execution.steps.replacement-clean-v10.status": 1,
+        "execution.steps.replacement-clean-v10.output.images.width": 1,
+        "execution.steps.replacement-clean-v10.output.images.height": 1,
+        "execution.steps.replacement-clean-v10.output.images.mimeType": 1,
+        "execution.steps.replacement-background-v10.status": 1,
+        "execution.steps.replacement-clean-v11.status": 1,
+        "execution.steps.replacement-clean-v11.output.images.width": 1,
+        "execution.steps.replacement-clean-v11.output.images.height": 1,
+        "execution.steps.replacement-clean-v11.output.images.mimeType": 1,
+        "execution.steps.replacement-background-v11.status": 1,
+        "execution.steps.manual-placement-v11.status": 1,
+        "execution.steps.manual-placement-v11.output.spans.pixelsPerCm": 1,
+        "execution.steps.manual-placement-v11.output.widthPixelsPerCm": 1,
+        "execution.steps.manual-placement-v11.output.poses.cameraElevationDegrees": 1,
+        "execution.steps.manual-placement-v11.output.poses.cameraRollDegrees": 1,
         "execution.steps.manual-placement-v10.status": 1,
         "execution.steps.manual-placement-v10.output.spans.pixelsPerCm": 1,
         "execution.steps.manual-placement-v10.output.widthPixelsPerCm": 1,
@@ -140,6 +186,7 @@ export async function GET(
         error: render.error ?? null,
         pipelineState: render.pipelineState ?? null,
         sceneProjection: sceneProjection(render),
+        replacementCleanup: replacementCleanupDiagnostic(render),
         execution: render.execution
           ? {
               deadlineAt: render.execution.deadlineAt.toISOString(),

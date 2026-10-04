@@ -448,6 +448,10 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
       setBusy("");
     }
   }
+  function focusPlacement() {
+    frame.current?.focus({ preventScroll: true });
+    frame.current?.scrollIntoView({ block: "nearest", behavior: "instant" });
+  }
   function choosePoint(point: Point) {
     if (frozen) return;
     if (!referenceReady) {
@@ -742,7 +746,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
               aria-pressed={activeIndex === index && !render}
               onClick={() => {
                 setActiveIndex(index);
-                frame.current?.focus();
+                focusPlacement();
               }}
             >
               <ProductImage product={product} />
@@ -1022,7 +1026,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
                     setUseMeasurement(false);
                     setReferenceReady(true);
                     setError("");
-                    frame.current?.focus();
+                    focusPlacement();
                   }}
                 >
                   Revenir au placement avec une taille estimée
@@ -1215,7 +1219,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
                       setReferenceReady(true);
                       setUseMeasurement(true);
                       setError("");
-                      frame.current?.focus();
+                      focusPlacement();
                     } catch (reason) {
                       setError(
                         reason instanceof Error
@@ -1354,7 +1358,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
                         setReplacementFirstCorner(null);
                         setRegionCorner("first");
                         pendingBody.current = null;
-                        if (event.target.checked) frame.current?.focus();
+                        if (event.target.checked) focusPlacement();
                       }} />
                     <span>{products.length > 1 ? "Remplacer les objets aux emplacements choisis" : "Remplacer un objet présent dans la photo"}
                       <small className="mt-1 block text-base-content/70">{products.length > 1
@@ -1367,7 +1371,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
                       ? "Vérifiez la zone entourée, puis confirmez-la." : regionCorner === "first" ? "Choisissez le premier coin autour de l’objet." : "Choisissez le coin opposé autour de l’objet."}</p>
                     <div className="flex flex-wrap gap-2">
                       <button type="button" className="btn min-h-11" disabled={frozen} onClick={() => {
-                        setReplacementConfirmed(false); setReplacementFirstCorner(null); setReplacementRegion(null); setRegionCorner("first"); frame.current?.focus();
+                        setReplacementConfirmed(false); setReplacementFirstCorner(null); setReplacementRegion(null); setRegionCorner("first"); focusPlacement();
                       }}>{replacementConfirmed ? "Modifier la zone" : "Recommencer la zone"}</button>
                       {!replacementConfirmed && <button type="button" className="btn min-h-11" disabled={frozen || !replacementRegion} onClick={confirmReplacement}>Confirmer la zone à remplacer</button>}
                     </div>

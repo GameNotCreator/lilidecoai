@@ -59,6 +59,42 @@ describe("confirmed full-frame replacement cleanup", () => {
     await expect(confirmedReplacementRemovalFrame(photo, width + 1, height, region)).rejects.toThrow();
   });
 
+  it("adds exact supported-ratio borders to a full 736x552 room without resizing it or changing original removal pixels", async () => {
+    const sourceWidth = 736, sourceHeight = 552;
+    const photo = await sharp({ create: { width: sourceWidth, height: sourceHeight, channels: 3, background: "#456789" } }).webp({ lossless: true }).toBuffer();
+    const { composition, padded, inputRegion } = await confirmedReplacementRemovalFrame(photo, sourceWidth, sourceHeight, region, { requestedSize: "1536x1024" });
+    expect(padded).toMatchObject({ paddedWidth: 828, paddedHeight: 552, offsetX: 46, offsetY: 0, padded: true });
+    const decodedRoom = await sharp(photo).raw().toBuffer();
+    const roomWindow = { left: 46, top: 0, width: sourceWidth, height: sourceHeight };
+    expect(await sharp(padded.imageWebp).extract(roomWindow).raw().toBuffer()).toEqual(decodedRoom);
+    expect(await sharp(padded.maskPng).extract(roomWindow).raw().toBuffer()).toEqual(composition.maskRaw);
+    expect(inputRegion).toEqual({ xMin: (region.xMin * sourceWidth + 46) / 828, xMax: (region.xMax * sourceWidth + 46) / 828,
+      yMin: region.yMin, yMax: region.yMax });
+    const prompt = confirmedReplacementRemovalPrompt({ region: inputRegion, frame: { width: 828, height: 552 }, originalRoomWindow: roomWindow });
+    expect(prompt).toContain(JSON.stringify(inputRegion));
+    expect(prompt).toContain("ALREADY been converted to this INPUT canvas");
+    expect(prompt).toContain("Do not crop these borders");
+  });
+
+  it("keeps v10 strict on a nearly matching raster and v11 restoration aligned at the supported provider ratio", async () => {
+    const photo = await sharp({ create: { width: 736, height: 552, channels: 3, background: "#456789" } }).webp({ lossless: true }).toBuffer();
+    const historical = await confirmedReplacementRemovalFrame(photo, 736, 552, region);
+    // A raster-grid example that passes the adapter's historical +/-2%
+    // aspect check but cannot share the restoration's uniform half-pixel map.
+    const approximate = await sharp({ create: { width: 1368, height: 1024, channels: 3, background: "#008800" } }).webp({ lossless: true }).toBuffer();
+    expect(Math.abs((1368 / 1024) / (736 / 552) - 1)).toBeLessThan(0.02);
+    await expect(restoreRoomIntegrationBackground(historical.composition, historical.padded, approximate)).rejects.toThrow();
+    const current = await confirmedReplacementRemovalFrame(photo, 736, 552, region, { requestedSize: "1536x1024" });
+    const generated = await sharp({ create: { width: 1536, height: 1024, channels: 3, background: "#008800" } }).webp({ lossless: true }).toBuffer();
+    const restored = await sharp(await restoreRoomIntegrationBackground(current.composition, current.padded, generated)).raw().toBuffer();
+    const before = await sharp(photo).raw().toBuffer();
+    let exteriorDifferences = 0;
+    for (let pixel = 0; pixel < 736 * 552; pixel++)
+      if (current.composition.maskRaw[pixel * 4 + 3] === 255 && !restored.subarray(pixel * 3, pixel * 3 + 3).equals(before.subarray(pixel * 3, pixel * 3 + 3))) exteriorDifferences++;
+    expect(exteriorDifferences).toBe(0);
+    expect([...restored.subarray((400 * 736 + 265) * 3, (400 * 736 + 265) * 3 + 3)]).toEqual([0, 136, 0]);
+  });
+
   it("caps the user region and describes original-frame removal without asking for insertion or a new photograph", async () => {
     const { photo } = await roomFixture();
     await expect(confirmedReplacementRemovalFrame(photo, width, height, { xMin: 0, yMin: 0, xMax: 1, yMax: 1 })).rejects.toThrow();

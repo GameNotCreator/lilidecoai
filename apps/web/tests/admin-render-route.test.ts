@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ findOne: vi.fn(), authenticated: true }));
 vi.mock("server-only", () => ({}));
+vi.mock("@/lib/server/storefront-hybrid", async () => import("../lib/server/storefront-hybrid"));
 vi.mock("@/lib/server/mongodb", () => ({
   collections: () => ({ renders: { findOne: mocks.findOne } }),
 }));
@@ -105,6 +106,7 @@ describe("merchant render diagnostics", () => {
       "execution",
       "id",
       "pipelineState",
+      "replacementCleanup",
       "sceneProjection",
       "status",
       "updatedAt",
@@ -137,7 +139,7 @@ describe("merchant render diagnostics", () => {
     expect(Object.keys(projection).sort()).toEqual([
       "_id", "id", "status", "error", "pipelineState", "createdAt", "updatedAt", "estimatedCostUsd",
       "usageTotals.estimatedCostUsd", "publicSessionId", "engineVersions.mockMode", "engineVersions.composite",
-      "engineVersions.scaleEstimation", "execution.deadlineAt", "execution.attempts", "execution.errorCode",
+      "engineVersions.scaleEstimation", "engineVersions.prompt", "execution.deadlineAt", "execution.attempts", "execution.errorCode",
       "execution.steps.storefront-scene-preflight.status",
       "execution.steps.storefront-scene-preflight.output.spans.pixelsPerCm",
       "execution.steps.storefront-scene-preflight.output.widthPixelsPerCm",
@@ -163,6 +165,21 @@ describe("merchant render diagnostics", () => {
       "execution.steps.preflight-v5.output.widthPixelsPerCm",
       "execution.steps.preflight-v5.output.poses.cameraElevationDegrees",
       "execution.steps.preflight-v5.output.poses.cameraRollDegrees",
+      "execution.steps.replacement-clean-v10.status",
+      "execution.steps.replacement-clean-v10.output.images.width",
+      "execution.steps.replacement-clean-v10.output.images.height",
+      "execution.steps.replacement-clean-v10.output.images.mimeType",
+      "execution.steps.replacement-background-v10.status",
+      "execution.steps.replacement-clean-v11.status",
+      "execution.steps.replacement-clean-v11.output.images.width",
+      "execution.steps.replacement-clean-v11.output.images.height",
+      "execution.steps.replacement-clean-v11.output.images.mimeType",
+      "execution.steps.replacement-background-v11.status",
+      "execution.steps.manual-placement-v11.status",
+      "execution.steps.manual-placement-v11.output.spans.pixelsPerCm",
+      "execution.steps.manual-placement-v11.output.widthPixelsPerCm",
+      "execution.steps.manual-placement-v11.output.poses.cameraElevationDegrees",
+      "execution.steps.manual-placement-v11.output.poses.cameraRollDegrees",
       "execution.steps.manual-placement-v10.status",
       "execution.steps.manual-placement-v10.output.spans.pixelsPerCm",
       "execution.steps.manual-placement-v10.output.widthPixelsPerCm",
@@ -291,7 +308,7 @@ describe("merchant render diagnostics", () => {
     expect(JSON.stringify(body)).not.toMatch(/private|placementGuide|checkpoint|prompt/);
   });
 
-  it.each(["preflight-v9", "manual-placement-v9", "manual-placement-v10"])("exposes bounded numeric %s evidence without inventing pose or leaking the guide", async checkpoint => {
+  it.each(["preflight-v9", "manual-placement-v9", "manual-placement-v10", "manual-placement-v11"])("exposes bounded numeric %s evidence without inventing pose or leaking the guide", async checkpoint => {
     const render = realRender();
     render.execution.steps["preflight-v6"] = { status: "completed", output: completeOutput };
     render.execution.steps[checkpoint] = { status: "completed", output: {
@@ -332,7 +349,7 @@ describe("merchant render diagnostics", () => {
     ]);
   });
 
-  it.each(["preflight-v9", "manual-placement-v9", "manual-placement-v10"].flatMap(checkpoint =>
+  it.each(["preflight-v9", "manual-placement-v9", "manual-placement-v10", "manual-placement-v11"].flatMap(checkpoint =>
     ["running", "unknown", "failed", "retry"].map(status => [checkpoint, status] as const),
   ))("does not substitute older completed evidence when %s is %s", async (checkpoint, status) => {
     const render = realRender();
@@ -344,7 +361,7 @@ describe("merchant render diagnostics", () => {
     expect((await (await GET(request, context)).json()).sceneProjection).toBeNull();
   });
 
-  it.each(["preflight-v9", "manual-placement-v9", "manual-placement-v10"])("does not substitute older evidence for malformed completed %s output", async checkpoint => {
+  it.each(["preflight-v9", "manual-placement-v9", "manual-placement-v10", "manual-placement-v11"])("does not substitute older evidence for malformed completed %s output", async checkpoint => {
     const render = realRender();
     render.execution.steps["preflight-v6"] = { status: "completed", output: completeOutput };
     if (checkpoint === "manual-placement-v9")
@@ -469,6 +486,90 @@ describe("merchant render diagnostics", () => {
   ])("withholds projection for unqualified or withdrawn render %#", async overrides => {
     mocks.findOne.mockResolvedValue({ ...realRender(), ...overrides });
     expect((await (await GET(request, context)).json()).sceneProjection).toBeNull();
+  });
+
+  it.each(["v10", "v11"])("returns only bounded cleanup raster metadata and states for the admitted %s version", async version => {
+    const render = { ...realRender(), status: "failed", engineVersions: { ...realRender().engineVersions,
+      prompt: `storefront-myarchitect-replacement-${version}` } };
+    render.execution.steps[`replacement-clean-${version}`] = { status: "completed", output: {
+      provider: "myarchitectai", requestId: "private provider id", prompt: "private instructions",
+      images: [{ width: 1368, height: 1024, mimeType: "image/webp", data: { __checkpointImage: "private asset id" }, url: "https://private.test/image" }],
+    } };
+    render.execution.steps[`replacement-background-${version}`] = { status: "failed", output: { error: "private failure" } };
+    mocks.findOne.mockResolvedValue(render);
+    const body = await (await GET(request, context)).json();
+    expect(body.replacementCleanup).toEqual({ version, status: "completed", backgroundStatus: "failed", width: 1368, height: 1024, mimeType: "image/webp" });
+    expect(JSON.stringify(body)).not.toMatch(/private|asset|requestId|__checkpointImage|prompt|instructions|https|url/);
+    const projection = mocks.findOne.mock.calls[0]![1].projection;
+    expect(Object.keys(projection).filter(key => key.includes("replacement-clean") || key.includes("replacement-background")).sort()).toEqual([
+      ...["v10", "v11"].flatMap(value => [
+        `execution.steps.replacement-clean-${value}.status`, `execution.steps.replacement-clean-${value}.output.images.width`,
+        `execution.steps.replacement-clean-${value}.output.images.height`, `execution.steps.replacement-clean-${value}.output.images.mimeType`,
+        `execution.steps.replacement-background-${value}.status`,
+      ]),
+    ].sort());
+  });
+
+  it.each([
+    { width: 0, height: 1024, mimeType: "image/webp" },
+    { width: 8193, height: 1024, mimeType: "image/webp" },
+    { width: 8192, height: 8192, mimeType: "image/webp" },
+    { width: 1368.5, height: 1024, mimeType: "image/webp" },
+    { width: "1368", height: 1024, mimeType: "image/webp" },
+    { width: NaN, height: 1024, mimeType: "image/webp" },
+    { width: 1368, height: Infinity, mimeType: "image/webp" },
+    { width: 1368, height: 0, mimeType: "image/webp" },
+    { width: 1368, height: 1024, mimeType: "private output text" },
+  ])("does not coerce malformed cleanup metadata or expose private values %#", async image => {
+    const render = { ...realRender(), engineVersions: { ...realRender().engineVersions, prompt: "storefront-myarchitect-replacement-v11" } };
+    render.execution.steps["replacement-clean-v11"] = { status: "completed", output: { images: [image], evidence: "private explanation" } };
+    mocks.findOne.mockResolvedValue(render);
+    const body = await (await GET(request, context)).json();
+    expect(body.replacementCleanup).toEqual({ version: "v11", status: "completed", backgroundStatus: null, width: null, height: null, mimeType: null });
+    expect(JSON.stringify(body)).not.toContain("private");
+  });
+
+  it.each(["running", "unknown", "failed", "retry"])("withholds cleanup raster evidence while the v11 paid step is %s", async status => {
+    const render = { ...realRender(), engineVersions: { ...realRender().engineVersions, prompt: "storefront-myarchitect-replacement-v11" } };
+    render.execution.steps["replacement-clean-v11"] = { status, output: { images: [{ width: 1536, height: 1024, mimeType: "image/webp" }] } };
+    mocks.findOne.mockResolvedValue(render);
+    expect((await (await GET(request, context)).json()).replacementCleanup).toEqual({ version: "v11", status, backgroundStatus: null, width: null, height: null, mimeType: null });
+  });
+
+  it("returns no cleanup diagnostic when a queued v11 Mongo projection has execution without steps", async () => {
+    const render = realRender();
+    mocks.findOne.mockResolvedValue({ ...render, status: "queued",
+      engineVersions: { ...render.engineVersions, prompt: "storefront-myarchitect-replacement-v11" },
+      execution: { deadlineAt: now, attempts: 0 },
+    });
+    const response = await GET(request, context);
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.replacementCleanup).toBeNull();
+    expect(body.sceneProjection).toBeNull();
+  });
+
+  it("withholds missing raster metadata from a completed partial cleanup projection", async () => {
+    const render = { ...realRender(), engineVersions: { ...realRender().engineVersions, prompt: "storefront-myarchitect-replacement-v11" } };
+    render.execution.steps["replacement-clean-v11"] = { status: "completed", output: { evidence: "private explanation" } };
+    mocks.findOne.mockResolvedValue(render);
+    const body = await (await GET(request, context)).json();
+    expect(body.replacementCleanup).toEqual({ version: "v11", status: "completed", backgroundStatus: null, width: null, height: null, mimeType: null });
+    expect(JSON.stringify(body)).not.toContain("private");
+  });
+
+  it("never fills missing v11 cleanup metadata from an older completed v10 checkpoint", async () => {
+    const render = { ...realRender(), engineVersions: { ...realRender().engineVersions, prompt: "storefront-myarchitect-replacement-v11" } };
+    render.execution.steps["replacement-clean-v10"] = { status: "completed", output: { images: [{ width: 1368, height: 1024, mimeType: "image/webp" }] } };
+    mocks.findOne.mockResolvedValue(render);
+    expect((await (await GET(request, context)).json()).replacementCleanup).toBeNull();
+  });
+
+  it.each(["cancelled", "deleted"])("withholds even numeric cleanup diagnostics for a %s render", async status => {
+    const render = { ...realRender(), status, engineVersions: { ...realRender().engineVersions, prompt: "storefront-myarchitect-replacement-v11" } };
+    render.execution.steps["replacement-clean-v11"] = { status: "completed", output: { images: [{ width: 1536, height: 1024, mimeType: "image/webp" }] } };
+    mocks.findOne.mockResolvedValue(render);
+    expect((await (await GET(request, context)).json()).replacementCleanup).toBeNull();
   });
 
   it("retains only completed numeric evidence when a later image stage failed", async () => {

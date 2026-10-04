@@ -84,7 +84,7 @@ describe("owner-only adjustment candidate", () => {
     expect(canShowStorefrontAdjustmentPreview(review, [placementId], true)).toBe(false);
     expect(canShowStorefrontAdjustmentPreview(decision(true), [placementId], true)).toBe(true);
   });
-  it.each(["storefront-myarchitect-room-v9", "storefront-myarchitect-replacement-v10"])("serializes a failed %s candidate privately without publishing a final URL or changing credit", prompt => {
+  it.each(["storefront-myarchitect-room-v9", "storefront-myarchitect-replacement-v10", "storefront-myarchitect-replacement-v11"])("serializes a failed %s candidate privately without publishing a final URL or changing credit", prompt => {
     const row = { id: "render", status: "failed", publicSessionId: "storefront:owner", createdAt: new Date(),
       engineVersions: { prompt, mockMode: false }, compositeAssetId: "candidate", creditCharged: false,
       qualityDecision: decision(), requestSnapshot: { version: 1, input: { ...request, workflow: "simple_point" } } } as RenderDocument;

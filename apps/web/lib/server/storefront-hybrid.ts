@@ -9,6 +9,8 @@ export const STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION = "storefront-myarchitect-r
 export const STOREFRONT_VISUAL_OPENAI_PROMPT_VERSION = "storefront-openai-room-v9";
 /** Confirmed replacement separates full-room removal from isolated insertion. */
 export const STOREFRONT_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION = "storefront-myarchitect-replacement-v10";
+/** Exact provider-canvas aspect; historical v10 uses its unpadded room frame. */
+export const STOREFRONT_PADDED_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION = "storefront-myarchitect-replacement-v11";
 
 interface ProjectedProduct {
   kind: "standing" | "wall" | "flat";
