@@ -7,6 +7,8 @@ export const STOREFRONT_HYBRID_PROMPT_VERSION = "storefront-myarchitect-room-v6"
 /** New visual controls never reinterpret admitted v1-v8 jobs or checkpoints. */
 export const STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION = "storefront-myarchitect-room-v9";
 export const STOREFRONT_VISUAL_OPENAI_PROMPT_VERSION = "storefront-openai-room-v9";
+/** Confirmed replacement separates full-room removal from isolated insertion. */
+export const STOREFRONT_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION = "storefront-myarchitect-replacement-v10";
 
 interface ProjectedProduct {
   kind: "standing" | "wall" | "flat";

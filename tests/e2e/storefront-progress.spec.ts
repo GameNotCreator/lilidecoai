@@ -373,7 +373,7 @@ test("replacement can be selected entirely with the keyboard and an oversized re
   await region.click({ position: { x: bounds!.width * 0.05, y: bounds!.height * 0.05 } });
   await region.click({ position: { x: bounds!.width * 0.95, y: bounds!.height * 0.95 } });
   await page.getByRole("button", { name: "Confirmer la zone à remplacer" }).click();
-  await expect(page.getByRole("alert")).toContainText("Entourez seulement l’objet");
+  await expect(page.getByRole("alert").filter({ hasText: "Entourez seulement l’objet" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Créer ma visualisation" })).toBeDisabled();
   expect(state.posts).toHaveLength(0);
 });
@@ -403,7 +403,18 @@ async function openCamera(page: Page) {
   await page.goto(`/visualiser?products=${productId}`);
   await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Prendre une photo", exact: true }).click();
-  await expect(page.getByRole("dialog", { name: "Cadrez votre intérieur." })).toBeVisible();
+  const dialog = page.getByRole("dialog", { name: "Cadrez votre intérieur." });
+  await expect(dialog).toBeVisible();
+  const box = dialog.locator(".modal-box");
+  await expect(dialog.getByRole("heading", { name: "Cadrez votre intérieur." })).toBeInViewport();
+  await expect(dialog.getByRole("button", { name: "Fermer la caméra", exact: true })).toBeInViewport();
+  await expect(box).toHaveCSS("overflow-y", "auto");
+  const bounds = await box.boundingBox();
+  const viewport = page.viewportSize()!;
+  expect(bounds!.x).toBeGreaterThanOrEqual(7);
+  expect(bounds!.y).toBeGreaterThanOrEqual(7);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport.width - 7);
+  expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(viewport.height - 7);
 }
 
 async function fakeCamera(page: Page, delayed = false) {
@@ -426,9 +437,16 @@ async function fakeCamera(page: Page, delayed = false) {
 
 test("denied camera permission keeps gallery upload available without a paid request", async ({ page }) => {
   const state = await fixture(page);
-  await page.addInitScript(() => Object.defineProperty(navigator.mediaDevices, "getUserMedia", { configurable: true, value: async () => { throw new DOMException("denied", "NotAllowedError"); } }));
+  await page.addInitScript(() => {
+    const fixture = { calls: 0 };
+    (window as unknown as { deniedCamera: typeof fixture }).deniedCamera = fixture;
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia: async () => {
+      fixture.calls++; throw new DOMException("denied", "NotAllowedError");
+    } } });
+  });
   await openCamera(page);
-  await expect(page.getByRole("alert")).toContainText("La caméra n’est pas accessible");
+  await expect(page.getByRole("dialog").getByRole("alert")).toContainText("La caméra n’est pas accessible");
+  expect(await page.evaluate(() => (window as unknown as { deniedCamera: { calls: number } }).deniedCamera.calls)).toBe(1);
   await expect(page.getByRole("button", { name: "Utiliser cette photo" })).toBeDisabled();
   const chooser = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "Choisir dans la galerie" }).click();
@@ -438,7 +456,8 @@ test("denied camera permission keeps gallery upload available without a paid req
   expect(state.posts).toHaveLength(0);
 });
 
-test("closing the camera stops every acquired video track", async ({ page }) => {
+test("closing the camera stops every acquired video track", async ({ page, browserName }) => {
+  test.skip(browserName === "webkit" && process.platform === "win32", "The Windows Playwright WebKit runtime exposes neither getUserMedia nor canvas.captureStream. This case runs on desktop and mobile Chromium; a physical iPhone remains unverified.");
   await fixture(page); await fakeCamera(page);
   await openCamera(page);
   await expect(page.getByRole("button", { name: "Utiliser cette photo" })).toBeEnabled();
@@ -447,7 +466,8 @@ test("closing the camera stops every acquired video track", async ({ page }) => 
   expect(await page.evaluate(() => (window as unknown as { cameraTest: { stops: number; calls: number; audio: boolean } }).cameraTest)).toMatchObject({ stops: 1, calls: 1, audio: false });
 });
 
-test("late camera access is stopped after the dialog was closed", async ({ page }) => {
+test("late camera access is stopped after the dialog was closed", async ({ page, browserName }) => {
+  test.skip(browserName === "webkit" && process.platform === "win32", "The Windows Playwright WebKit runtime exposes neither getUserMedia nor canvas.captureStream. This case runs on desktop and mobile Chromium; a physical iPhone remains unverified.");
   await fixture(page); await fakeCamera(page, true); await openCamera(page);
   await page.getByRole("button", { name: "Fermer la caméra", exact: true }).click();
   await page.evaluate(() => (window as unknown as { cameraTest: { release: () => void } }).cameraTest.release());
@@ -455,7 +475,8 @@ test("late camera access is stopped after the dialog was closed", async ({ page 
   await expect(page.getByRole("dialog")).toHaveCount(0);
 });
 
-test("camera captures a clean JPEG through the existing upload and releases the stream", async ({ page }) => {
+test("camera captures a clean JPEG through the existing upload and releases the stream", async ({ page, browserName }) => {
+  test.skip(browserName === "webkit" && process.platform === "win32", "The Windows Playwright WebKit runtime exposes neither getUserMedia nor canvas.captureStream. This case runs on desktop and mobile Chromium; a physical iPhone remains unverified.");
   const state = await fixture(page); await fakeCamera(page);
   let uploaded: Buffer | null = null;
   page.on("request", (request) => { if (request.method() === "POST" && /\/v1\/scenes$/.test(new URL(request.url()).pathname)) uploaded = request.postDataBuffer(); });
@@ -502,7 +523,8 @@ test("multiple articles keep their visual sizes without requiring a height refer
   expect(request.replacementRegion).toBeUndefined(); expect(request.scaleReference).toBeUndefined();
 });
 
-test("closing during JPEG encoding discards the late capture without uploading", async ({ page }) => {
+test("closing during JPEG encoding discards the late capture without uploading", async ({ page, browserName }) => {
+  test.skip(browserName === "webkit" && process.platform === "win32", "The Windows Playwright WebKit runtime exposes neither getUserMedia nor canvas.captureStream. This case runs on desktop and mobile Chromium; a physical iPhone remains unverified.");
   const state = await fixture(page); await fakeCamera(page);
   await page.addInitScript(() => {
     const original = HTMLCanvasElement.prototype.toBlob;
@@ -558,4 +580,24 @@ test("a historical uncertain request keeps its original body and key without add
   expect(state.posts).toEqual([body]);
   expect(JSON.parse(state.posts[0]!).simplePlacements[0].visualWidthNormalized).toBeUndefined();
   expect(JSON.parse(state.posts[0]!).replacementRegion).toBeUndefined();
+});
+
+
+test("an unavailable camera API keeps the guide and gallery usable", async ({ page }) => {
+  const state = await fixture(page);
+  await page.addInitScript(() => Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: undefined }));
+  await openCamera(page);
+  await expect(page.getByRole("dialog").getByRole("alert")).toContainText("La caméra n’est pas accessible");
+  await expect(page.getByRole("button", { name: "Utiliser cette photo" })).toBeDisabled();
+  await page.getByRole("button", { name: "Sans guide", exact: true }).click();
+  await expect(page.locator(".store-camera-guide")).toHaveCount(0);
+  await page.getByRole("button", { name: "Angle de mur", exact: true }).click();
+  await expect(page.locator(".store-camera-guide")).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath(`camera-unavailable-${test.info().project.name}.png`), fullPage: true });
+  const chooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Choisir dans la galerie" }).click();
+  await (await chooser).setFiles({ name: "room.png", mimeType: "image/png", buffer: await sharp(image).png().toBuffer() });
+  await expect(page.getByRole("button", { name: /^Placer Vase Sable/ })).toBeEnabled();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(state.posts).toHaveLength(0);
 });

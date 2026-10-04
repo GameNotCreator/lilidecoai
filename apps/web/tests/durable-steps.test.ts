@@ -55,6 +55,42 @@ const run = <T>(call: () => Promise<T>, token = "first") =>
   durableContext.run({ render, token }, call);
 
 describe("durable checkpoint recovery", () => {
+  it("reuses the private v10 cleanup before pose and contact after lease recovery without restarting v9 room refinement", async () => {
+    assets.rows.push({ id: "cleaned-room", organizationId: "org", ownerSessionId: "visitor" });
+    mocks.store.mockResolvedValue({ id: "cleaned-room" });
+    const rawResponse = Buffer.from([1, 2, 3]);
+    mocks.read.mockResolvedValue({ buffer: rawResponse });
+    const cleanup = vi.fn(async () => ({ requestId: "cleanup-v10", image: rawResponse }));
+    const pose = vi.fn(async () => ({ requestId: "pose-v10" }));
+    const contact = vi.fn(async () => ({ requestId: "contact-v10" }));
+    await run(async () => {
+      await durableStep(db, "replacement-clean-v10", "image", cleanup);
+      await durableStep(db, "pose-responses-v10", "image", pose);
+      await durableStep(db, "harmonize-v10", "image", contact);
+    });
+    await renders.updateOne({ id: "r" }, { $set: { "execution.token": "second" } });
+    await run(async () => {
+      const result = await durableStep(db, "replacement-clean-v10", "image", cleanup);
+      expect(Buffer.isBuffer(result.image)).toBe(true);
+      expect(result.image).toEqual(rawResponse);
+      await durableStep(db, "pose-responses-v10", "image", pose);
+      await durableStep(db, "harmonize-v10", "image", contact);
+    }, "second");
+    expect(cleanup).toHaveBeenCalledOnce(); expect(pose).toHaveBeenCalledOnce(); expect(contact).toHaveBeenCalledOnce();
+    expect(JSON.stringify(renders.rows)).not.toContain('"data":[1,2,3]');
+    const row = await renders.findOne({ id: "r" });
+    expect((row!.execution as RenderDocument["execution"])!.steps["room-refine-v9"]).toBeUndefined();
+  });
+
+  it.each(["replacement-clean-v10", "pose-responses-v10", "harmonize-v10"].flatMap(key =>
+    ["running", "unknown"].map(status => [key, status] as const),
+  ))("never replays an uncertain v10 paid checkpoint %s/%s after recovery", async (key, status) => {
+    await renders.updateOne({ id: "r" }, { $set: { [`execution.steps.${key}`]: { status, attempts: 1, startedAt: new Date() } } });
+    const image = vi.fn();
+    await expect(run(() => durableStep(db, key, "image", image))).rejects.toMatchObject({ code: "provider_unknown" });
+    expect(image).not.toHaveBeenCalled();
+  });
+
   it.each(["v4", "v5", "v6"])("reuses both completed %s local images after lease recovery without replaying the historical v3 pose", async version => {
     const historicalPose = vi.fn().mockResolvedValue({ requestId: "v3-pose", imageAssetId: "private-v3-pose" });
     const myarchitect = vi.fn().mockResolvedValue({ requestId: "v4-draft", imageAssetId: "private-v4-draft" });

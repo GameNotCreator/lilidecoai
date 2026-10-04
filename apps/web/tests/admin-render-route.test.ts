@@ -163,6 +163,11 @@ describe("merchant render diagnostics", () => {
       "execution.steps.preflight-v5.output.widthPixelsPerCm",
       "execution.steps.preflight-v5.output.poses.cameraElevationDegrees",
       "execution.steps.preflight-v5.output.poses.cameraRollDegrees",
+      "execution.steps.manual-placement-v10.status",
+      "execution.steps.manual-placement-v10.output.spans.pixelsPerCm",
+      "execution.steps.manual-placement-v10.output.widthPixelsPerCm",
+      "execution.steps.manual-placement-v10.output.poses.cameraElevationDegrees",
+      "execution.steps.manual-placement-v10.output.poses.cameraRollDegrees",
       "execution.steps.manual-placement-v9.status",
       "execution.steps.manual-placement-v9.output.spans.pixelsPerCm",
       "execution.steps.manual-placement-v9.output.widthPixelsPerCm",
@@ -286,7 +291,7 @@ describe("merchant render diagnostics", () => {
     expect(JSON.stringify(body)).not.toMatch(/private|placementGuide|checkpoint|prompt/);
   });
 
-  it.each(["preflight-v9", "manual-placement-v9"])("exposes bounded numeric %s evidence without inventing pose or leaking the guide", async checkpoint => {
+  it.each(["preflight-v9", "manual-placement-v9", "manual-placement-v10"])("exposes bounded numeric %s evidence without inventing pose or leaking the guide", async checkpoint => {
     const render = realRender();
     render.execution.steps["preflight-v6"] = { status: "completed", output: completeOutput };
     render.execution.steps[checkpoint] = { status: "completed", output: {
@@ -327,7 +332,7 @@ describe("merchant render diagnostics", () => {
     ]);
   });
 
-  it.each(["preflight-v9", "manual-placement-v9"].flatMap(checkpoint =>
+  it.each(["preflight-v9", "manual-placement-v9", "manual-placement-v10"].flatMap(checkpoint =>
     ["running", "unknown", "failed", "retry"].map(status => [checkpoint, status] as const),
   ))("does not substitute older completed evidence when %s is %s", async (checkpoint, status) => {
     const render = realRender();
@@ -339,7 +344,7 @@ describe("merchant render diagnostics", () => {
     expect((await (await GET(request, context)).json()).sceneProjection).toBeNull();
   });
 
-  it.each(["preflight-v9", "manual-placement-v9"])("does not substitute older evidence for malformed completed %s output", async checkpoint => {
+  it.each(["preflight-v9", "manual-placement-v9", "manual-placement-v10"])("does not substitute older evidence for malformed completed %s output", async checkpoint => {
     const render = realRender();
     render.execution.steps["preflight-v6"] = { status: "completed", output: completeOutput };
     if (checkpoint === "manual-placement-v9")

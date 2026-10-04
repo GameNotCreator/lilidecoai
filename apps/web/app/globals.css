@@ -1,7 +1,7 @@
 @import "tailwindcss";
 @plugin "daisyui" {
   themes: false;
-  include: button, input, join, link, collapse, breadcrumbs, card, fieldset, select, checkbox, alert, badge, textarea, skeleton, loading, file-input;
+  include: button, input, join, link, collapse, breadcrumbs, card, fieldset, select, checkbox, alert, badge, textarea, skeleton, loading, file-input, modal, range;
   logs: false;
 }
 @plugin "daisyui/theme" {

@@ -41,10 +41,11 @@ import { perspectiveEditComposition, restorePerspectiveBackground } from "./stor
 import { buildStorefrontPerspectiveGuide, type StorefrontPerspectiveGuideObject } from "./storefront-perspective-guide";
 import { localiseStorefrontPerspectiveGuide } from "./storefront-perspective-guide-window";
 import { composeStorefrontIsolatedProducts, harmonizeStorefrontIsolatedProducts, STOREFRONT_ISOLATED_COMPOSITE_VERSION, type StorefrontIsolatedComposition } from "./storefront-isolated-composite";
+import { confirmedReplacementRemovalFrame, confirmedReplacementRemovalPrompt } from "./storefront-replacement";
 import { roomIntegrationEditComposition, roomRefinementEditComposition, prepareRoomRefinementBase, prepareNativeRoomRefinementFrame, buildNativeRoomRefinementGuide, localiseRoomIntegration, restoreRoomIntegrationBackground, restoreLocalRoomIntegrationBackground, STOREFRONT_ROOM_INTEGRATION_COMPOSITE_VERSION, STOREFRONT_LOCAL_ROOM_INTEGRATION_COMPOSITE_VERSION } from "./storefront-room-integration";
 import { confirmedStorefrontReplacementRegion, resolveStorefrontVisualScale } from "./storefront-visual-policy";
 import { inspectStorefrontScene, storefrontScenePreflightAllowance, STOREFRONT_SCENE_PREFLIGHT_VERSION, STOREFRONT_POSE_PREFLIGHT_VERSION, STOREFRONT_WIDTH_POSE_PREFLIGHT_VERSION, type StorefrontScenePose } from "./ai/storefront-scene-preflight";
-import { buildStorefrontHybridPosePrompt, buildStorefrontHybridPrompt, buildStorefrontRoomRefinementPrompt, buildStorefrontNativeRoomRefinementPrompt, buildStorefrontContactRoomRefinementPrompt, storefrontRoomRefinementRequired, STOREFRONT_VISUAL_OPENAI_PROMPT_VERSION, STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION, STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ALPHA_HYBRID_PROMPT_VERSION, STOREFRONT_LEGACY_HYBRID_PROMPT_VERSION } from "./storefront-hybrid";
+import { STOREFRONT_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION, buildStorefrontHybridPosePrompt, buildStorefrontHybridPrompt, buildStorefrontRoomRefinementPrompt, buildStorefrontNativeRoomRefinementPrompt, buildStorefrontContactRoomRefinementPrompt, storefrontRoomRefinementRequired, STOREFRONT_VISUAL_OPENAI_PROMPT_VERSION, STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION, STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ALPHA_HYBRID_PROMPT_VERSION, STOREFRONT_LEGACY_HYBRID_PROMPT_VERSION } from "./storefront-hybrid";
 import { captureStage } from "./render-capture";
 import { cutoutTrust } from "./cutout-identity";
 import {
@@ -479,7 +480,11 @@ export async function createRender(
   const mode = input.mode ?? "insert";
   const visualStorefront = fastStorefront && (input.replacementRegion !== undefined ||
     input.simplePlacements?.some(item => item.visualWidthNormalized !== undefined));
-  const storefrontHybridPrompt = visualStorefront ? STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION : STOREFRONT_HYBRID_PROMPT_VERSION;
+  const storefrontHybridPrompt = visualStorefront
+    ? input.replaceExisting === true && input.replacementRegion && input.simplePlacements?.length === 1 &&
+      input.simplePlacements[0]!.visualWidthNormalized !== undefined && !input.scaleReference
+      ? STOREFRONT_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION : STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION
+    : STOREFRONT_HYBRID_PROMPT_VERSION;
   const storefrontOpenAIPrompt = visualStorefront ? STOREFRONT_VISUAL_OPENAI_PROMPT_VERSION : STOREFRONT_LOCAL_ROOM_INTEGRATION_PROMPT_VERSION;
   const outputQuality = input.outputQuality ?? "final";
   const placementPoint = input.placementPoint ?? {
@@ -731,7 +736,7 @@ export async function createRender(
   if (simplePointWorkflow) {
     if (!serverConfig.aiMockMode && deferTask) {
       const update = {
-        ...([STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION, STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ALPHA_HYBRID_PROMPT_VERSION].includes(render.engineVersions?.prompt ?? "") && render.engineVersions?.editProvider === "myarchitectai"
+        ...([STOREFRONT_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION, STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ALPHA_HYBRID_PROMPT_VERSION].includes(render.engineVersions?.prompt ?? "") && render.engineVersions?.editProvider === "myarchitectai"
           ? { provider: null, model: null }
           : { provider: selectedProvider.route.provider, model: selectedProvider.provider.model }),
         pipelineState: "generating_final" as const,
@@ -1113,17 +1118,19 @@ async function runSimplePointRender(
   const fastStorefront = render.publicSessionId?.startsWith("storefront:") === true &&
     render.engineVersions?.quality === STOREFRONT_PLACEMENT_REVIEW_VERSION && input.mode !== "replace";
   const detailRealisticReview = render.engineVersions?.quality === STOREFRONT_DETAIL_REALISTIC_PLACEMENT_REVIEW_VERSION;
-  const hybridRoomIntegration = [STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION, STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ALPHA_HYBRID_PROMPT_VERSION, STOREFRONT_LEGACY_HYBRID_PROMPT_VERSION].includes(render.engineVersions?.prompt ?? "") && render.engineVersions?.editProvider === "myarchitectai";
+  const hybridRoomIntegration = [STOREFRONT_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION, STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION, STOREFRONT_NATIVE_ALPHA_HYBRID_PROMPT_VERSION, STOREFRONT_LEGACY_HYBRID_PROMPT_VERSION].includes(render.engineVersions?.prompt ?? "") && render.engineVersions?.editProvider === "myarchitectai";
   const visualStorefront = render.publicSessionId?.startsWith("storefront:") === true &&
-    [STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_OPENAI_PROMPT_VERSION].includes(render.engineVersions?.prompt ?? "");
+    [STOREFRONT_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_OPENAI_PROMPT_VERSION].includes(render.engineVersions?.prompt ?? "");
+  const hybridSeparateReplacement = hybridRoomIntegration &&
+    render.engineVersions?.prompt === STOREFRONT_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION;
   const hybridContactAnchoring = hybridRoomIntegration &&
-    [STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION].includes(render.engineVersions?.prompt ?? "");
+    [STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION].includes(render.engineVersions?.prompt ?? "");
   const hybridNativeRoomFrame = hybridContactAnchoring || hybridRoomIntegration && render.engineVersions?.prompt === STOREFRONT_NATIVE_ROOM_REFINEMENT_HYBRID_PROMPT_VERSION;
   const replacementPreflightBudget = hybridContactAnchoring && input.replaceExisting === true;
   const hybridAdaptiveRoom = hybridNativeRoomFrame || hybridRoomIntegration && render.engineVersions?.prompt === STOREFRONT_LOCAL_REFINEMENT_HYBRID_PROMPT_VERSION;
   const hybridResponsesPose = hybridAdaptiveRoom || hybridRoomIntegration && render.engineVersions?.prompt === STOREFRONT_RESPONSES_HYBRID_PROMPT_VERSION;
   const hybridPosePipeline = hybridResponsesPose || hybridRoomIntegration && render.engineVersions?.prompt === STOREFRONT_NATIVE_ALPHA_HYBRID_PROMPT_VERSION;
-  const hybridStepVersion = visualStorefront ? "v9" : hybridContactAnchoring ? "v6" : hybridNativeRoomFrame ? "v5" : hybridAdaptiveRoom ? "v4" : hybridResponsesPose ? "v3" : "v2";
+  const hybridStepVersion = hybridSeparateReplacement ? "v10" : visualStorefront ? "v9" : hybridContactAnchoring ? "v6" : hybridNativeRoomFrame ? "v5" : hybridAdaptiveRoom ? "v4" : hybridResponsesPose ? "v3" : "v2";
   const localRoomIntegration = render.engineVersions?.composite === STOREFRONT_LOCAL_ROOM_INTEGRATION_COMPOSITE_VERSION;
   const roomIntegration = localRoomIntegration || render.engineVersions?.composite === STOREFRONT_ROOM_INTEGRATION_COMPOSITE_VERSION;
   const roomIntegrationReview = render.engineVersions?.quality === STOREFRONT_ROOM_INTEGRATION_REVIEW_VERSION;
@@ -1269,7 +1276,7 @@ async function runSimplePointRender(
   // V9's explicit visual target is sufficient to start the image edit. Camera and
   // support remain unknown here; the image models see the original room and infer
   // them. This path makes no paid preflight call, retry or calibration claim.
-  const scaleResult: SceneScaleResult = directVisualPlacement ? await durableStep(db, "manual-placement-v9", "analysis", async () => ({
+  const scaleResult: SceneScaleResult = directVisualPlacement ? await durableStep(db, `manual-placement-${hybridStepVersion}`, "analysis", async () => ({
     spans: simpleObjects.map((_item, index) => ({ pixelsPerCm: visualScales[index]!.pixelsPerCm,
       scaleSource: "visual_size" as const, confidence: "low" as const, supportKind: "other", supportMaterial: "other",
       supportGlossy: false, referenceKind: "none", impliedFrameWidthCm: null })),
@@ -1533,10 +1540,54 @@ async function runSimplePointRender(
     }
   }
 
+  let replacementCleanupResult: ProviderAttemptResult | undefined;
+  if (hybridSeparateReplacement) {
+    if (!manualReplacement || replacedTargets.length !== 1 || !directVisualPlacement)
+      throw new DurableExecutionError("Le contrat du remplacement confirmé est incomplet.", "permanent");
+    const removal = await confirmedReplacementRemovalFrame(sceneImage, sceneWidth, sceneHeight, manualReplacement);
+    await setStage("removing_target", "removing_selected_object");
+    replacementCleanupResult = await durableStep(db, "replacement-clean-v10", "image", async () => {
+      remainingStepTimeout(renderDeadlineMs - 125_000, 15_000);
+      await assertRenderBudget(db, render.id, 2 * serverConfig.myArchitectAIEditCostUsd +
+        estimateOpenAIProductViewCost() + storefrontPlacementReviewAllowance().estimatedCostUsd);
+      const cleaned = await provider.edit({
+        operation: "storefront_integration",
+        scene: new Uint8Array(sceneImage), composition: new Uint8Array(sceneImage),
+        productCutout: productReference.data, protectionMask: new Uint8Array(),
+        prompt: confirmedReplacementRemovalPrompt({ region: manualReplacement, frame: { width: sceneWidth, height: sceneHeight } }),
+        quality: "high", size: requestedSize,
+        lighting: { direction: "automatic", temperature: "neutral", hardness: "balanced" },
+        placement: { x: points[0]!.x, y: points[0]!.y, operation: "replace", objectCount: 0 },
+        idempotencyKey: `${input.idempotencyKey}:replacement-clean-v10`,
+        // MyArchitectAI reserves 45s internally: this permits at most 15s
+        // while keeping at least 125s for pose, contact and the final review.
+        deadlineMs: Math.min(renderDeadlineMs - 80_000, Date.now() + 60_000),
+        references: [{ data: new Uint8Array(sceneImage), mimeType: "image/webp", role: "composition" }],
+        mode, outputQuality: "final", preserveBackground: true,
+      });
+      await recordProviderAttempt(db, render, cleaned, "removing_target", imagePromptVersion, route.degradedMode, 1);
+      await advanceRender(db, render.id, { $set: { provider: cleaned.provider, model: cleaned.model, attemptCount: 1,
+        modelChain: [{ provider: cleaned.provider, model: cleaned.model, role: "confirmed_object_removal" }], updatedAt: new Date() } });
+      if (cleaned.status !== "succeeded" || !cleaned.images[0]) {
+        const uncertain = cleaned.estimatedCostUsd > 0 || ["timeout", "network_error", "empty_image_response"].includes(cleaned.error?.code ?? "");
+        throw new DurableExecutionError(uncertain ? "Résultat fournisseur incertain ; vérification opérateur nécessaire."
+          : cleaned.error?.message ?? "La suppression de l’objet sélectionné a été refusée.", uncertain ? "provider_unknown" : "permanent");
+      }
+      return cleaned;
+    });
+    await assertRenderActive(db, render.id);
+    assertDurableImageResult(replacementCleanupResult);
+    if (Date.now() >= renderDeadlineMs)
+      throw new DurableExecutionError("Le délai maximal de trois minutes est dépassé.", "deadline");
+    workingScene = await durableStep(db, "replacement-background-v10", "analysis", () =>
+      restoreRoomIntegrationBackground(removal.composition, removal.padded, Buffer.from(replacementCleanupResult!.images[0]!.data)),
+      { maxAttempts: 1, respectRetryable: true });
+  }
+
   // The room after every removal, captured once. Capturing inside the loop
   // overwrote `stages.scene_cleaned` per object and orphaned the earlier
   // copies; the final cleaned room is the one a failure is localised against.
-  if (removedBoxes.length > 0 && !roomIntegration) {
+  if (removedBoxes.length > 0 && (!roomIntegration || hybridSeparateReplacement)) {
     await captureStage(
       db,
       render,
@@ -1588,9 +1639,9 @@ async function runSimplePointRender(
     widthPixelsPerCm: widthScales?.[index] ?? scales[index]!.pixelsPerCm!,
     pose: realisticPoses?.[index],
   })) : [];
-  const hybridLocalRefinement = hybridAdaptiveRoom && storefrontRoomRefinementRequired(roomGuideObjects, replacedTargets.length);
+  const hybridLocalRefinement = !hybridSeparateReplacement && hybridAdaptiveRoom && storefrontRoomRefinementRequired(roomGuideObjects, replacedTargets.length);
   const editComposition = hybridLocalRefinement ? roomRefinementEditComposition(composition, roomGuideObjects, removedBoxes, { confirmedReplacement: Boolean(manualReplacement), allowEstimatedVolume: visualStorefront && visualScales.some(Boolean) })
-    : roomIntegration ? roomIntegrationEditComposition(composition, roomGuideObjects, removedBoxes, { confirmedReplacement: Boolean(manualReplacement), allowEstimatedVolume: visualStorefront && visualScales.some(Boolean) })
+    : roomIntegration ? roomIntegrationEditComposition(composition, roomGuideObjects, hybridSeparateReplacement ? [] : removedBoxes, { confirmedReplacement: Boolean(manualReplacement), allowEstimatedVolume: visualStorefront && visualScales.some(Boolean) })
     : realisticStorefront ? perspectiveEditComposition(composition) : composition;
   const fullRoomGuide = hybridLocalRefinement ? await markPoints(workingScene, simpleObjects.map(item => item.placementPoint), sceneWidth, sceneHeight)
     : localRoomIntegration ? await buildStorefrontPerspectiveGuide({
@@ -1820,7 +1871,7 @@ async function runSimplePointRender(
       "Preserve physical height/width/depth proportions in this new camera view. The site will uniformly resize your isolated silhouette and anchor its BOTTOM-MIDDLE visible base to the chosen point. Do not pre-position it within a room or alter its shape to fit a target box. Flat and wall products retain their support orientation from the room guide.",
       "Transparency must be real image alpha, with empty space completely alpha zero, not a painted white/black/checkerboard background. Keep anti-aliased silhouette edges. Perspective and catalogue identity have priority over intricate shadows.",
     ].join("\n");
-    const hybridIsolatedInsertion = hybridPosePipeline && replacedTargets.length === 0 && !hybridLocalRefinement;
+    const hybridIsolatedInsertion = hybridPosePipeline && (replacedTargets.length === 0 || hybridSeparateReplacement) && !hybridLocalRefinement;
     let poseResult: ProviderAttemptResult | undefined;
     let posedComposition: StorefrontIsolatedComposition | undefined;
     let hybridWindow = localRoom?.window;
@@ -1871,10 +1922,13 @@ async function runSimplePointRender(
           ],
           mode, outputQuality: "final", preserveBackground: true,
         });
-        await recordProviderAttempt(db, render, posed, "adapting_perspective", imagePromptVersion, false, 1);
+        await recordProviderAttempt(db, render, posed, "adapting_perspective", imagePromptVersion, false, replacementCleanupResult ? 2 : 1);
         await advanceRender(db, render.id, { $set: {
-          provider: posed.provider, model: posed.model, attemptCount: 1,
-          modelChain: productPoseModelChain(posed),
+          provider: posed.provider, model: posed.model, attemptCount: replacementCleanupResult ? 2 : 1,
+          modelChain: [
+            ...(replacementCleanupResult ? [{ provider: replacementCleanupResult.provider, model: replacementCleanupResult.model, role: "confirmed_object_removal" }] : []),
+            ...productPoseModelChain(posed),
+          ],
           updatedAt: new Date(),
         } });
         if (posed.status !== "succeeded" || !posed.images[0]) {
@@ -1963,13 +2017,15 @@ async function runSimplePointRender(
       physicalWidthPx: Math.round(hybridItem.product.widthCm * (roomGuideObjects[0]?.widthPixelsPerCm ?? scales[0]!.pixelsPerCm!)),
       elevationDegrees: realisticPoses?.[0]?.cameraElevationDegrees,
       rollDegrees: realisticPoses?.[0]?.cameraRollDegrees,
-      replacements: replacedTargets.map((target, index) => ({ name: target.name, box: {
+      replacements: (hybridSeparateReplacement ? [] : replacedTargets).map((target, index) => ({ name: target.name, box: {
         xMin: (removedBoxes[index]!.xMin * sceneWidth - (hybridWindow?.left ?? 0) + hybridInputFrame.offsetX) / hybridInputFrame.paddedWidth,
         yMin: (removedBoxes[index]!.yMin * sceneHeight - (hybridWindow?.top ?? 0) + hybridInputFrame.offsetY) / hybridInputFrame.paddedHeight,
         xMax: (removedBoxes[index]!.xMax * sceneWidth - (hybridWindow?.left ?? 0) + hybridInputFrame.offsetX) / hybridInputFrame.paddedWidth,
         yMax: (removedBoxes[index]!.yMax * sceneHeight - (hybridWindow?.top ?? 0) + hybridInputFrame.offsetY) / hybridInputFrame.paddedHeight,
       } })),
     };
+    if (hybridSeparateReplacement)
+      visualInput.instructions += ` The old object was removed in a separate full-original-room edit, restored strictly within the customer-confirmed original-frame box ${JSON.stringify(manualReplacement)}. The new product was generated alone from the reconstructed room camera and original catalogue, then uniformly placed. Final replacement completeness and support continuity must still be verified against the ORIGINAL photograph; the cleaned intermediate is not proof of a correct removal.`;
     const visualSizeNote = visualStorefront && visualScales.some(Boolean)
       ? "\nThe requested pixel size is a customer-adjusted VISUAL target, not a physical measurement or camera calibration. Preserve the catalogue proportions through a uniform change of size; do not claim metric accuracy."
       : "";
@@ -2005,10 +2061,11 @@ async function runSimplePointRender(
         ],
         mode, outputQuality: "final", preserveBackground: true,
       });
-      await recordProviderAttempt(db, render, result, hybridIsolatedInsertion ? "harmonizing_lighting" : "generating_final", imagePromptVersion, route.degradedMode, hybridIsolatedInsertion ? 2 : 1);
+      await recordProviderAttempt(db, render, result, hybridIsolatedInsertion ? "harmonizing_lighting" : "generating_final", imagePromptVersion, route.degradedMode, replacementCleanupResult ? 3 : hybridIsolatedInsertion ? 2 : 1);
       if (hybridPosePipeline) await advanceRender(db, render.id, { $set: {
-        provider: result.provider, model: result.model, attemptCount: poseResult ? 2 : 1,
+        provider: result.provider, model: result.model, attemptCount: replacementCleanupResult ? 3 : poseResult ? 2 : 1,
         modelChain: [
+          ...(replacementCleanupResult ? [{ provider: replacementCleanupResult.provider, model: replacementCleanupResult.model, role: "confirmed_object_removal" }] : []),
           ...(poseResult ? productPoseModelChain(poseResult) : []),
           { provider: result.provider, model: result.model, role: hybridIsolatedInsertion ? "contact_lighting" : "perspective_edit" },
         ],
@@ -2157,6 +2214,7 @@ async function runSimplePointRender(
     }), { maxAttempts: 1, respectRetryable: true }), { maxAttempts: 1, respectRetryable: true });
     let deliveredResult = roomRefinementResult ?? result;
     const finalModelChain = [
+      ...(replacementCleanupResult ? [{ provider: replacementCleanupResult.provider, model: replacementCleanupResult.model, role: "confirmed_object_removal" }] : []),
       ...(poseResult ? productPoseModelChain(poseResult) : []),
       { provider: result.provider, model: result.model, role: hybridIsolatedInsertion ? "contact_lighting" : "perspective_edit" },
       ...(roomRefinementResult ? [{ provider: roomRefinementResult.provider, model: roomRefinementResult.model, role: "room_refinement" }] : []),

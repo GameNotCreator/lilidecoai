@@ -458,7 +458,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-async function runHybridVersion(version: "v1" | "v2" | "v3" | "v4" | "v5" | "v6") {
+async function runHybridVersion(version: "v1" | "v2" | "v3" | "v4" | "v5" | "v6" | "v9") {
   const insert = renders.insertOne;
   renders.insertOne = async row => {
     const prompt = `storefront-myarchitect-room-${version}`;
@@ -1422,11 +1422,88 @@ describe("public visual placement v9 uses a declared pixel target directly", () 
     const result = await run();
     expect(result.status).toBe("succeeded");
     expect(mocks.storefrontPreflight).not.toHaveBeenCalled();
-    expect(mocks.edit).toHaveBeenCalledTimes(2);
-    expect(mocks.edit.mock.calls[0]![0].prompt).toContain("objet sélectionné");
+    expect(mocks.edit).toHaveBeenCalledTimes(3);
+    const [cleanup, pose, contact] = mocks.edit.mock.calls.map(call => call[0]);
+    expect(cleanup.prompt).toContain("FULL ORIGINAL ROOM");
+    expect(cleanup.prompt).toContain(JSON.stringify(request.replacementRegion));
+    expect(cleanup.references.map((reference: { role: string }) => reference.role)).toEqual(["composition"]);
+    expect(await sharp(Buffer.from(cleanup.composition)).metadata()).toMatchObject({ width: 400, height: 300 });
+    expect(pose).toMatchObject({ productIsolation: true, productIsolationCameraFirst: true, generateProductView: true });
+    expect(await sharp(Buffer.from(pose.composition)).metadata()).toMatchObject({ width: 400, height: 300 });
+    expect(contact.prompt).not.toContain("Remove only");
+    expect(mocks.edit.mock.calls.some(call => call[0].storefrontRoomRefinement)).toBe(false);
+    expect(renders.rows[0]).toMatchObject({ engineVersions: { prompt: "storefront-myarchitect-replacement-v10" },
+      modelChain: expect.arrayContaining([{ provider: "myarchitectai", model: "edit-by-prompt", role: "confirmed_object_removal" },
+        { provider: "openai", model: "test-repair-image", role: "isolated_product_pose" },
+        { provider: "myarchitectai", model: "edit-by-prompt", role: "contact_lighting" }]) });
+    const steps = vi.mocked(durableStep).mock.calls.map(call => call[1]);
+    expect(steps).toEqual(expect.arrayContaining(["manual-placement-v10", "replacement-clean-v10", "replacement-background-v10",
+      "pose-responses-v10", "harmonize-v10", "review-v10"]));
+    expect(steps).not.toContain("room-refine-v10");
     expect(renders.rows[0]!.placement).toMatchObject({ replacementRegion: request.replacementRegion,
       replacedTargets: [{ objectIndex: 0, name: "objet sélectionné" }] });
     expect((renders.rows[0] as unknown as RenderDocument).qualityDecision!.checks).toEqual(expect.arrayContaining([expect.objectContaining({ name: "replacement_complete" })]));
+  });
+
+  it("preserves the frozen v9 replacement path and never starts v10 cleanup for an old job", async () => {
+    request.replaceExisting = true;
+    request.replacementRegion = { xMin: 0.05, yMin: 0.25, xMax: 0.75, yMax: 0.85 };
+    expect((await runHybridVersion("v9")).status).toBe("succeeded");
+    expect(mocks.edit).toHaveBeenCalledTimes(2);
+    expect(mocks.edit.mock.calls[1]![0].storefrontRoomRefinement).toBe(true);
+    const steps = vi.mocked(durableStep).mock.calls.map(call => call[1]);
+    expect(steps).toContain("room-refine-v9");
+    expect(steps).not.toContain("replacement-clean-v10");
+  });
+
+  it.each(["cleanup", "pose", "contact"])("never proceeds or repeats images after an uncertain v10 %s", async failedStage => {
+    request.replaceExisting = true;
+    request.replacementRegion = { xMin: 0.05, yMin: 0.25, xMax: 0.75, yMax: 0.85 };
+    const edit = mocks.edit.getMockImplementation()!;
+    let calls = 0;
+    const failureIndex = failedStage === "cleanup" ? 1 : failedStage === "pose" ? 2 : 3;
+    mocks.edit.mockImplementation(async input => ++calls !== failureIndex ? edit(input) : ({
+      provider: input.productIsolation ? "openai" : "myarchitectai", model: input.productIsolation ? "test-repair-image" : "edit-by-prompt",
+      status: "failed", durationMs: 1, estimatedCostUsd: 0.03, attemptCount: 1, images: [], safety: { blocked: false },
+      error: { code: "timeout", message: "Réponse perdue", retryable: true },
+    }));
+    await expect(run()).rejects.toThrow();
+    expect(mocks.edit).toHaveBeenCalledTimes(failureIndex);
+    expect(reviewCalls).toBe(0);
+    expect(attempts.rows.some(row => row.usageOutcome === "unknown")).toBe(true);
+    expect(mocks.capture).not.toHaveBeenCalled();
+    expect(mocks.release).toHaveBeenCalledOnce();
+    expect(renders.rows[0]!.resultAssetId).toBeUndefined();
+  });
+
+  it("does not start an isolated pose or charge when cleanup exhausts the three-minute deadline", async () => {
+    request.replaceExisting = true;
+    request.replacementRegion = { xMin: 0.05, yMin: 0.25, xMax: 0.75, yMax: 0.85 };
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const edit = mocks.edit.getMockImplementation()!;
+    mocks.edit.mockImplementation(async input => {
+      const result = await edit(input);
+      vi.setSystemTime(Date.now() + 180_000);
+      return result;
+    });
+    await expect(run()).rejects.toThrow(/délai|minutes/);
+    expect(mocks.edit).toHaveBeenCalledOnce();
+    expect(reviewCalls).toBe(0);
+    expect(mocks.capture).not.toHaveBeenCalled();
+  });
+
+  it("keeps a geometry-only rejected v10 replacement private and uncharged", async () => {
+    request.replaceExisting = true;
+    request.replacementRegion = { xMin: 0.05, yMin: 0.25, xMax: 0.75, yMax: 0.85 };
+    reviewPayload.gateFailure = "contact";
+    await expect(run()).rejects.toThrow();
+    const row = renders.rows[0] as unknown as RenderDocument;
+    expect(row.status).toBe("failed");
+    expect(row.creditCharged).toBe(false);
+    expect(row.resultAssetId).toBeUndefined();
+    expect(renderResponse(row).adjustmentPreviewUrl).toBe(`/api/assets/${row.compositeAssetId}`);
+    expect(mocks.capture).not.toHaveBeenCalled();
+    expect(mocks.edit).toHaveBeenCalledTimes(3);
   });
 
   it("retains explicit detection when replacement is requested without a confirmed manual box", async () => {
@@ -1462,7 +1539,7 @@ describe("public visual placement v9 uses a declared pixel target directly", () 
     reviewPayload.replacementFailure = true;
     await expect(run()).rejects.toThrow();
     expect(renderResponse(renders.rows[0] as unknown as RenderDocument).adjustmentPreviewUrl).toBeNull();
-    expect(mocks.edit).toHaveBeenCalledTimes(2);
+    expect(mocks.edit).toHaveBeenCalledTimes(3);
     expect(mocks.capture).not.toHaveBeenCalled();
   });
 

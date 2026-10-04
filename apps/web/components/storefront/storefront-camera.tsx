@@ -73,12 +73,12 @@ export function StorefrontCamera({ onClose, onCapture, onChooseExisting }: {
   return <dialog ref={dialog} className="modal store-camera-modal" aria-labelledby="store-camera-title"
     onCancel={() => { stop(); onClose(); }} onClose={() => { stop(); onClose(); }}>
     <div className="modal-box w-full max-w-3xl">
-      <div className="flex items-start justify-between gap-3 mb-3">
-        <div><h2 id="store-camera-title" className="text-xl">Cadrez votre intérieur.</h2>
+      <div className="store-camera-heading flex items-start justify-between gap-3 mb-3">
+        <div><h2 id="store-camera-title" className="text-xl! leading-tight!">Cadrez votre intérieur.</h2>
           <p className="text-sm text-base-content/70 mt-2">Le guide aide au cadrage. La taille sera ajustable sur la photo.</p></div>
         <button type="button" className="btn btn-ghost btn-square min-h-11 shrink-0" aria-label="Fermer la caméra" onClick={() => { stop(); onClose(); }}><X size={20} aria-hidden="true" /></button>
       </div>
-      <div className="store-camera-view" style={{ aspectRatio }}>
+      <div className="store-camera-view" style={{ aspectRatio, width: `min(100%, ${aspectRatio * 50}dvh)` }}>
         <video ref={video} muted playsInline autoPlay aria-label="Aperçu de la caméra" onLoadedData={(event) => { setReady(true); setAspectRatio(event.currentTarget.videoWidth / event.currentTarget.videoHeight); }} onCanPlay={() => setReady(true)} />
         {guide !== "none" && <svg className="store-camera-guide" viewBox="0 0 100 75" preserveAspectRatio="none" aria-hidden="true">
           {guide === "corner" ? <><path d="M50 8V49M50 49L12 65M50 49L88 65" /><path className="store-camera-guide-dashed" d="M12 10V65M88 10V65" /></>

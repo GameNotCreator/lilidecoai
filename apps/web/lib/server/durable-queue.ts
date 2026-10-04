@@ -16,7 +16,7 @@ import { renderWorkerRevision } from "../render-worker-revision.mjs";
 import { assertSnapshotDeliverable } from "./prepared-views";
 import { ORIENTED_HARMONIZATION_PROMPT_VERSION } from "@lili/ai-router";
 import { ORIENTED_LAYER_POLICY } from "./oriented-layer-policy";
-import { STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_OPENAI_PROMPT_VERSION } from "./storefront-hybrid";
+import { STOREFRONT_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION, STOREFRONT_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION, STOREFRONT_VISUAL_OPENAI_PROMPT_VERSION } from "./storefront-hybrid";
 import {
   SIMPLE_POINT_PROVIDER_POLICY,
   SIMPLE_MYARCHITECTAI_PROMPT_VERSION,
@@ -55,6 +55,7 @@ export function workerFingerprint(): string {
         storefrontImageModel: serverConfig.storefrontImageModel,
         storefrontHybridPrompt: STOREFRONT_HYBRID_PROMPT_VERSION,
         storefrontVisualPrompt: STOREFRONT_VISUAL_HYBRID_PROMPT_VERSION,
+        storefrontVisualReplacementPrompt: STOREFRONT_VISUAL_REPLACEMENT_HYBRID_PROMPT_VERSION,
         storefrontVisualOpenAIPrompt: STOREFRONT_VISUAL_OPENAI_PROMPT_VERSION,
         vision: serverConfig.openaiVisionModel,
         quality: serverConfig.openaiQuality,

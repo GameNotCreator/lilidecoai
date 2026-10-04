@@ -1334,7 +1334,7 @@ function VisualizationSession({ products }: { products: StorefrontProduct[] }) {
                   {activeFootprint && !useMeasurement && (
                     <div className="store-visual-size my-4 flex flex-col gap-3">
                       <label htmlFor="store-visual-width" className="text-sm font-medium">Taille visuelle de {activeProduct.name}</label>
-                      <input id="store-visual-width" className="range" type="range" min="0.02" max={Math.max(0.02, activeFootprint.maxWidth)} step="0.005"
+                      <input id="store-visual-width" className="range min-h-11 w-full" type="range" min="0.02" max={Math.max(0.02, activeFootprint.maxWidth)} step="0.005"
                         value={activeFootprint.width} disabled={frozen} aria-describedby="store-visual-size-help"
                         onChange={(event) => {
                           const width = Number(event.target.value);
