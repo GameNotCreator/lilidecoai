@@ -12,7 +12,7 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, resolve, join, isAbsolute } from "node:path";
 import { parseEnv } from "node:util";
 import { fileURLToPath } from "node:url";
-import { MongoMemoryReplSet } from "mongodb-memory-server";
+import { createRequire } from "node:module";
 import sharp from "sharp";
 import type { Db, MongoClient } from "mongodb";
 import type { CutoutMetadata } from "@lili/types";
@@ -221,6 +221,14 @@ async function main() {
     MYARCHITECTAI_API_KEY: "", SIMPLE_POINT_IMAGE_PROVIDER: "openai", RENDER_EXECUTION_MODE: "durable",
     RENDER_STAGE_CAPTURE: "true", RENDER_WORKER_REVISION: `sha256:${code.sourceSha256}`, IMAGE_PIPELINE_MODE: "openai",
   });
+  // The isolated QA dependency lives in the root devDependencies. A production
+  // web build must not resolve or bundle it merely to typecheck this script.
+  const { MongoMemoryReplSet } = createRequire(import.meta.url)("mongodb-memory-server") as {
+    MongoMemoryReplSet: {
+      create(options: { replSet: { count: number; storageEngine: string; ip: string } }):
+        Promise<{ getUri(): string; stop(): Promise<boolean> }>;
+    };
+  };
   const repl = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: "wiredTiger", ip: "127.0.0.1" } });
   let client: MongoClient | undefined;
   let guard: Awaited<ReturnType<typeof installGuard>> | undefined;
