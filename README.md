@@ -1,5 +1,9 @@
 # LiliDecoAI
 
+**English overview:** An experimental web application for visualising decor objects in interior photographs. The Next.js monorepo includes the interface, API routes, geometry and image-provider packages, documentation and tests.
+
+**Status:** in development. Images are visual previews, not a guarantee of exact physical dimensions or reconstruction. The technical documentation below describes the implementation and its current limits.
+
 SaaS Next.js de visualisation d’objets décoratifs dans une photo d’intérieur.
 Le frontend et toutes les API sont hébergés ensemble sur Vercel. MongoDB est
 l’unique base de données et Cloudinary conserve les images privées.
