@@ -16,6 +16,7 @@
     "@lili/geometry": "*",
     "@lili/types": "*",
     "@lili/ui": "*",
+    "@vercel/functions": "3.11.3",
     "aws4fetch": "1.0.20",
     "bcryptjs": "^3.0.3",
     "cloudinary": "^2.10.0",

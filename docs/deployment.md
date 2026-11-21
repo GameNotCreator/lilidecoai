@@ -27,6 +27,11 @@ Importer le dépôt GitHub `GameNotCreator/lilidecoai`, puis configurer :
 minute. Le worker utilise Vercel Pro avec Fluid Compute, MongoDB et Cloudinary
 déjà configurés ; aucun autre hébergeur n'est requis.
 
+Sur Vercel, chaque instance réutilise son client MongoDB avec au plus quatre
+connexions de travail par serveur et libère celles qui restent inactives après
+dix secondes. En production, le déploiement vérifie les index avant la mise en
+ligne. Les index nécessaires doivent être en place à ce moment.
+
 ## 3. Cloudinary
 
 Dans Cloudinary, ouvrir **Settings → API Keys** et copier l’API environment

@@ -76,8 +76,10 @@ for (const [label, model] of [
 
 let client;
 try {
-  // Do not import database(): it creates indexes and drops a legacy TTL index.
+  // Use a separate, short-lived client to keep the preflight read-only.
   client = new MongoClient(env.MONGODB_URI, {
+    maxPoolSize: 2,
+    maxConnecting: 1,
     serverSelectionTimeoutMS: 10000,
   });
   await client.connect();

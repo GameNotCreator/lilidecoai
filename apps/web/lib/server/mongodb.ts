@@ -1,5 +1,6 @@
 import "server-only";
 
+import { attachDatabasePool } from "@vercel/functions/db-connections";
 import {
   MongoClient,
   ServerApiVersion,
@@ -30,11 +31,13 @@ declare global {
 }
 
 function createClient(): MongoClient {
-  return new MongoClient(serverConfig.mongodbUri, {
+  const onVercel = process.env.VERCEL === "1";
+  const client = new MongoClient(serverConfig.mongodbUri, {
     appName: "lilidecoai-vercel",
-    maxPoolSize: 10,
+    maxPoolSize: onVercel ? 4 : 10,
     minPoolSize: 0,
-    maxIdleTimeMS: 30_000,
+    maxConnecting: onVercel ? 1 : 2,
+    maxIdleTimeMS: onVercel ? 10_000 : 30_000,
     serverSelectionTimeoutMS: 8_000,
     serverApi: {
       version: ServerApiVersion.v1,
@@ -42,6 +45,8 @@ function createClient(): MongoClient {
       deprecationErrors: true,
     },
   });
+  if (onVercel) attachDatabasePool(client);
+  return client;
 }
 
 export function mongoClient(): Promise<MongoClient> {
@@ -59,7 +64,8 @@ export async function database(): Promise<Db> {
   assertProductionConfig();
   const client = await mongoClient();
   const db = client.db(serverConfig.mongodbDb);
-  await ensureIndexes(db);
+  // The Vercel production preflight already verifies these indexes.
+  if (process.env.VERCEL_ENV !== "production") await ensureIndexes(db);
   return db;
 }
 
