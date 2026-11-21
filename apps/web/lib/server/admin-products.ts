@@ -153,6 +153,7 @@ export async function createProduct(
     buyUrl: input.buyUrl ?? null,
     brand: input.brand,
     collection: input.collection,
+    storefrontCategory: input.storefrontCategory ?? null,
     tags: input.tags,
     priceCents: roundOrNull(input.priceCents),
     currency: input.currency.toUpperCase(),
@@ -473,6 +474,7 @@ export function adminProductResponse(product: ProductDocument) {
     ...productResponse(product),
     visualizationBlockedReason: product.visualizationBlockedReason ?? null,
     sourceAssetId: product.assetId ?? null,
+    storefrontCategory: product.storefrontCategory ?? null,
     stagedPhotoUrl: assetUrl(product.stagedAssetId),
     planarTexture: currentPlanarTexture(product),
     organizationId: product.organizationId,
@@ -652,6 +654,7 @@ function documentFields(
   if (input.sku !== undefined) fields.sku = input.sku;
   if (input.brand !== undefined) fields.brand = input.brand;
   if (input.collection !== undefined) fields.collection = input.collection;
+  if (input.storefrontCategory !== undefined) fields.storefrontCategory = input.storefrontCategory;
   if (input.tags !== undefined) fields.tags = input.tags;
   if (input.widthCm !== undefined) fields.widthCm = input.widthCm;
   if (input.heightCm !== undefined) fields.heightCm = input.heightCm;

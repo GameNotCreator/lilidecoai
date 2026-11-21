@@ -10,6 +10,69 @@ test.beforeAll(async ({ request }) => {
   expect(seeded.ok(), await seeded.text()).toBe(true);
 });
 
+test("storefront categories filter products and can be reassigned in the back office", async ({
+  page,
+}) => {
+  const initialCatalog = page.waitForResponse(
+    (response) => response.url().endsWith("/api/storefront/products") && response.ok(),
+  );
+  await page.goto("/");
+  await initialCatalog;
+  const category = page.getByRole("combobox", { name: "Catégorie", exact: true });
+  await expect(category.locator("option")).toHaveText([
+    "Toutes les catégories",
+    "Coffrets Cadeaux",
+    "Sculptures & Objets Déco",
+    "Vases & Cache-pots",
+    "Art de la Table",
+    "Lampes & Luminaires",
+    "Décoration Murale",
+    "Bougeoirs & Photophores",
+    "Tapis & Textiles",
+    "Petit Mobilier",
+    "Autres Accessoires Déco",
+  ]);
+  const titles = page.locator(".store-product-card h3");
+  await category.selectOption("vases-cache-pots");
+  await expect(titles).toHaveText(["Vase Sable"]);
+
+  const headers = { Origin: origin };
+  const login = await page.request.post("/api/admin/session", {
+    headers,
+    data: { username: "LiliDeco", password: "LiliDeco2026" },
+  });
+  expect(login.status()).toBe(201);
+  const endpoint = `/api/admin/products/${productId}`;
+  const existing = await page.request.get(endpoint);
+  expect(existing.ok()).toBe(true);
+  const { storefrontCategory } = await existing.json();
+  try {
+    await page.goto(`/admin/produits/${productId}`);
+    await page.getByLabel("Catégorie boutique").selectOption("sculptures-objets-deco");
+    await page.getByRole("button", { name: "Enregistrer", exact: true }).click();
+    await expect(page.getByText("Fiche enregistrée.")).toBeVisible();
+
+    const refreshedCatalog = page.waitForResponse(
+      (response) => response.url().endsWith("/api/storefront/products") && response.ok(),
+    );
+    await page.goto("/?categorie=sculptures-objets-deco");
+    await refreshedCatalog;
+    await expect(category).toHaveValue("sculptures-objets-deco");
+    await expect(titles).toHaveText(["Vase Sable"]);
+    await category.selectOption("vases-cache-pots");
+    await expect(titles).toHaveCount(0);
+    await page.getByRole("button", { name: "Voir toute la collection" }).click();
+    await expect(category).toHaveValue("");
+    await expect(titles.first()).toBeVisible();
+  } finally {
+    const restored = await page.request.patch(endpoint, {
+      headers,
+      data: { storefrontCategory: storefrontCategory ?? null },
+    });
+    expect(restored.ok()).toBe(true);
+  }
+});
+
 test("product images reserve space while loading and the preview opens centered", async ({
   page,
   request,
@@ -202,8 +265,9 @@ test("catalogue and product pages remain readable with JavaScript disabled", asy
   await label.click();
   await expect(page.getByRole("searchbox")).toBeFocused();
   await page.getByRole("searchbox").fill("Vase Sable");
+  await page.getByRole("combobox", { name: "Catégorie", exact: true }).selectOption("vases-cache-pots");
   await page.getByRole("searchbox").press("Enter");
-  await expect(page).toHaveURL(/\?q=Vase\+Sable/);
+  await expect(page).toHaveURL(/\?q=Vase\+Sable&categorie=vases-cache-pots/);
   await expect(page.locator(".store-product-card")).toHaveCount(1);
   await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", "noindex, follow");
   await page.getByRole("link", { name: "Vase Sable", exact: true }).click();

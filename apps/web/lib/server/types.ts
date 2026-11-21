@@ -96,6 +96,7 @@ export interface ProductDocument {
   buyUrl: string | null;
   brand?: string;
   collection?: string;
+  storefrontCategory?: import("../storefront-categories").StorefrontCategory | null;
   tags?: string[];
   priceCents?: number | null;
   currency?: string;

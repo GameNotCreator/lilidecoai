@@ -27,6 +27,7 @@ import {
   type AdminProduct,
 } from "@/lib/admin-client";
 import { prepareImageForUpload } from "@/lib/client-image";
+import { STOREFRONT_CATEGORY_LABELS } from "@/lib/storefront-categories";
 import { PlanarTextureEditor } from "./planar-texture-editor";
 import { PreparedViewsPanel } from "./prepared-views-panel";
 
@@ -58,6 +59,7 @@ interface FormState {
   sku: string;
   brand: string;
   collection: string;
+  storefrontCategory: string;
   tags: string;
   widthCm: string;
   heightCm: string;
@@ -89,6 +91,7 @@ const emptyForm: FormState = {
   sku: "",
   brand: "",
   collection: "",
+  storefrontCategory: "",
   tags: "",
   widthCm: "",
   heightCm: "",
@@ -455,7 +458,20 @@ export function AdminProductForm({ productId }: { productId?: string }) {
                 placeholder="Terracotta 2026"
               />
             </div>
-            <div className="bo-grid-2">
+            <div className="bo-grid-3">
+              <div className="bo-field">
+                <label htmlFor="storefrontCategory">Catégorie boutique</label>
+                <select
+                  id="storefrontCategory"
+                  value={form.storefrontCategory}
+                  onChange={(event) => set("storefrontCategory", event.target.value)}
+                >
+                  <option value="">Automatique</option>
+                  {Object.entries(STOREFRONT_CATEGORY_LABELS).map(([id, label]) => (
+                    <option key={id} value={id}>{label}</option>
+                  ))}
+                </select>
+              </div>
               <div className="bo-field">
                 <label htmlFor="objectType">Type d’objet *</label>
                 <select
@@ -1376,6 +1392,7 @@ function toForm(product: AdminProduct): FormState {
     sku: product.sku ?? "",
     brand: product.brand ?? "",
     collection: product.collection ?? "",
+    storefrontCategory: product.storefrontCategory ?? "",
     tags: (product.tags ?? []).join(", "),
     widthCm: String(product.widthCm),
     heightCm: String(product.heightCm),
@@ -1440,6 +1457,7 @@ function toPayload(form: FormState): Record<string, unknown> | null {
     sku: form.sku.trim() || null,
     brand: form.brand.trim(),
     collection: form.collection.trim(),
+    storefrontCategory: form.storefrontCategory || null,
     tags: form.tags,
     widthCm: width,
     heightCm: height,

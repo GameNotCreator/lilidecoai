@@ -1,3 +1,5 @@
+import type { StorefrontCategory } from "./storefront-categories";
+
 export interface AdminProductVariant {
   id: string;
   label: string;
@@ -53,6 +55,7 @@ export interface AdminProduct {
   buyUrl: string | null;
   brand: string;
   collection: string;
+  storefrontCategory?: StorefrontCategory | null;
   tags: string[];
   priceCents: number | null;
   currency: string;

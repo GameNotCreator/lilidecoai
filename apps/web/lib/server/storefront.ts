@@ -11,6 +11,7 @@ import {
   computeStorefrontReferenceScale,
   type StorefrontCatalog,
 } from "../storefront";
+import { resolveStorefrontCategory } from "../storefront-categories";
 import { AuthError, type Tenant } from "./auth";
 import { ApiInputError, assetUrl, readAsset } from "./assets";
 import { serverConfig } from "./config";
@@ -46,6 +47,7 @@ export function storefrontProductResponse(product: ProductDocument) {
   return storefrontProductSchema.parse({
     ...productResponse(product),
     stagedPhotoUrl: assetUrl(product.stagedAssetId),
+    storefrontCategory: resolveStorefrontCategory(product),
     visualizationAvailable: Boolean(
       product.cutoutAssetId &&
       cutoutTrust(product.cutout).trusted &&

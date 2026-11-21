@@ -2,20 +2,25 @@ import { StorefrontCatalog } from "@/components/storefront/storefront-catalog";
 import type { Metadata } from "next";
 import { readStorefrontPage } from "@/lib/server/storefront-page";
 import { jsonLd, siteOrigin, storeIdentity } from "@/lib/site";
+import { storefrontCategorySchema } from "@/lib/storefront-categories";
 
 export const dynamic = "force-dynamic";
 type Props = {
-  searchParams: Promise<{ q?: string | string[] }>;
+  searchParams: Promise<{
+    q?: string | string[];
+    categorie?: string | string[];
+  }>;
 };
 
 export async function generateMetadata({
   searchParams,
 }: Props): Promise<Metadata> {
-  const { q } = await searchParams;
+  const { q, categorie } = await searchParams;
   return {
     title: { absolute: storeIdentity.title },
     alternates: { canonical: "/" },
-    ...(q !== undefined && process.env.VERCEL_ENV !== "preview"
+    ...((q !== undefined || categorie !== undefined) &&
+    process.env.VERCEL_ENV !== "preview"
       ? { robots: { index: false, follow: true } }
       : {}),
     openGraph: {
@@ -74,6 +79,9 @@ export default async function HomePage({ searchParams }: Props) {
       <StorefrontCatalog
         initialCatalog={catalog}
         initialSearch={typeof params.q === "string" ? params.q : ""}
+        initialCategory={
+          storefrontCategorySchema.safeParse(params.categorie).data ?? ""
+        }
       />
     </>
   );

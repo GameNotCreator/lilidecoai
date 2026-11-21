@@ -1,5 +1,9 @@
 import { productPath } from "./site";
 import { safeStorefrontUrl, type StorefrontProduct } from "./storefront";
+import {
+  resolveStorefrontCategory,
+  STOREFRONT_CATEGORY_LABELS,
+} from "./storefront-categories";
 
 export function productSeoImages(product: StorefrontProduct, origin: string) {
   const primary =
@@ -52,7 +56,7 @@ export function productStructuredData(
       ? { "@type": "Brand", name: product.brand }
       : undefined,
     material: product.material || undefined,
-    category: product.collection || undefined,
+    category: STOREFRONT_CATEGORY_LABELS[resolveStorefrontCategory(product)],
     width: dimension(product.widthCm),
     height: dimension(product.heightCm),
     depth: dimension(product.depthCm),

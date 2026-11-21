@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { spatialProductMetadataSchema } from "@lili/types";
+import { storefrontCategorySchema } from "../storefront-categories";
 
 export const objectTypes = [
   "vase",
@@ -91,6 +92,7 @@ export const adminProductSchema = z.object({
   sku: skuSchema,
   brand: shortTextSchema.default(""),
   collection: shortTextSchema.default(""),
+  storefrontCategory: storefrontCategorySchema.nullish(),
   tags: tagsSchema.default([]).transform(normalizeTags),
   widthCm: dimensionSchema,
   heightCm: dimensionSchema,
@@ -123,6 +125,7 @@ export const adminProductPatchSchema = z.object({
   sku: skuSchema.optional(),
   brand: shortTextSchema.optional(),
   collection: shortTextSchema.optional(),
+  storefrontCategory: storefrontCategorySchema.nullish(),
   tags: tagsSchema.transform(normalizeTags).optional(),
   widthCm: dimensionSchema.optional(),
   heightCm: dimensionSchema.optional(),

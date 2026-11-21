@@ -20,29 +20,13 @@ import {
   type StorefrontProduct,
   type StorefrontCatalog as Catalog,
 } from "@/lib/storefront";
+import {
+  resolveStorefrontCategory,
+  STOREFRONT_CATEGORY_LABELS,
+  type StorefrontCategory,
+} from "@/lib/storefront-categories";
 import { useStorefrontCatalog } from "./catalog-state";
 import { VisualizationLink } from "./visualization-link";
-
-const CATEGORY_LABELS: Record<string, string> = {
-  vase: "Vases",
-  basket: "Paniers",
-  lamp: "Luminaires",
-  rug: "Tapis",
-  mirror: "Miroirs",
-  frame: "Décoration murale",
-  chair: "Assises",
-  armchair: "Fauteuils",
-  sofa: "Canapés",
-  table: "Tables",
-  furniture: "Mobilier",
-  plant: "Plantes",
-  clock: "Horloges",
-  cushion: "Coussins",
-  other: "Objets & décoration",
-};
-export function categoryLabel(type: string) {
-  return CATEGORY_LABELS[type] ?? "Objets & décoration";
-}
 export function ProductImage({
   product,
   className = "",
@@ -165,21 +149,22 @@ export function CatalogError({
 export function StorefrontCatalog({
   initialCatalog = null,
   initialSearch = "",
+  initialCategory = "",
 }: {
   initialCatalog?: Catalog | null;
   initialSearch?: string;
+  initialCategory?: StorefrontCategory | "";
 }) {
   const { catalog, error, retry } = useStorefrontCatalog(initialCatalog);
   const cart = useStorefrontCart();
   const [search, setSearch] = useState(initialSearch);
-  const [category, setCategory] = useState("all");
+  const [category, setCategory] = useState<string>(initialCategory);
   const [collection, setCollection] = useState("");
   const [sort, setSort] = useState("selection");
   const [selected, setSelected] = useState<StorefrontProduct | null>(null);
   const [notice, setNotice] = useState("");
   const [heroImageSettled, setHeroImageSettled] = useState(false);
   const products = useMemo(() => catalog?.products ?? [], [catalog]);
-  const categories = [...new Set(products.map((p) => p.objectType))];
   const collections = [...new Set(products.map((p) => p.collection?.trim()).filter(Boolean))]
     .sort((a, b) => (a ?? "").localeCompare(b ?? "", "fr"));
   const visible = useMemo(() => {
@@ -189,9 +174,10 @@ export function StorefrontCatalog({
         .replace(/[\u0300-\u036f]/g, "")
         .toLowerCase();
     const query = normalized(search.trim());
-    const matches = products.filter(
-      (p) =>
-        (category === "all" || p.objectType === category) &&
+    const matches = products.filter((p) => {
+      const productCategory = resolveStorefrontCategory(p);
+      return (
+        (!category || productCategory === category) &&
         (!collection || p.collection?.trim() === collection) &&
         (!query ||
           normalized(
@@ -201,10 +187,12 @@ export function StorefrontCatalog({
               p.material,
               p.brand,
               p.collection,
+              STOREFRONT_CATEGORY_LABELS[productCategory],
               ...p.tags,
             ].join(" "),
-          ).includes(query)),
-    );
+          ).includes(query))
+      );
+    });
     if (sort === "price-up")
       matches.sort(
         (a, b) => (a.priceCents ?? Infinity) - (b.priceCents ?? Infinity),
@@ -283,12 +271,13 @@ export function StorefrontCatalog({
           </div>
           <p>
             {catalog
-              ? `${products.length} pièce${products.length > 1 ? "s" : ""} à découvrir`
+              ? `${visible.length} pièce${visible.length > 1 ? "s" : ""} à découvrir`
               : "Objets, matières et inspirations"}
           </p>
         </div>
         <div className="store-filters">
           <form
+            id="store-catalog-search"
             className="store-search-form"
             action="/"
             method="get"
@@ -315,6 +304,20 @@ export function StorefrontCatalog({
             </div>
           </form>
           <label className="store-sort">
+            <span>Catégorie</span>
+            <select
+              form="store-catalog-search"
+              name="categorie"
+              value={category}
+              onChange={(event) => setCategory(event.target.value)}
+            >
+              <option value="">Toutes les catégories</option>
+              {Object.entries(STOREFRONT_CATEGORY_LABELS).map(([id, label]) => (
+                <option key={id} value={id}>{label}</option>
+              ))}
+            </select>
+          </label>
+          <label className="store-sort">
             <span>Trier les articles</span>
             <select
               value={sort}
@@ -336,28 +339,6 @@ export function StorefrontCatalog({
             </label>
           )}
         </div>
-        {!!categories.length && (
-          <div className="store-categories" aria-label="Catégories">
-            <button
-              aria-pressed={category === "all" && !collection}
-              onClick={() => {
-                setCategory("all");
-                setCollection("");
-              }}
-            >
-              Tout voir
-            </button>
-            {categories.map((type) => (
-              <button
-                key={type}
-                aria-pressed={category === type}
-                onClick={() => setCategory(type)}
-              >
-                {categoryLabel(type)}
-              </button>
-            ))}
-          </div>
-        )}
         {error ? (
           <CatalogError error={error} retry={retry} />
         ) : !catalog ? (
@@ -379,7 +360,7 @@ export function StorefrontCatalog({
                 className="store-button secondary"
                 onClick={() => {
                   setSearch("");
-                  setCategory("all");
+                  setCategory("");
                   setCollection("");
                 }}
               >
@@ -412,7 +393,7 @@ export function StorefrontCatalog({
                 </button>
                 <div className="store-product-info">
                   <p className="store-product-category">
-                    {product.collection || categoryLabel(product.objectType)}
+                    {product.collection || STOREFRONT_CATEGORY_LABELS[resolveStorefrontCategory(product)]}
                   </p>
                   <h3 className="store-product-title">
                     <Link href={productPath(product.id)}>{product.name}</Link>
