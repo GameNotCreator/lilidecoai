@@ -97,7 +97,7 @@ async function ensureIndexes(db: Db): Promise<void> {
 
 async function createIndexes(db: Db): Promise<void> {
   const c = collections(db);
-  // Cloudinary objects must be deleted before their metadata disappears.
+  // Remote objects must be deleted before their metadata disappears.
   // Remove the legacy TTL index if this database already has it.
   await c.assets.dropIndex("expiresAt_1").catch(() => undefined);
   await Promise.all([

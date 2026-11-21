@@ -13,6 +13,7 @@ import { sniffImageMime } from "./image-security";
 import { transparencyRatio } from "./simple-composite";
 import type { AssetDocument } from "./types";
 import { assetRequiredByPreparedWork } from "./prepared-view-retention";
+import { getR2Storage } from "./r2-storage";
 
 const allowedTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
 const formatForMime: Record<string, string> = {
@@ -1417,7 +1418,17 @@ export async function storeAsset(
     ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
   };
 
-  if (cloudinaryStorageConfigured()) {
+  if (process.env.R2_UPLOADS_ENABLED?.trim() === "true") {
+    try {
+      const storage = getR2Storage();
+      if (!storage) throw new Error("Configuration R2 incomplète.");
+      base.r2 = await storage.put(input.buffer, input.contentType);
+    } catch {
+      console.error("Écriture R2 indisponible. Utilisation du stockage de secours.");
+    }
+  }
+
+  if (!base.r2 && cloudinaryStorageConfigured()) {
     try {
       const uploaded = await uploadCloudinary(
         input.buffer,
@@ -1429,17 +1440,39 @@ export async function storeAsset(
       base.cloudinaryDeliveryType = cloudinaryDeliveryType;
     } catch (reason) {
       console.error("Cloudinary upload failed; using MongoDB fallback", reason);
-      base.bytes = new Binary(input.buffer);
     }
-  } else {
+  }
+  if (!base.r2 && !base.cloudinaryPublicId) {
     base.bytes = new Binary(input.buffer);
   }
 
-  await collections(db).assets.updateOne(
+  const previous = await collections(db).assets.findOneAndUpdate(
     { id },
-    { $set: base },
-    { upsert: true },
+    {
+      $set: base,
+      $unset: {
+        purgeClaimedAt: "",
+        ...(base.bytes ? {} : { bytes: "" }),
+        ...(base.r2 ? {} : { r2: "" }),
+        ...(base.cloudinaryPublicId
+          ? {}
+          : {
+              cloudinaryPublicId: "",
+              cloudinaryFormat: "",
+              cloudinaryVersion: "",
+              cloudinaryDeliveryType: "",
+            }),
+      },
+    },
+    { upsert: true, returnDocument: "before", projection: { r2: 1 } },
   );
+  if (previous?.r2) {
+    try {
+      await getR2Storage()?.delete(previous.r2);
+    } catch {
+      console.error("Suppression de l’ancienne version R2 à reprendre.");
+    }
+  }
   return base;
 }
 
@@ -1455,11 +1488,28 @@ export async function readAsset(
 ): Promise<{ asset: AssetDocument; buffer: Buffer } | null> {
   const asset = await collections(db).assets.findOne({ id: assetId });
   if (!asset) return null;
+  const content = await readAssetContent(asset);
+  return content ? { asset, buffer: content.buffer } : null;
+}
+
+/** Load bytes for an already-authorized asset, preferring a verified R2 copy. */
+export async function readAssetContent(asset: AssetDocument): Promise<{
+  buffer: Buffer;
+  storage: "r2" | "mongodb" | "cloudinary";
+} | null> {
   if (isExpired(asset)) return null;
+  if (asset.r2) {
+    try {
+      const buffer = await getR2Storage()?.read(asset.r2);
+      if (buffer) return { buffer, storage: "r2" };
+    } catch {
+      console.error("Lecture R2 indisponible pour un fichier.");
+    }
+  }
   if (asset.bytes) {
     return {
-      asset,
-      buffer: Buffer.from(asset.bytes.buffer),
+      buffer: Buffer.from(asset.bytes.value()),
+      storage: "mongodb",
     };
   }
   if (!asset.cloudinaryPublicId || !asset.cloudinaryFormat) return null;
@@ -1480,7 +1530,7 @@ export async function readAsset(
   });
   if (!response.ok) return null;
   const buffer = Buffer.from(await response.arrayBuffer());
-  return { asset, buffer };
+  return { buffer, storage: "cloudinary" };
 }
 
 /**
@@ -1492,7 +1542,7 @@ export async function readAsset(
  * flips `purgeClaimedAt`, and a lifted expiry no longer matches, so the image
  * survives.
  *
- * The claim is not a transaction over the bytes: the Cloudinary object is
+ * The claim is not a transaction over the bytes: the remote object is
  * destroyed after it, and an expiry lifted in that last instant loses. Closing
  * that too would need the storage and the metadata under one commit, which
  * this deployment does not have.
@@ -1505,32 +1555,81 @@ export async function deleteExpiredAsset(
   now = new Date(),
 ): Promise<boolean> {
   if (await assetRequiredByPreparedWork(db, assetId)) return false;
-  const claimed = await collections(db).assets.findOneAndUpdate(
-    { id: assetId, expiresAt: { $lte: now }, $or: [{ retainedUntil: { $exists: false } }, { retainedUntil: { $lte: now } }] },
+  const assets = collections(db).assets;
+  const claimed = await assets.findOneAndUpdate(
+    {
+      id: assetId,
+      expiresAt: { $lte: now },
+      $or: [
+        { retainedUntil: { $exists: false } },
+        { retainedUntil: { $lte: now } },
+      ],
+    },
     { $set: { purgeClaimedAt: new Date() } },
+    { returnDocument: "after" },
   );
   if (!claimed) return false;
-  await deleteAsset(db, assetId);
-  return true;
+  if (await assetRequiredByPreparedWork(db, assetId)) {
+    await assets.updateOne(
+      { id: assetId, purgeClaimedAt: claimed.purgeClaimedAt },
+      { $unset: { purgeClaimedAt: "" } },
+    );
+    return false;
+  }
+  return deleteClaimedAsset(db, claimed);
 }
 
 export async function deleteAsset(db: Db, assetId: string): Promise<void> {
   const assets = collections(db).assets;
   const asset = await assets.findOne({ id: assetId });
   if (!asset) return;
-  if ((asset.retainedUntil && asset.retainedUntil.getTime() > Date.now()) || await assetRequiredByPreparedWork(db, assetId)) {
+  if (
+    (asset.retainedUntil && asset.retainedUntil.getTime() > Date.now()) ||
+    (await assetRequiredByPreparedWork(db, assetId))
+  ) {
     await assets.updateOne({ id: assetId }, { $set: { visibility: "private" } });
     return;
   }
-  if (asset.cloudinaryPublicId) {
-    const deliveryType = asset.cloudinaryDeliveryType ?? "authenticated";
-    await cloudinaryClient().uploader.destroy(asset.cloudinaryPublicId, {
+  // Claim the current row before deleting remote bytes so a concurrent copy
+  // either becomes visible here or cannot attach its R2 object afterwards.
+  const claimed = await assets.findOneAndUpdate(
+    {
+      _id: asset._id,
+      createdAt: asset.createdAt,
+      $or: [
+        { retainedUntil: { $exists: false } },
+        { retainedUntil: { $type: "null" } },
+        { retainedUntil: { $lte: new Date() } },
+      ],
+    },
+    { $set: { purgeClaimedAt: new Date() } },
+    { returnDocument: "after" },
+  );
+  if (claimed) await deleteClaimedAsset(db, claimed);
+}
+
+async function deleteClaimedAsset(
+  db: Db,
+  claimed: AssetDocument,
+): Promise<boolean> {
+  if (claimed.r2) {
+    const storage = getR2Storage();
+    if (!storage) throw new Error("Configuration R2 requise pour supprimer ce fichier.");
+    await storage.delete(claimed.r2);
+  }
+  if (claimed.cloudinaryPublicId) {
+    const deliveryType = claimed.cloudinaryDeliveryType ?? "authenticated";
+    await cloudinaryClient().uploader.destroy(claimed.cloudinaryPublicId, {
       resource_type: "image",
       type: deliveryType,
       invalidate: true,
     });
   }
-  await assets.deleteOne({ id: assetId });
+  const result = await collections(db).assets.deleteOne({
+    id: claimed.id,
+    purgeClaimedAt: claimed.purgeClaimedAt,
+  });
+  return result.deletedCount === 1;
 }
 
 export function assetUrl(assetId: string | undefined): string | null {

@@ -34,6 +34,7 @@ export interface AssetDocument {
   ownerSessionId?: string;
   contentType: string;
   bytes?: Binary;
+  r2?: import("./r2-storage").R2AssetReference;
   cloudinaryPublicId?: string;
   cloudinaryFormat?: string;
   cloudinaryVersion?: number;

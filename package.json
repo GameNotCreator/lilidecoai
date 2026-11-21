@@ -33,6 +33,7 @@
     "migrate:asset-visibility": "node apps/web/scripts/migrate-asset-visibility.mjs",
     "migrate:cutout-provenance": "node apps/web/scripts/migrate-cutout-provenance.mjs",
     "migrate:oriented-views": "node --conditions=react-server --env-file-if-exists=.env --import tsx apps/web/scripts/migrate-oriented-views.ts",
+    "migrate:r2-assets": "node --conditions=react-server --env-file-if-exists=.env --import tsx apps/web/scripts/migrate-r2-assets.ts",
     "check:oriented": "node --env-file-if-exists=.env apps/web/scripts/oriented-readiness.mjs",
     "corpus:run": "node apps/web/scripts/corpus-run.mjs",
     "corpus:aggregate": "node apps/web/scripts/corpus-aggregate.mjs",

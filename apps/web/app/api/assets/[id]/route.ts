@@ -1,9 +1,9 @@
 import { requireAdminRequest } from "@/lib/server/admin-auth";
 import { resolveAdminOrganization } from "@/lib/server/admin-products";
 import { assetAccess } from "@/lib/server/asset-access";
-import { readAsset } from "@/lib/server/assets";
+import { readAssetContent } from "@/lib/server/assets";
 import { tenantsForRequest, type Tenant } from "@/lib/server/auth";
-import { database } from "@/lib/server/mongodb";
+import { collections, database } from "@/lib/server/mongodb";
 import type { Db } from "mongodb";
 
 export const runtime = "nodejs";
@@ -49,10 +49,8 @@ export async function GET(
 ): Promise<Response> {
   const { id } = await params;
   const db = await database();
-  // `readAsset` already refuses an expired asset; `assetAccess` re-checks so
-  // the rule holds for any future caller that reads the document directly.
-  const result = await readAsset(db, id);
-  if (!result) return new Response("Not found", { status: 404 });
+  const asset = await collections(db).assets.findOne({ id });
+  if (!asset) return new Response("Not found", { status: 404 });
 
   // A browser sends every cookie it holds, so one request can carry a merchant
   // account and a guest session at once. The image is served if ANY of those
@@ -62,7 +60,7 @@ export async function GET(
     ...(await backOfficeTenant(db, request)),
   ];
   const decisions = (tenants.length ? tenants : [null]).map((tenant) =>
-    assetAccess(result.asset, tenant),
+    assetAccess(asset, tenant),
   );
   const decision =
     decisions.find((candidate) => candidate.allowed) ?? decisions[0]!;
@@ -72,16 +70,19 @@ export async function GET(
     });
   }
 
+  const result = await readAssetContent(asset);
+  if (!result) return new Response("Not found", { status: 404 });
   const body = new Uint8Array(result.buffer.length);
   body.set(result.buffer);
   return new Response(body.buffer, {
     headers: {
-      "Content-Type": result.asset.contentType,
+      "Content-Type": asset.contentType,
       "Content-Length": String(result.buffer.length),
       "Cache-Control": decision.cacheable
         ? "public, max-age=31536000, immutable"
         : "private, no-store",
       "X-Content-Type-Options": "nosniff",
+      "X-Lili-Asset-Storage": result.storage,
     },
   });
 }

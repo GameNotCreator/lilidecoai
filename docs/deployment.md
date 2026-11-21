@@ -35,6 +35,42 @@ type `private` et restent servies par `/api/assets/:id` après les contrôles
 d’accès de l’application. En cas d’indisponibilité Cloudinary, l’envoi est
 conservé temporairement dans MongoDB afin de ne pas bloquer le parcours.
 
+### Transfert des images MongoDB vers R2
+
+Exécuter `npm run migrate:r2-assets -- audit` avec `MONGODB_URI` et `MONGODB_DB`.
+L’audit mesure les collections et les octets intégrés à `assets` sans écrire dans
+la base et fonctionne avec les seuls accès MongoDB.
+
+Utiliser un bucket R2 privé avec l’accès `r2.dev` désactivé et sans domaine public.
+Créer une clé S3 limitée à ce bucket avec accès lecture et écriture des objets.
+Renseigner `R2_ENDPOINT` avec l’origine S3 du compte, puis `R2_BUCKET`,
+`R2_ACCESS_KEY_ID` et `R2_SECRET_ACCESS_KEY` côté serveur dans Vercel et dans
+l’environnement de migration. Conserver la configuration Cloudinary pour les
+images déjà hébergées.
+
+Déployer la lecture R2 avec `R2_UPLOADS_ENABLED=false`, puis exécuter les
+commandes ci-dessous dans l’ordre. `copy` vérifie chaque objet et conserve les
+octets dans MongoDB pendant la validation du site. `prune` contrôle la lecture
+R2 par le site déployé, vérifie chaque copie et enlève uniquement le champ
+`bytes` correspondant.
+
+```sh
+npm run migrate:r2-assets -- copy
+npm run migrate:r2-assets -- prune --site https://lilidecoai-web.vercel.app
+npm run migrate:r2-assets -- audit
+```
+
+Ces commandes traitent au plus 200 images par passage (`--limit` pour ajuster).
+Relancer par lots si nécessaire. Vérifier que les pages catalogue, les photos
+et les accès privés fonctionnent avant de lancer `prune`. Le site doit disposer
+d’une image publiée sur R2 pour ce contrôle. Les images expirées restent sous
+la gestion du cron de purge de l’application. Après validation, activer
+`R2_UPLOADS_ENABLED=true` pour les nouveaux fichiers.
+
+En cas de retour à un déploiement antérieur à la lecture R2, exécuter d’abord
+`npm run migrate:r2-assets -- restore` jusqu’à restauration des octets. Atlas
+peut garder l’espace disque alloué pour le réutiliser après la migration.
+
 ## 4. Variables Vercel
 
 Obligatoires en production :
