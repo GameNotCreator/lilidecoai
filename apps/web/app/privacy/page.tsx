@@ -78,9 +78,10 @@ export default function PrivacyPage() {
       <h2>4. Les services qui interviennent</h2>
       <p>
         Le site est hébergé sur Vercel. Les informations de fonctionnement sont
-        enregistrées dans une base MongoDB et les images peuvent être stockées
-        chez Cloudinary selon la configuration du service. L’accès aux photos et
-        résultats de votre session est contrôlé par le serveur.
+        enregistrées dans MongoDB. Selon la configuration du service, les images
+        peuvent être stockées dans MongoDB, chez Cloudinary ou dans un espace
+        privé Cloudflare R2. Le serveur contrôle l’accès aux photos et aux
+        résultats de votre session.
       </p>
       <p>
         Les demandes de commande sont enregistrées dans MongoDB. Resend assure
