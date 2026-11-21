@@ -47,14 +47,18 @@ export function ProductImage({
   product,
   className = "",
   eager = false,
+  staged = false,
 }: {
   product: StorefrontProduct;
   className?: string;
   eager?: boolean;
+  staged?: boolean;
 }) {
-  const src =
+  const mainSrc =
     safeStorefrontUrl(product.assetUrl) ?? safeStorefrontUrl(product.cutoutUrl);
+  const stagedSrc = staged ? safeStorefrontUrl(product.stagedPhotoUrl) : null;
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const src = stagedSrc && stagedSrc !== failedSrc ? stagedSrc : mainSrc;
   return (
     <div className={`store-product-image ${className}`}>
       {(!src || failedSrc === src) && (
@@ -67,7 +71,7 @@ export function ProductImage({
         // eslint-disable-next-line @next/next/no-img-element
         <img
           src={src}
-          alt={product.name}
+          alt={src === stagedSrc ? `${product.name} en mise en scène` : product.name}
           loading={eager ? "eager" : "lazy"}
           width={800}
           height={800}
@@ -75,6 +79,34 @@ export function ProductImage({
           onError={() => setFailedSrc(src)}
         />
       )}
+    </div>
+  );
+}
+
+export function ProductGallery({
+  product,
+  eager = false,
+  showStagedFirst = false,
+}: {
+  product: StorefrontProduct;
+  eager?: boolean;
+  showStagedFirst?: boolean;
+}) {
+  const [staged, setStaged] = useState(showStagedFirst);
+  if (!safeStorefrontUrl(product.stagedPhotoUrl))
+    return <ProductImage product={product} eager={eager} />;
+
+  return (
+    <div className="store-product-gallery">
+      <ProductImage product={product} eager={eager} staged={staged} />
+      <div className="store-gallery-controls" role="group" aria-label="Photos de l’article">
+        <button type="button" aria-pressed={!staged} onClick={() => setStaged(false)}>
+          Photo de l’article
+        </button>
+        <button type="button" aria-pressed={staged} onClick={() => setStaged(true)}>
+          Mise en scène
+        </button>
+      </div>
     </div>
   );
 }
@@ -121,11 +153,14 @@ export function StorefrontCatalog({
   const cart = useStorefrontCart();
   const [search, setSearch] = useState(initialSearch);
   const [category, setCategory] = useState("all");
+  const [collection, setCollection] = useState("");
   const [sort, setSort] = useState("selection");
   const [selected, setSelected] = useState<StorefrontProduct | null>(null);
   const [notice, setNotice] = useState("");
   const products = useMemo(() => catalog?.products ?? [], [catalog]);
   const categories = [...new Set(products.map((p) => p.objectType))];
+  const collections = [...new Set(products.map((p) => p.collection?.trim()).filter(Boolean))]
+    .sort((a, b) => (a ?? "").localeCompare(b ?? "", "fr"));
   const visible = useMemo(() => {
     const normalized = (s: string) =>
       s
@@ -136,6 +171,7 @@ export function StorefrontCatalog({
     const matches = products.filter(
       (p) =>
         (category === "all" || p.objectType === category) &&
+        (!collection || p.collection?.trim() === collection) &&
         (!query ||
           normalized(
             [
@@ -159,7 +195,7 @@ export function StorefrontCatalog({
     if (sort === "name")
       matches.sort((a, b) => a.name.localeCompare(b.name, "fr"));
     return matches;
-  }, [products, search, category, sort]);
+  }, [products, search, category, collection, sort]);
   function add(product: StorefrontProduct) {
     const current =
       cart.lines.find((row) => row.productId === product.id)?.quantity ?? 0;
@@ -178,8 +214,9 @@ export function StorefrontCatalog({
           <h1>
             L’art de choisir.
             <br />
-            Le plaisir d’habiter.
+            Le plaisir d’offrir.
           </h1>
+          <p className="store-hero-aside">ou de se l’offrir</p>
           <p className="store-hero-description">
             Objets d’art, artisanat et design. La sélection ByLiliDeco, à
             découvrir ici et à imaginer chez vous.
@@ -270,12 +307,24 @@ export function StorefrontCatalog({
               <option value="name">Nom de l’article</option>
             </select>
           </label>
+          {collections.length > 0 && (
+            <label className="store-sort">
+              <span>Collection</span>
+              <select value={collection} onChange={(event) => setCollection(event.target.value)}>
+                <option value="">Toutes les collections</option>
+                {collections.map((name) => <option key={name}>{name}</option>)}
+              </select>
+            </label>
+          )}
         </div>
         {!!categories.length && (
           <div className="store-categories" aria-label="Catégories">
             <button
-              aria-pressed={category === "all"}
-              onClick={() => setCategory("all")}
+              aria-pressed={category === "all" && !collection}
+              onClick={() => {
+                setCategory("all");
+                setCollection("");
+              }}
             >
               Tout voir
             </button>
@@ -312,6 +361,7 @@ export function StorefrontCatalog({
                 onClick={() => {
                   setSearch("");
                   setCategory("all");
+                  setCollection("");
                 }}
               >
                 Voir toute la collection
@@ -328,6 +378,11 @@ export function StorefrontCatalog({
                   aria-label={`Découvrir ${product.name}`}
                 >
                   <ProductImage product={product} />
+                  {safeStorefrontUrl(product.stagedPhotoUrl) && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img className="store-staged-preview" src={product.stagedPhotoUrl!}
+                      alt="" loading="lazy" onError={(event) => { event.currentTarget.hidden = true; }} />
+                  )}
                   {product.stock === 0 && (
                     <span className="store-stock-badge">Épuisé</span>
                   )}
@@ -336,12 +391,10 @@ export function StorefrontCatalog({
                   <p className="store-product-category">
                     {product.collection || categoryLabel(product.objectType)}
                   </p>
-                  <div className="store-product-title-row">
-                    <h3>
-                      <Link href={productPath(product.id)}>{product.name}</Link>
-                    </h3>
-                    <span>{productPrice(product)}</span>
-                  </div>
+                  <h3 className="store-product-title">
+                    <Link href={productPath(product.id)}>{product.name}</Link>
+                  </h3>
+                  <p className="store-product-price">{productPrice(product)}</p>
                   <p className="store-product-material">
                     {product.material || productDimensions(product)}
                   </p>
@@ -508,20 +561,13 @@ function ProductDialog({
         >
           <X size={23} />
         </button>
-        <ProductImage product={product} />
+        <ProductGallery product={product} showStagedFirst />
         <div className="store-detail-copy">
-          <p className="store-kicker">
-            {product.brand || "LA SÉLECTION LILIDECO"}
-          </p>
           <h2 id="store-detail-title">{product.name}</h2>
           <Link className="store-text-link" href={productPath(product.id)}>
             Ouvrir la fiche produit <ArrowRight size={16} aria-hidden="true" />
           </Link>
           <p className="store-detail-price">{productPrice(product)}</p>
-          <p>
-            {product.description ||
-              "Une pièce à découvrir et à imaginer dans votre intérieur."}
-          </p>
           <dl className="store-specs">
             <div>
               <dt>Dimensions</dt>
@@ -531,18 +577,6 @@ function ProductDialog({
               <div>
                 <dt>Matière</dt>
                 <dd>{product.material}</dd>
-              </div>
-            )}
-            {product.collection && (
-              <div>
-                <dt>Collection</dt>
-                <dd>{product.collection}</dd>
-              </div>
-            )}
-            {product.sku && (
-              <div>
-                <dt>Référence</dt>
-                <dd>{product.sku}</dd>
               </div>
             )}
             <div>

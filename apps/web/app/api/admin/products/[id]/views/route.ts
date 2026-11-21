@@ -33,6 +33,7 @@ const viewTypeSchema = z.enum([
   "side",
   "back",
   "detail",
+  "staged",
 ]);
 
 /** Include the full view inventory: two uploads may finish in the same millisecond. */
@@ -44,6 +45,7 @@ function mutationFilter(product: ProductDocument): Filter<ProductDocument> {
     status: product.status,
     assetId: product.assetId ?? { $exists: false },
     cutoutAssetId: product.cutoutAssetId ?? { $exists: false },
+    stagedAssetId: product.stagedAssetId ?? { $exists: false },
     views: product.views ? { $eq: product.views } : { $exists: false },
     productPreparation: product.productPreparation
       ? { $eq: product.productPreparation }
@@ -110,18 +112,23 @@ export async function POST(
 
     const currentViews = product.views ?? [];
     const previous = currentViews.find((view) => view.type === viewType);
-    const views = [
-      ...currentViews.filter((view) => view.type !== viewType),
-      {
-        id: previous?.id ?? crypto.randomUUID(),
-        assetId: asset.id,
-        type: viewType,
-        widthPx: metadata.width ?? 0,
-        heightPx: metadata.height ?? 0,
-        validationStatus: "valid" as const,
-        createdAt: previous?.createdAt ?? new Date(),
-      },
-    ];
+    // The storefront photo is displayed to shoppers independently of render references.
+    const photoUpdate = viewType === "staged"
+      ? { stagedAssetId: asset.id }
+      : {
+          views: [
+            ...currentViews.filter((view) => view.type !== viewType),
+            {
+              id: previous?.id ?? crypto.randomUUID(),
+              assetId: asset.id,
+              type: viewType,
+              widthPx: metadata.width ?? 0,
+              heightPx: metadata.height ?? 0,
+              validationStatus: "valid" as const,
+              createdAt: previous?.createdAt ?? new Date(),
+            },
+          ],
+        };
     let discardUpload = false;
     try {
       const updatedAt = nextUpdatedAt(product);
@@ -129,7 +136,7 @@ export async function POST(
         mutationFilter(product),
         {
           $set: {
-            views,
+            ...photoUpdate,
             updatedAt,
             ...(viewType === "front"
               ? { assetId: asset.id, status: "processing" as const }
@@ -156,7 +163,7 @@ export async function POST(
         throw changedProduct();
       }
       await retireAssets(db, organization.id, [
-        previous?.assetId,
+        viewType === "staged" ? product.stagedAssetId : previous?.assetId,
         ...(viewType === "front"
           ? [product.assetId, product.cutoutAssetId]
           : []),
@@ -189,7 +196,8 @@ export async function DELETE(
         409,
       );
     const view = (product.views ?? []).find((item) => item.type === viewType);
-    if (!view) throw new AdminProductError("Cette vue n’existe pas", 404);
+    const assetId = viewType === "staged" ? product.stagedAssetId : view?.assetId;
+    if (!assetId) throw new AdminProductError("Cette vue n’existe pas", 404);
 
     const views = (product.views ?? []).filter(
       (item) => item.type !== viewType,
@@ -198,12 +206,14 @@ export async function DELETE(
       mutationFilter(product),
       {
         $set: {
-          views,
+          ...(viewType === "staged" ? {} : { views }),
           updatedAt: nextUpdatedAt(product),
           ...(viewType === "front" ? { status: "draft" as const } : {}),
         },
         // The measurements describe an image that no longer exists.
-        ...(viewType === "front"
+        ...(viewType === "staged"
+          ? { $unset: { stagedAssetId: "" } }
+          : viewType === "front"
           ? {
               $unset: {
                 assetId: "",
@@ -218,7 +228,7 @@ export async function DELETE(
     );
     if (!result.matchedCount) throw changedProduct();
     await retireAssets(db, organization.id, [
-      view.assetId,
+      assetId,
       ...(viewType === "front" ? [product.assetId, product.cutoutAssetId] : []),
     ]);
     const updated = await findProduct(db, organization.id, id);

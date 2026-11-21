@@ -12,7 +12,7 @@ import {
   type StorefrontCatalog,
 } from "../storefront";
 import { AuthError, type Tenant } from "./auth";
-import { ApiInputError, readAsset } from "./assets";
+import { ApiInputError, assetUrl, readAsset } from "./assets";
 import { serverConfig } from "./config";
 import { cutoutTrust } from "./cutout-identity";
 import { productPreparationStatus } from "./product-preparation";
@@ -21,7 +21,11 @@ import {
   productResponse,
   STOREFRONT_BUDGET_UNAVAILABLE_MESSAGE,
 } from "./serializers";
-import { DEMO_CATALOG_USER_ID, type ProductDocument } from "./types";
+import {
+  DEMO_CATALOG_USER_ID,
+  type OrganizationDocument,
+  type ProductDocument,
+} from "./types";
 import type { RenderInput } from "./render-request";
 import { isSameOriginRequest } from "./request-origin";
 
@@ -41,6 +45,7 @@ export function storefrontProductResponse(product: ProductDocument) {
     (product.objectType !== "rug" || product.depthCm > 0);
   return storefrontProductSchema.parse({
     ...productResponse(product),
+    stagedPhotoUrl: assetUrl(product.stagedAssetId),
     visualizationAvailable: Boolean(
       product.cutoutAssetId &&
       cutoutTrust(product.cutout).trusted &&
@@ -74,15 +79,46 @@ export async function storefrontOrganization(db: Db) {
 export async function getStorefrontCatalog(db: Db): Promise<StorefrontCatalog> {
   const organization = await storefrontOrganization(db);
   const products = organization
-    ? await collections(db)
-        .products.find(storefrontProductFilter(organization.id))
-        .sort({ createdAt: -1 })
-        .toArray()
+    ? await listStorefrontProducts(db, organization)
     : [];
   return {
     store: { name: "LiliDeco" },
     products: products.map(storefrontProductResponse),
     visualization: storefrontVisualization(),
+  };
+}
+
+export async function listStorefrontProducts(
+  db: Db,
+  organization: OrganizationDocument,
+): Promise<ProductDocument[]> {
+  const products = await collections(db)
+    .products.find(storefrontProductFilter(organization.id))
+    .sort({ createdAt: -1, id: 1 })
+    .toArray();
+  const order = organization.storefrontProductOrder?.ids;
+  if (!order?.length) return products;
+
+  const positions = new Map(order.map((id, index) => [id, index]));
+  return products.sort(
+    (a, b) => (positions.get(a.id) ?? order.length) -
+      (positions.get(b.id) ?? order.length),
+  );
+}
+
+export async function readStorefrontProductOrder(
+  db: Db,
+  organization: OrganizationDocument,
+) {
+  const products = await listStorefrontProducts(db, organization);
+  return {
+    revision: organization.storefrontProductOrder?.revision ?? 0,
+    products: products.map(({ id, name, collection, assetId, cutoutAssetId }) => ({
+      id,
+      name,
+      collection,
+      photoUrl: assetUrl(assetId) ?? assetUrl(cutoutAssetId),
+    })),
   };
 }
 

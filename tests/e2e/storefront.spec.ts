@@ -10,6 +10,73 @@ test.beforeAll(async ({ request }) => {
   expect(seeded.ok(), await seeded.text()).toBe(true);
 });
 
+test("the saved shop order aligns cards and shows the staged product photo", async ({
+  page,
+}) => {
+  const headers = { Origin: origin };
+  const login = await page.request.post("/api/admin/session", {
+    headers,
+    data: { username: "LiliDeco", password: "LiliDeco2026" },
+  });
+  expect(login.status()).toBe(201);
+  const endpoint = "/api/admin/products/storefront-order";
+  const initial = await (await page.request.get(endpoint)).json();
+  expect(initial.products.length).toBeGreaterThan(1);
+  const second = initial.products[1];
+  const stagedRoute = `/api/admin/products/${second.id}/views`;
+  const photo = await sharp({
+    create: { width: 400, height: 400, channels: 3, background: "#b79572" },
+  }).png().toBuffer();
+
+  await page.goto("/admin/produits/ordre");
+  await page.getByRole("button", { name: `Monter ${second.name}`, exact: true }).click();
+  await page.getByRole("button", { name: "Enregistrer l’ordre" }).click();
+  await expect(page.getByRole("status")).toHaveText("L’ordre a été enregistré dans la boutique.");
+  const ids = initial.products.map((product: { id: string }) => product.id);
+  const stale = await page.request.put(endpoint, {
+    headers,
+    data: { ids, revision: initial.revision },
+  });
+  expect(stale.status()).toBe(409);
+
+  try {
+    const upload = await page.request.post(stagedRoute, {
+      headers,
+      multipart: {
+        viewType: "staged",
+        file: { name: "mise-en-scene.png", mimeType: "image/png", buffer: photo },
+      },
+    });
+    expect(upload.status(), await upload.text()).toBe(201);
+
+    await page.goto("/");
+    const cards = page.locator(".store-product-card");
+    await expect(cards.first().getByRole("heading")).toHaveText(second.name);
+    const prices = page.locator(".store-product-price").filter({ visible: true });
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 820 });
+      const first = await prices.nth(0).boundingBox();
+      const next = await prices.nth(1).boundingBox();
+      expect(first).not.toBeNull();
+      expect(next).not.toBeNull();
+      expect(Math.abs(first!.y - next!.y)).toBeLessThan(1);
+    }
+    await cards.first().getByRole("button", { name: `Découvrir ${second.name}` }).click();
+    const dialog = page.getByRole("dialog");
+    const staged = dialog.getByRole("img", { name: `${second.name} en mise en scène` });
+    await expect(staged).toBeVisible();
+    await expect.poll(() => staged.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
+    await dialog.getByRole("button", { name: "Photo de l’article" }).click();
+    await expect(dialog.getByRole("img", { name: second.name, exact: true })).toBeVisible();
+  } finally {
+    await page.request.delete(`${stagedRoute}?type=staged`, { headers });
+    await page.request.put(endpoint, {
+      headers,
+      data: { ids, revision: initial.revision + 1 },
+    });
+  }
+});
+
 test("storefront catalogue, details, cart persistence and three-unit limit", async ({
   page,
 }) => {

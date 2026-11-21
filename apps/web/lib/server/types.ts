@@ -14,6 +14,7 @@ export interface OrganizationDocument {
   name: string;
   slug: string;
   createdAt: Date;
+  storefrontProductOrder?: { ids: string[]; revision: number };
 }
 
 export interface AssetDocument {
@@ -107,6 +108,7 @@ export interface ProductDocument {
   status: "draft" | "processing" | "ready" | "archived";
   assetId?: string;
   cutoutAssetId?: string;
+  stagedAssetId?: string;
   /** Measurements and provenance of the stored cutout (set by /prepare). */
   cutout?: CutoutMetadata;
   /** Idempotent local back-office preparation and its fenced in-flight lease. */

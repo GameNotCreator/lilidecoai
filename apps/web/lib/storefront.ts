@@ -29,7 +29,10 @@ export const storefrontProductSchema = productSchema
     cutout: true,
     buyUrl: true,
   })
-  .extend({ visualizationAvailable: z.boolean() });
+  .extend({
+    visualizationAvailable: z.boolean(),
+    stagedPhotoUrl: z.string().nullable().optional(),
+  });
 export type StorefrontProduct = z.infer<typeof storefrontProductSchema>;
 export const storefrontCatalogSchema = z.object({
   store: z.object({ name: z.string() }),

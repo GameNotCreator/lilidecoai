@@ -124,6 +124,7 @@ const viewOrder = [
   "back",
   "top",
   "detail",
+  "staged",
 ] as const;
 
 export function AdminProductForm({ productId }: { productId?: string }) {
@@ -273,7 +274,9 @@ export function AdminProductForm({ productId }: { productId?: string }) {
       setNotice(
         type === "front"
           ? "Photo de face remplacée. Vous pouvez publier la fiche ; préparez la nouvelle photo pour la visualisation."
-          : "Vue ajoutée.",
+          : type === "staged"
+            ? "Photo de mise en scène ajoutée."
+            : "Vue ajoutée.",
       );
     });
   }
@@ -916,7 +919,7 @@ export function AdminProductForm({ productId }: { productId?: string }) {
                 <h2>Photos</h2>
                 <p>
                   {editing
-                    ? "La vue de face alimente le détourage utilisé par le rendu."
+                    ? "La vue de face sert à la visualisation. La photo de mise en scène apparaît dans la boutique."
                     : "Ajoutez la vue de face ; les autres angles s’ajoutent après création."}
                 </p>
               </div>
@@ -951,13 +954,15 @@ export function AdminProductForm({ productId }: { productId?: string }) {
             {editing && (
               <div className="bo-views">
                 {viewOrder.map((type) => {
-                  const view = viewsByType.get(type);
+                  const url = type === "staged"
+                    ? product?.stagedPhotoUrl
+                    : viewsByType.get(type)?.url;
                   return (
                     <div className="bo-view" key={type}>
                       <label className="bo-view-slot">
-                        {view?.url ? (
+                        {url ? (
                           // eslint-disable-next-line @next/next/no-img-element
-                          <img src={view.url} alt={viewLabels[type]} />
+                          <img src={url} alt={viewLabels[type]} />
                         ) : (
                           <ImagePlus size={18} />
                         )}
@@ -977,7 +982,7 @@ export function AdminProductForm({ productId }: { productId?: string }) {
                         <strong>{viewLabels[type]}</strong>
                         {busy === `view:${type}` ? (
                           <small>Envoi…</small>
-                        ) : view ? (
+                        ) : url ? (
                           <button
                             type="button"
                             className="bo-link-danger"

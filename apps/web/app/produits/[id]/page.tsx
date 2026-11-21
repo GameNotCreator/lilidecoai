@@ -11,7 +11,7 @@ import {
   productPrice,
   safeStorefrontUrl,
 } from "@/lib/storefront";
-import { ProductImage } from "@/components/storefront/storefront-catalog";
+import { ProductGallery } from "@/components/storefront/storefront-catalog";
 import { ProductActions } from "@/components/storefront/product-actions";
 
 export const dynamic = "force-dynamic";
@@ -65,7 +65,7 @@ export default async function ProductPage({ params }: Props) {
           Retour à la collection
         </Link>
         <div className="store-product-page-grid">
-          <ProductImage product={product} eager />
+          <ProductGallery product={product} eager />
           <div className="store-product-page-copy">
             <p className="store-kicker">{product.brand || "BY LILIDECO"}</p>
             <h1>{product.name}</h1>

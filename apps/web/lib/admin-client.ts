@@ -34,6 +34,7 @@ export interface AdminProduct {
   };
   planarTexture?: import("@lili/types").PlanarTexture | null;
   sourceAssetId?: string | null;
+  stagedPhotoUrl?: string | null;
   spatialMetadata?: import("zod").infer<
     typeof import("@lili/types").spatialProductMetadataSchema
   >;
@@ -182,6 +183,7 @@ export const viewLabels: Record<string, string> = {
   side: "Côté",
   back: "Arrière",
   detail: "Détail",
+  staged: "Mise en scène",
 };
 
 export function formatPrice(

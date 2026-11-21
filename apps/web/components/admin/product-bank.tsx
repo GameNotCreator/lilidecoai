@@ -183,6 +183,9 @@ export function ProductBank() {
           </p>
         </div>
         <div className="bo-head-actions">
+          <Link className="bo-button bo-button-ghost" href="/admin/produits/ordre">
+            Réorganiser la boutique
+          </Link>
           <a
             className="bo-button bo-button-ghost"
             href={`/api/admin/products/export?${query}`}

@@ -348,6 +348,7 @@ export async function duplicateProduct(
   delete (copy as { _id?: unknown })._id;
   delete copy.assetId;
   delete copy.cutoutAssetId;
+  delete copy.stagedAssetId;
   // The cutout measurements belong to a photo the copy does not have. Left
   // behind they would size and anchor the duplicate from an image it never
   // carried.
@@ -472,6 +473,7 @@ export function adminProductResponse(product: ProductDocument) {
     ...productResponse(product),
     visualizationBlockedReason: product.visualizationBlockedReason ?? null,
     sourceAssetId: product.assetId ?? null,
+    stagedPhotoUrl: assetUrl(product.stagedAssetId),
     planarTexture: currentPlanarTexture(product),
     organizationId: product.organizationId,
     lightingSource: String(product.lightingProfile?.source ?? "front"),
@@ -705,6 +707,7 @@ function imageAssetIds(product: ProductDocument): string[] {
   const ids = new Set<string>();
   if (product.assetId) ids.add(product.assetId);
   if (product.cutoutAssetId) ids.add(product.cutoutAssetId);
+  if (product.stagedAssetId) ids.add(product.stagedAssetId);
   for (const view of product.views ?? []) ids.add(view.assetId);
   return [...ids];
 }
