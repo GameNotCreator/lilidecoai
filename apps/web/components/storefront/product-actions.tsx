@@ -37,18 +37,20 @@ export function ProductActions({
         <Plus size={18} aria-hidden="true" />
         Ajouter au panier
       </button>
-      {available && product.visualizationAvailable && product.stock !== 0 ? (
-        <VisualizationLink
-          productIds={[product.id]}
-          className="store-button secondary"
-        >
-          <ScanLine size={18} aria-hidden="true" />
-          Visualiser chez moi
-        </VisualizationLink>
-      ) : (
-        <p className="store-muted">
-          La visualisation de cet article n’est pas encore disponible.
-        </p>
+      {available && (
+        product.visualizationAvailable && product.stock !== 0 ? (
+          <VisualizationLink
+            productIds={[product.id]}
+            className="store-button secondary"
+          >
+            <ScanLine size={18} aria-hidden="true" />
+            Visualiser chez moi
+          </VisualizationLink>
+        ) : (
+          <p className="store-muted">
+            La visualisation de cet article n’est pas encore disponible.
+          </p>
+        )
       )}
       <p role="status" aria-live="polite">
         {notice}

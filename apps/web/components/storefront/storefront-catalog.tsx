@@ -54,32 +54,52 @@ export function ProductImage({
   eager?: boolean;
   staged?: boolean;
 }) {
-  const mainSrc =
-    safeStorefrontUrl(product.assetUrl) ?? safeStorefrontUrl(product.cutoutUrl);
-  const stagedSrc = staged ? safeStorefrontUrl(product.stagedPhotoUrl) : null;
-  const [failedSrc, setFailedSrc] = useState<string | null>(null);
-  const src = stagedSrc && stagedSrc !== failedSrc ? stagedSrc : mainSrc;
+  const stagedSrc = staged ? safeStorefrontUrl(product.stagedPhotoUrl) : undefined;
+  const [loadedSrc, setLoadedSrc] = useState<string>();
+  const [failedSources, setFailedSources] = useState<string[]>([]);
+  const src = [
+    stagedSrc,
+    safeStorefrontUrl(product.assetUrl),
+    safeStorefrontUrl(product.cutoutUrl),
+  ].find((url) => url && !failedSources.includes(url));
+  function fail() {
+    if (src) {
+      setFailedSources((urls) => (urls.includes(src) ? urls : [...urls, src]));
+    }
+  }
+  function readImageState(image: HTMLImageElement | null) {
+    // A cached image may have finished before React attaches the load handler.
+    if (!image?.complete || loadedSrc === src) return;
+    if (image.naturalWidth > 0) setLoadedSrc(src);
+    else fail();
+  }
+
   return (
-    <div className={`store-product-image ${className}`}>
-      {(!src || failedSrc === src) && (
-        <span className="store-image-placeholder">
-          <ImageIcon size={30} aria-hidden="true" />
-          <span>Photo à venir</span>
-        </span>
+    <span className={`store-product-image ${className}`}>
+      {src && loadedSrc !== src && (
+        <span className="store-image-skeleton" aria-hidden="true" />
       )}
-      {src && failedSrc !== src && (
+      {src ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img
+          key={src}
+          ref={readImageState}
           src={src}
           alt={src === stagedSrc ? `${product.name} en mise en scène` : product.name}
           loading={eager ? "eager" : "lazy"}
           width={800}
           height={800}
           fetchPriority={eager ? "high" : undefined}
-          onError={() => setFailedSrc(src)}
+          onLoad={() => setLoadedSrc(src)}
+          onError={fail}
         />
+      ) : (
+        <span className="store-image-placeholder">
+          <ImageIcon size={30} aria-hidden="true" />
+          <span>Photo à venir</span>
+        </span>
       )}
-    </div>
+    </span>
   );
 }
 
@@ -157,6 +177,7 @@ export function StorefrontCatalog({
   const [sort, setSort] = useState("selection");
   const [selected, setSelected] = useState<StorefrontProduct | null>(null);
   const [notice, setNotice] = useState("");
+  const [heroImageSettled, setHeroImageSettled] = useState(false);
   const products = useMemo(() => catalog?.products ?? [], [catalog]);
   const categories = [...new Set(products.map((p) => p.objectType))];
   const collections = [...new Set(products.map((p) => p.collection?.trim()).filter(Boolean))]
@@ -218,30 +239,28 @@ export function StorefrontCatalog({
           </h1>
           <p className="store-hero-aside">ou de se l’offrir</p>
           <p className="store-hero-description">
-            Objets d’art, artisanat et design. La sélection ByLiliDeco, à
-            découvrir ici et à imaginer chez vous.
+            Céramiques, objets de décoration et coffrets cadeaux. Découvrez la
+            sélection ByLiliDeco en Tunisie.
           </p>
           <a className="store-button" href="#collection">
             Explorer la collection <ArrowDown size={17} />
           </a>
-          <div className="store-hero-note">
-            <ScanLine size={21} />
-            <span>
-              Un coup de cœur ?<br />
-              <strong>Visualisez chez vous les articles compatibles.</strong>
-            </span>
-          </div>
         </div>
         <figure className="store-hero-visual m-0">
+          {!heroImageSettled && (
+            <span className="store-image-skeleton" aria-hidden="true" />
+          )}
           <Image
-            src="/brand/visualiser-chez-vous.png"
-            alt="Illustration de la visualisation chez soi : un téléphone montre un vase ajouté dans un salon lumineux."
-            width={1254}
-            height={1254}
-            sizes="(max-width: 760px) 100vw, 50vw"
+            src={storeIdentity.heroImage.url}
+            alt={storeIdentity.heroImage.alt}
+            width={storeIdentity.heroImage.width}
+            height={storeIdentity.heroImage.height}
+            sizes="(max-width: 760px) calc(100vw - 36px), (max-width: 1320px) 46vw, 600px"
             loading="eager"
             fetchPriority="high"
-            className="block h-auto w-full rounded-[inherit]"
+            className="relative block h-auto w-full"
+            onLoad={() => setHeroImageSettled(true)}
+            onError={() => setHeroImageSettled(true)}
           />
         </figure>
       </section>
@@ -249,7 +268,7 @@ export function StorefrontCatalog({
         <div className="store-shell">
           <span>Art & artisanat</span>
           <span>Objets & décoration</span>
-          <span>Votre sélection, chez vous</span>
+          <span>Coffrets & cadeaux</span>
         </div>
       </div>
       <section
@@ -373,8 +392,12 @@ export function StorefrontCatalog({
             {visible.map((product) => (
               <article className="store-product-card" key={product.id}>
                 <button
+                  type="button"
                   className="store-product-photo-button"
-                  onClick={() => setSelected(product)}
+                  onClick={(event) => {
+                    event.currentTarget.focus({ preventScroll: true });
+                    setSelected(product);
+                  }}
                   aria-label={`Découvrir ${product.name}`}
                 >
                   <ProductImage product={product} />
@@ -408,30 +431,30 @@ export function StorefrontCatalog({
                       <Plus size={17} />
                       Panier
                     </button>
-                    {catalog.visualization.available &&
-                    product.visualizationAvailable &&
-                    product.stock !== 0 ? (
-                      <VisualizationLink
-                        className="store-visual-link"
-                        productIds={[product.id]}
-                      >
-                        <ScanLine size={16} />
-                        Visualiser
-                      </VisualizationLink>
-                    ) : (
-                      <span className="store-unavailable-action">
-                        <button
+                    {catalog.visualization.available && (
+                      product.visualizationAvailable && product.stock !== 0 ? (
+                        <VisualizationLink
                           className="store-visual-link"
-                          disabled
-                          aria-describedby={`unavailable-${product.id}`}
+                          productIds={[product.id]}
                         >
                           <ScanLine size={16} />
                           Visualiser
-                        </button>
-                        <small id={`unavailable-${product.id}`}>
-                          Indisponible actuellement
-                        </small>
-                      </span>
+                        </VisualizationLink>
+                      ) : (
+                        <span className="store-unavailable-action">
+                          <button
+                            className="store-visual-link"
+                            disabled
+                            aria-describedby={`unavailable-${product.id}`}
+                          >
+                            <ScanLine size={16} />
+                            Visualiser
+                          </button>
+                          <small id={`unavailable-${product.id}`}>
+                            Indisponible actuellement
+                          </small>
+                        </span>
+                      )
                     )}
                   </div>
                 </div>
@@ -447,10 +470,10 @@ export function StorefrontCatalog({
       >
         <div className="store-signature">
           <Image
-            src="/brand/lilideco-signature.png"
-            width={1280}
-            height={1280}
-            sizes="(max-width: 760px) 260px, 33vw"
+            src="/brand/lilideco-signature-transparent.png"
+            width={1000}
+            height={1000}
+            sizes="(max-width: 760px) 260px, 400px"
             alt="Passions et envies… by Lili"
           />
         </div>
@@ -478,23 +501,25 @@ export function StorefrontCatalog({
           </a>
         </div>
       </section>
-      <section className="store-shell store-inspiration">
-        <div>
-          <p className="store-kicker">FAITES-LEUR UNE PLACE</p>
-          <h2>Une place chez vous.</h2>
-        </div>
-        <div>
-          <p>
-            Retrouvez vos coups de cœur dans le panier. Pour visualiser les
-            articles compatibles ensemble, sélectionnez jusqu’à trois articles,
-            puis prenez une photo de votre intérieur et indiquez où les placer.
-            Découvrez une proposition visuelle à échelle approximative.
-          </p>
-          <Link href="/panier" className="store-text-link">
-            Composer mon intérieur <ArrowRight size={19} />
-          </Link>
-        </div>
-      </section>
+      {catalog?.visualization.available && (
+        <section className="store-shell store-inspiration">
+          <div>
+            <p className="store-kicker">FAITES-LEUR UNE PLACE</p>
+            <h2>Une place chez vous.</h2>
+          </div>
+          <div>
+            <p>
+              Retrouvez vos coups de cœur dans le panier. Pour visualiser les
+              articles compatibles ensemble, sélectionnez jusqu’à trois articles,
+              puis prenez une photo de votre intérieur et indiquez où les placer.
+              Découvrez une proposition visuelle à échelle approximative.
+            </p>
+            <Link href="/panier" className="store-text-link">
+              Composer mon intérieur <ArrowRight size={19} />
+            </Link>
+          </div>
+        </section>
+      )}
       <div
         className={`store-toast ${notice ? "visible" : ""}`}
         role="status"
@@ -540,33 +565,35 @@ function ProductDialog({
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
-    dialog.current?.showModal();
+    if (dialog.current && !dialog.current.open) dialog.current.showModal();
   }, []);
   const buyUrl = safeStorefrontUrl(product.buyUrl);
   return (
     <dialog
       ref={dialog}
       className="store-dialog"
-      onCancel={onClose}
+      onClose={onClose}
       onClick={(event) => {
-        if (event.target === event.currentTarget) onClose();
+        if (event.target === event.currentTarget) event.currentTarget.close();
       }}
       aria-labelledby="store-detail-title"
     >
-      <div className="store-dialog-content">
+      <div className="store-dialog-toolbar">
         <button
+          type="button"
           className="store-dialog-close"
-          onClick={onClose}
+          onClick={() => dialog.current?.close()}
           aria-label="Fermer les détails"
         >
-          <X size={23} />
+          <X size={22} aria-hidden="true" />
         </button>
-        <ProductGallery product={product} showStagedFirst />
+      </div>
+      <div className="store-dialog-content">
+        <div className="store-dialog-media">
+          <ProductGallery product={product} eager showStagedFirst />
+        </div>
         <div className="store-detail-copy">
           <h2 id="store-detail-title">{product.name}</h2>
-          <Link className="store-text-link" href={productPath(product.id)}>
-            Ouvrir la fiche produit <ArrowRight size={16} aria-hidden="true" />
-          </Link>
           <p className="store-detail-price">{productPrice(product)}</p>
           <dl className="store-specs">
             <div>
@@ -591,29 +618,35 @@ function ProductDialog({
             </div>
           </dl>
           <button
+            type="button"
             className="store-button"
-            onClick={onAdd}
+            onClick={() => {
+              onAdd();
+              dialog.current?.close();
+            }}
             disabled={product.stock !== null && product.stock <= 0}
           >
-            <Plus size={18} />
+            <Plus size={18} aria-hidden="true" />
             Ajouter au panier
           </button>
-          {available &&
-          product.visualizationAvailable &&
-          product.stock !== 0 ? (
-            <VisualizationLink
-              className="store-button secondary"
-              productIds={[product.id]}
-            >
-              <ScanLine size={18} />
-              Visualiser chez moi
-            </VisualizationLink>
-          ) : (
-            <p className="store-muted">
-              La visualisation n’est pas disponible pour cet article
-              actuellement.
-            </p>
+          {available && (
+            product.visualizationAvailable && product.stock !== 0 ? (
+              <VisualizationLink
+                className="store-button secondary"
+                productIds={[product.id]}
+              >
+                <ScanLine size={18} aria-hidden="true" />
+                Visualiser chez moi
+              </VisualizationLink>
+            ) : (
+              <p className="store-muted">
+                La visualisation n’est pas disponible pour cet article actuellement.
+              </p>
+            )
           )}
+          <Link className="store-text-link" href={productPath(product.id)}>
+            Ouvrir la fiche produit <ArrowRight size={16} aria-hidden="true" />
+          </Link>
           {buyUrl && (
             <a
               className="store-text-link"
@@ -621,7 +654,7 @@ function ProductDialog({
               target="_blank"
               rel="noopener noreferrer"
             >
-              Consulter la fiche de la boutique <ArrowRight size={16} />
+              Voir chez la boutique partenaire <ArrowRight size={16} aria-hidden="true" />
             </a>
           )}
         </div>

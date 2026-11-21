@@ -69,6 +69,8 @@ export const serverConfig = {
     clean(process.env.MERCHANT_SIGNUP_ENABLED) === "true" ||
     (process.env.NODE_ENV !== "production" &&
       clean(process.env.MERCHANT_SIGNUP_ENABLED) !== "false"),
+  storefrontVisualizationPaused:
+    clean(process.env.STOREFRONT_VISUALIZATION_PAUSED) !== "false",
   // Internal opt-in only; anonymous storefront sessions remain excluded.
   spatialOrganizationIds: (clean(process.env.SPATIAL_ORGANIZATION_IDS) ?? "")
     .split(",")

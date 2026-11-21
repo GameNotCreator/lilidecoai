@@ -102,6 +102,17 @@ describe("explicit MyArchitectAI image selection", () => {
     expect(storefrontVisualization().available).toBe(true);
   }, 15_000);
 
+  it("pauses the public workflow by default even with an available provider", async () => {
+    vi.stubEnv("STOREFRONT_VISUALIZATION_PAUSED", undefined);
+    vi.stubEnv("OPENAI_API_KEY", "image-test-key");
+    vi.stubEnv("OPENAI_IMAGE_ENABLED", "true");
+    const { storefrontVisualization } = await import("../lib/server/storefront");
+    expect(storefrontVisualization()).toEqual({
+      available: false,
+      reason: "La visualisation est en pause.",
+    });
+  }, 15_000);
+
   it("fences jobs when the chosen image service or its allowance changes", async () => {
     vi.stubEnv("SIMPLE_POINT_IMAGE_PROVIDER", "myarchitectai");
     vi.stubEnv("MYARCHITECTAI_API_KEY", "test-key");

@@ -59,6 +59,9 @@ export function storefrontProductResponse(product: ProductDocument) {
 }
 
 export function storefrontVisualization() {
+  if (serverConfig.storefrontVisualizationPaused) {
+    return { available: false, reason: "La visualisation est en pause." };
+  }
   const available =
     process.env.STOREFRONT_VISUALIZATION_ENABLED !== "false" &&
     (serverConfig.aiMockMode

@@ -31,11 +31,10 @@ export function StorefrontBasket() {
   const cart = useStorefrontCart();
   const count = cartQuantity(cart.lines);
   const products = catalog?.products ?? [];
-  const problem = visualizationProblem(
-    cart.lines,
-    products,
-    catalog?.visualization.available ?? false,
-  );
+  const visualizationAvailable = catalog?.visualization.available ?? false;
+  const problem = visualizationAvailable
+    ? visualizationProblem(cart.lines, products, visualizationAvailable)
+    : null;
   const currencies = new Set(
     cart.lines
       .map((row) => products.find((p) => p.id === row.productId)?.currency)
@@ -64,7 +63,7 @@ export function StorefrontBasket() {
           <h1>Les pièces qui vous plaisent.</h1>
           <p>
             {count
-              ? `${count} article${count > 1 ? "s" : ""} dans votre panier. Imaginez-les ensemble, chez vous.`
+              ? `${count} article${count > 1 ? "s" : ""} dans votre panier.`
               : "Gardez vos coups de cœur à portée de main."}
           </p>
         </div>
@@ -159,12 +158,13 @@ export function StorefrontBasket() {
               })}
             </div>
             <aside className="store-basket-summary">
-              <p className="store-kicker">BIEN ENSEMBLE, MIEUX CHEZ VOUS</p>
-              <h2>Imaginez le résultat.</h2>
-              <p>
-                Une photo de votre pièce, jusqu’à trois articles, et de
-                nouvelles idées pour votre intérieur.
-              </p>
+              <h2>{visualizationAvailable ? "Imaginez le résultat." : "Récapitulatif"}</h2>
+              {visualizationAvailable && (
+                <p>
+                  Une photo de votre pièce, jusqu’à trois articles, et de
+                  nouvelles idées pour votre intérieur.
+                </p>
+              )}
               <div className="store-total">
                 <span>Total des articles</span>
                 <strong>
@@ -187,26 +187,31 @@ export function StorefrontBasket() {
                   pas additionnés.
                 </p>
               )}
-              {problem ? (
-                <>
-                  <button className="store-button" disabled>
+              {visualizationAvailable && (
+                problem ? (
+                  <>
+                    <button className="store-button" disabled>
+                      <ScanLine size={18} />
+                      Visualiser chez moi
+                    </button>
+                    <p className="store-help" role="status">
+                      {problem}
+                    </p>
+                  </>
+                ) : (
+                  <VisualizationLink
+                    productIds={cartProductIds(cart.lines)}
+                    className="store-button"
+                  >
                     <ScanLine size={18} />
                     Visualiser chez moi
-                  </button>
-                  <p className="store-help" role="status">
-                    {problem}
-                  </p>
-                </>
-              ) : (
-                <VisualizationLink
-                  productIds={cartProductIds(cart.lines)}
-                  className="store-button"
-                >
-                  <ScanLine size={18} />
-                  Visualiser chez moi
-                </VisualizationLink>
+                  </VisualizationLink>
+                )
               )}
-              <Link href="/checkout" className="store-button secondary">
+              <Link
+                href="/checkout"
+                className={visualizationAvailable ? "store-button secondary" : "store-button"}
+              >
                 Demander une commande <ArrowRight size={18} aria-hidden="true" />
               </Link>
               <p className="store-small-note">

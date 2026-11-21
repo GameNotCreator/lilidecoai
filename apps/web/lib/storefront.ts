@@ -32,6 +32,7 @@ export const storefrontProductSchema = productSchema
   .extend({
     visualizationAvailable: z.boolean(),
     stagedPhotoUrl: z.string().nullable().optional(),
+    updatedAt: z.string().datetime().optional(),
   });
 export type StorefrontProduct = z.infer<typeof storefrontProductSchema>;
 export const storefrontCatalogSchema = z.object({

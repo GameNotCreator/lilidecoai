@@ -10,6 +10,49 @@ test.beforeAll(async ({ request }) => {
   expect(seeded.ok(), await seeded.text()).toBe(true);
 });
 
+test("product images reserve space while loading and the preview opens centered", async ({
+  page,
+  request,
+}) => {
+  const catalog = await (await request.get("/api/storefront/products")).json();
+  const { assetUrl } = catalog.products.find((product: { id: string }) => product.id === productId);
+  let release = () => {};
+  const download = new Promise<void>((resolve) => { release = resolve; });
+  await page.route(assetUrl, async (route) => {
+    await download;
+    await route.continue();
+  });
+
+  const open = page.getByRole("button", { name: "Découvrir Vase Sable" });
+  const image = open.getByRole("img", { name: "Vase Sable" });
+  const skeleton = open.locator(".store-image-skeleton");
+  try {
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await open.scrollIntoViewIfNeeded();
+    await expect(skeleton).toBeVisible();
+    expect((await skeleton.boundingBox())?.height).toBeGreaterThan(0);
+  } finally {
+    release();
+  }
+  await expect(skeleton).toHaveCount(0);
+  await expect.poll(() => image.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
+
+  await open.click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  await expect.poll(() => dialog.evaluate((node) => {
+    const { x, y, width, height } = node.getBoundingClientRect();
+    return Math.max(
+      Math.abs(x + width / 2 - window.innerWidth / 2),
+      Math.abs(y + height / 2 - window.innerHeight / 2),
+    );
+  })).toBeLessThan(2);
+  await expect(dialog.getByRole("button", { name: "Fermer les détails" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(open).toBeFocused();
+});
+
 test("the saved shop order aligns cards and shows the staged product photo", async ({
   page,
 }) => {
@@ -162,6 +205,7 @@ test("catalogue and product pages remain readable with JavaScript disabled", asy
   await page.getByRole("searchbox").press("Enter");
   await expect(page).toHaveURL(/\?q=Vase\+Sable/);
   await expect(page.locator(".store-product-card")).toHaveCount(1);
+  await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", "noindex, follow");
   await page.getByRole("link", { name: "Vase Sable", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "Vase Sable", exact: true }),
@@ -172,6 +216,10 @@ test("catalogue and product pages remain readable with JavaScript disabled", asy
   );
   const markup = await page.content();
   expect(markup).toContain("application/ld+json");
+  const sitemap = await (await request.get("/sitemap.xml")).text();
+  expect(sitemap).toContain(`/produits/${productId}</loc>`);
+  expect(sitemap).toMatch(/<lastmod>\d{4}-\d{2}-\d{2}/);
+  expect(sitemap).toMatch(/<image:loc>https?:\/\/[^<]+\/api\/assets\//);
   expect(
     (
       await request.get("/produits/00000000-0000-4000-8000-000000000999")

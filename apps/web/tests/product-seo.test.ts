@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { productStructuredData } from "../lib/product-seo";
+import {
+  productSeoDescription,
+  productSeoImages,
+  productStructuredData,
+} from "../lib/product-seo";
 import { jsonLd } from "../lib/site";
 import { storefrontProductSchema } from "../lib/storefront";
 
@@ -37,5 +41,45 @@ describe("public product SEO", () => {
         "https://example.com",
       ).image,
     ).toBeUndefined();
+  });
+  it("uses the catalogue image first and deduplicates public image URLs", () => {
+    const withPhotos = {
+      ...product,
+      assetUrl: "/api/assets/primary",
+      cutoutUrl: "/api/assets/cutout",
+      stagedPhotoUrl: "/api/assets/staged",
+    };
+    expect(
+      productStructuredData(withPhotos, "https://example.com").image,
+    ).toEqual([
+      "https://example.com/api/assets/primary",
+      "https://example.com/api/assets/staged",
+    ]);
+    expect(
+      productSeoImages(
+        {
+          ...withPhotos,
+          assetUrl: null,
+          stagedPhotoUrl: "https://example.com/api/assets/cutout",
+        },
+        "https://example.com",
+      ),
+    ).toEqual(["https://example.com/api/assets/cutout"]);
+  });
+  it("describes a product from its catalogue data when its description is empty", () => {
+    const synopsis = productSeoDescription({
+      ...product,
+      name: "Cache-pot Graphik",
+      description: " ",
+      collection: "Noun",
+    });
+    expect(synopsis).toContain("Cache-pot Graphik, Céramique, Noun");
+    const long = productSeoDescription({
+      ...product,
+      description: "Pièce en céramique.\n".repeat(20),
+    });
+    expect(long.length).toBeLessThanOrEqual(160);
+    expect(long).not.toContain("\n");
+    expect(long.endsWith("…")).toBe(true);
   });
 });

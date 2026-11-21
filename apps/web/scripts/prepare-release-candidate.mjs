@@ -24,13 +24,16 @@ const EXCLUDED_DIRS = new Set([".git", ".vercel", ".next", ".venv", "node_module
   "tests", "test", "__tests__", "__scratch", "coverage", "dist", "build", "services", "testpratiques",
   "artifacts", "corpus", "photos", "models", "fixtures"]);
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".css", ".svg"]);
-// Exact user-supplied public brand assets only. Room photos and arbitrary binaries
+// Exact reviewed public brand assets only. Room photos and arbitrary binaries
 // remain excluded, including any replacement hidden behind one of these names.
 const PUBLIC_BRAND_ASSETS = new Map([
   ["apps/web/public/brand/visualiser-chez-vous.png", "ac9a900306c6fef28415ea040b7de010eb89aa11e1dce5bbd421f59be80963a8"],
   ["apps/web/public/brand/lilideco-logo.png", "6db512337680869b37f381537abb523d05523a10ba379cc53d0dee07c5f5e2ec"],
   ["apps/web/public/brand/lilideco-monogram.png", "e5e1ab5684f8ff2b3e0870154728e5d90e32b6f035d10d78e6668ae7ee308130"],
   ["apps/web/public/brand/lilideco-signature.png", "18d5be22e4d0bef1e56b2c69900a0ad20b13fcda3ba3fa82fe2da7d3947d3204"],
+  ["apps/web/public/brand/coffret-cadeau-ceramique.jpg", "498e7692b4adfa3bfe4177c640051164a80390f282eaa6f8f894e5538d06870e"],
+  ["apps/web/public/brand/lilideco-monogram-transparent.png", "65527227d1a50817ebe74efdd036686ef3637cc454533bfe10adeb4a8b236401"],
+  ["apps/web/public/brand/lilideco-signature-transparent.png", "dec7aa645aee2e6d19e1d631601a858c54bbc0ab832466752ef2cf71f0e315bc"],
 ]);
 const BUILD_OUTPUTS = ["**/node_modules/**", "apps/web/.next/**", "apps/web/*.tsbuildinfo", "packages/*/*.tsbuildinfo"];
 const MAX_FILE_BYTES = 8 * 1024 * 1024;

@@ -20,7 +20,7 @@ export const metadata: Metadata = {
     ? { robots: { index: false, follow: false } }
     : {}),
   title: {
-    default: "ByLiliDeco — Art, artisanat & décoration",
+    default: storeIdentity.title,
     template: "%s — ByLiliDeco",
   },
   description: storeIdentity.description,
@@ -32,7 +32,7 @@ export const metadata: Metadata = {
     type: "website",
     locale: "fr_TN",
     siteName: storeIdentity.name,
-    title: storeIdentity.name,
+    title: storeIdentity.title,
     description: storeIdentity.description,
     images: [
       {
@@ -55,7 +55,7 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="fr" data-theme="lilideco" data-scroll-behavior="smooth">
+    <html lang="fr-TN" data-theme="lilideco" data-scroll-behavior="smooth">
       <body className={sans.variable}>
         <a className="store-skip-link" href="#page-content">
           Aller au contenu

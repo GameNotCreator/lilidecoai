@@ -3,9 +3,13 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { z } from "zod";
 import { ArrowLeft, ArrowUpRight } from "lucide-react";
-import { readStorefrontPage } from "@/lib/server/storefront-page";
-import { jsonLd, productPath, siteOrigin } from "@/lib/site";
-import { productStructuredData } from "@/lib/product-seo";
+import { readStorefrontProductPage } from "@/lib/server/storefront-page";
+import { jsonLd, productPath, siteOrigin, storeIdentity } from "@/lib/site";
+import {
+  productSeoDescription,
+  productSeoImages,
+  productStructuredData,
+} from "@/lib/product-seo";
 import {
   productDimensions,
   productPrice,
@@ -19,44 +23,48 @@ type Props = { params: Promise<{ id: string }> };
 async function getProduct(params: Props["params"]) {
   const { id } = await params;
   if (!z.string().uuid().safeParse(id).success) notFound();
-  const catalog = await readStorefrontPage();
-  const product = catalog.products.find((item) => item.id === id);
-  if (!product) notFound();
-  return { product, available: catalog.visualization.available };
+  const page = await readStorefrontProductPage(id);
+  if (!page) notFound();
+  return page;
 }
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { product } = await getProduct(params);
-  const description =
-    product.description ||
-    `${product.name} — ${productDimensions(product)}. Découvrez cette pièce de la sélection ByLiliDeco.`;
-  const image = safeStorefrontUrl(product.assetUrl);
+  const description = productSeoDescription(product);
+  const images = productSeoImages(product, siteOrigin()).map((url) => ({
+    url,
+    alt: product.name,
+  }));
   return {
     title: product.name,
     description,
     alternates: { canonical: productPath(product.id) },
     openGraph: {
+      type: "website",
+      locale: "fr_TN",
+      siteName: storeIdentity.name,
       title: product.name,
       description,
       url: productPath(product.id),
-      ...(image ? { images: [{ url: image, alt: product.name }] } : {}),
+      images,
     },
     twitter: {
-      card: image ? "summary_large_image" : "summary",
+      card: images.length ? "summary_large_image" : "summary",
       title: product.name,
       description,
-      ...(image ? { images: [image] } : {}),
+      images,
     },
   };
 }
 export default async function ProductPage({ params }: Props) {
   const { product, available } = await getProduct(params);
   const buyUrl = safeStorefrontUrl(product.buyUrl);
+  const origin = siteOrigin();
   return (
     <main className="storefront store-product-page">
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{
-          __html: jsonLd(productStructuredData(product, siteOrigin())),
+          __html: jsonLd(productStructuredData(product, origin)),
         }}
       />
       <div className="store-shell">

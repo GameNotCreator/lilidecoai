@@ -9,8 +9,15 @@ export function siteOrigin() {
 }
 export const storeIdentity = {
   name: "ByLiliDeco",
+  title: "ByLiliDeco — Décoration, artisanat et cadeaux en Tunisie",
   description:
-    "Art, artisanat et design : découvrez la sélection ByLiliDeco et imaginez les objets de la boutique dans votre intérieur.",
+    "Découvrez ByLiliDeco, boutique de décoration et d’artisanat en Tunisie. Parcourez la collection de céramiques, d’objets décoratifs et de coffrets cadeaux.",
+  heroImage: {
+    url: "/brand/coffret-cadeau-ceramique.jpg",
+    width: 1254,
+    height: 1254,
+    alt: "Coffret cadeau noir, vase et coupelle en céramique sur une console en pierre claire",
+  },
   telephone: "+21622300600",
   instagram: "https://www.instagram.com/bylilideco/",
   facebook: "https://www.facebook.com/892214837523390",

@@ -67,7 +67,7 @@ export function StorefrontFooter() {
             aria-label="ByLiliDeco, accueil"
           >
             <Image
-              src="/brand/lilideco-monogram.png"
+              src="/brand/lilideco-monogram-transparent.png"
               width={72}
               height={72}
               alt="By L"

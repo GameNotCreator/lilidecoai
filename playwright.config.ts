@@ -18,7 +18,8 @@ export default defineConfig({
     { name: "mobile", use: { ...devices["iPhone 14"] } },
   ],
   webServer: {
-    command: "node node_modules/next/dist/bin/next dev apps/web --webpack --port 3100",
+    command:
+      "node node_modules/next/dist/bin/next dev apps/web --webpack --port 3100",
     url: "http://127.0.0.1:3100/v1/health",
     reuseExistingServer: false,
     timeout: 120_000,
@@ -42,6 +43,8 @@ export default defineConfig({
       GEMINI_API_KEY: "",
       OPENAI_API_KEY: "",
       OPENAI_IMAGE_ENABLED: "false",
+      STOREFRONT_VISUALIZATION_PAUSED:
+        process.env.E2E_STOREFRONT_VISUALIZATION_PAUSED ?? "false",
       STOREFRONT_ORDERS_ENABLED: "true",
       RESEND_API_KEY: "e2e-invalid-key-never-send",
       RESEND_FROM_EMAIL: "ByLiliDeco <shop@example.test>",
