@@ -11,7 +11,12 @@ import {
   computeStorefrontReferenceScale,
   type StorefrontCatalog,
 } from "../storefront";
-import { resolveStorefrontCategory } from "../storefront-categories";
+import {
+  defaultStorefrontCategories,
+  resolveStorefrontCategory,
+  storefrontCategories,
+  storefrontCategoryLabel,
+} from "../storefront-categories";
 import { AuthError, type Tenant } from "./auth";
 import { ApiInputError, assetUrl, readAsset } from "./assets";
 import { serverConfig } from "./config";
@@ -39,7 +44,11 @@ export function storefrontProductFilter(organizationId: string) {
   };
 }
 
-export function storefrontProductResponse(product: ProductDocument) {
+export function storefrontProductResponse(
+  product: ProductDocument,
+  categories = defaultStorefrontCategories,
+) {
+  const category = resolveStorefrontCategory(product);
   const validDimensions =
     product.widthCm > 0 &&
     product.heightCm > 0 &&
@@ -47,7 +56,8 @@ export function storefrontProductResponse(product: ProductDocument) {
   return storefrontProductSchema.parse({
     ...productResponse(product),
     stagedPhotoUrl: assetUrl(product.stagedAssetId),
-    storefrontCategory: resolveStorefrontCategory(product),
+    storefrontCategory: category,
+    storefrontCategoryLabel: storefrontCategoryLabel(category, categories),
     visualizationAvailable: Boolean(
       product.cutoutAssetId &&
       cutoutTrust(product.cutout).trusted &&
@@ -86,9 +96,13 @@ export async function getStorefrontCatalog(db: Db): Promise<StorefrontCatalog> {
   const products = organization
     ? await listStorefrontProducts(db, organization)
     : [];
+  const categories = storefrontCategories(organization?.storefrontCategories);
   return {
     store: { name: "LiliDeco" },
-    products: products.map(storefrontProductResponse),
+    categories,
+    products: products.map((product) =>
+      storefrontProductResponse(product, categories),
+    ),
     visualization: storefrontVisualization(),
   };
 }

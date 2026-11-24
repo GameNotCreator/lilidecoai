@@ -84,6 +84,8 @@ function matches(row: Row, filter: Row): boolean {
     if (key === "$and")
       return (expected as Row[]).every((part) => matches(row, part));
     const actual = value(row, key);
+    if (expected instanceof RegExp)
+      return typeof actual === "string" && expected.test(actual);
     if (expected instanceof Date)
       return actual instanceof Date && actual.getTime() === expected.getTime();
     if (expected && typeof expected === "object" && !Array.isArray(expected)) {

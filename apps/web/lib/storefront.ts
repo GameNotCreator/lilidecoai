@@ -5,7 +5,12 @@ import {
 } from "@lili/types";
 import type { SimpleDimensionPair, SimplePlacementKind } from "@lili/geometry";
 import { z } from "zod";
-import { storefrontCategorySchema } from "./storefront-categories";
+import {
+  defaultStorefrontCategories,
+  storefrontCategoryLabelSchema,
+  storefrontCategoryOptionSchema,
+  storefrontCategorySchema,
+} from "./storefront-categories";
 
 export const storefrontProductSchema = productSchema
   .pick({
@@ -35,10 +40,14 @@ export const storefrontProductSchema = productSchema
     stagedPhotoUrl: z.string().nullable().optional(),
     updatedAt: z.string().datetime().optional(),
     storefrontCategory: storefrontCategorySchema.optional(),
+    storefrontCategoryLabel: storefrontCategoryLabelSchema.optional(),
   });
 export type StorefrontProduct = z.infer<typeof storefrontProductSchema>;
 export const storefrontCatalogSchema = z.object({
   store: z.object({ name: z.string() }),
+  categories: z
+    .array(storefrontCategoryOptionSchema)
+    .default(defaultStorefrontCategories),
   products: z.array(storefrontProductSchema),
   visualization: z.object({
     available: z.boolean(),

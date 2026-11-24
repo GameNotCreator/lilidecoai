@@ -37,8 +37,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   products = mongoStore();
   assets = mongoStore();
+  const organizations = mongoStore();
+  organizations.rows.push({ id: "org-1" });
   bytes = new Map([["source-1", Buffer.from("original photo")]]);
-  mocks.collections.mockReturnValue({ products, assets });
+  mocks.collections.mockReturnValue({ products, assets, organizations });
   const product: ProductDocument = {
     id: "product-1", organizationId: "org-1", createdByUserId: DEMO_CATALOG_USER_ID,
     name: "Vase", description: "", sku: null, objectType: "vase",

@@ -1,6 +1,7 @@
 import {
   adminProductPatchSchema,
   adminProductResponse,
+  assertStorefrontCategory,
   deleteProduct,
   findProduct,
   setProductStatus,
@@ -31,6 +32,7 @@ export async function PATCH(
   const { id } = await context.params;
   return withAdmin(request, async ({ db, organization }) => {
     const patch = adminProductPatchSchema.parse(await jsonBody(request));
+    assertStorefrontCategory(organization, patch.storefrontCategory);
     const product = await findProduct(db, organization.id, id);
     return Response.json(
       adminProductResponse(await updateProduct(db, product, patch)),

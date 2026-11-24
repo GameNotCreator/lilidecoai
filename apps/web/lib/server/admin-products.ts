@@ -1,6 +1,12 @@
 import "server-only";
 import { retirePreparedProduct } from "./prepared-view-retention";
 import { currentPlanarTexture } from "../planar-texture";
+import {
+  storefrontCategories,
+  storefrontCategoryId,
+  storefrontCategoryLabel,
+  storefrontCategoryOptionSchema,
+} from "../storefront-categories";
 import { spatialPreparationForCatalog } from "./spatial-policy";
 import { productPreparationStatus } from "./product-preparation";
 
@@ -46,6 +52,52 @@ export class AdminProductError extends Error {
   ) {
     super(message);
   }
+}
+
+export function assertStorefrontCategory(
+  organization: OrganizationDocument,
+  category: string | null | undefined,
+) {
+  if (
+    category &&
+    !storefrontCategoryLabel(category, storefrontCategories(organization.storefrontCategories))
+  ) {
+    throw new AdminProductError(
+      "Cette catégorie n’existe pas dans le catalogue.",
+    );
+  }
+}
+
+export async function addStorefrontCategory(
+  db: Db,
+  organization: OrganizationDocument,
+  label: string,
+) {
+  const parsed = storefrontCategoryOptionSchema.safeParse({
+    id: storefrontCategoryId(label),
+    label,
+  });
+  if (!parsed.success) {
+    throw new AdminProductError(
+      "Indiquez un nom de catégorie avec des lettres ou des chiffres.",
+    );
+  }
+  const category = parsed.data;
+  const conflict = "Une catégorie porte déjà ce nom.";
+  const categories = storefrontCategories(organization.storefrontCategories);
+  if (storefrontCategoryLabel(category.id, categories)) {
+    throw new AdminProductError(conflict, 409);
+  }
+  const updated = await collections(db).organizations.findOneAndUpdate(
+    { id: organization.id, "storefrontCategories.id": { $ne: category.id } },
+    { $push: { storefrontCategories: category } },
+    { returnDocument: "after" },
+  );
+  if (!updated) throw new AdminProductError(conflict, 409);
+  return {
+    category,
+    categories: storefrontCategories(updated.storefrontCategories),
+  };
 }
 
 /**
@@ -137,7 +189,7 @@ export async function createProduct(
     name: input.name,
     description: input.description,
     objectType: input.objectType,
-    sku: input.sku ?? null,
+    sku: input.sku ?? (await allocateProductSku(db, organizationId, input.variants)),
     spatialMetadata: input.spatialMetadata,
     widthCm: input.widthCm,
     heightCm: input.heightCm,
@@ -167,6 +219,38 @@ export async function createProduct(
   };
   await collections(db).products.insertOne(product);
   return product;
+}
+
+async function allocateProductSku(
+  db: Db,
+  organizationId: string,
+  variants: ReadonlyArray<{ sku?: string | null }> = [],
+): Promise<string> {
+  const { organizations, products } = collections(db);
+  const draftSkus = new Set(variants.map(({ sku }) => sku?.trim().toUpperCase()));
+  // The atomic counter gives concurrent product creations distinct references.
+  for (;;) {
+    const organization = await organizations.findOneAndUpdate(
+      { id: organizationId },
+      { $inc: { storefrontSkuSequence: 1 } },
+      { returnDocument: "after", projection: { storefrontSkuSequence: 1 } },
+    );
+    const sequence = organization?.storefrontSkuSequence;
+    if (!sequence || !Number.isSafeInteger(sequence) || sequence < 1) {
+      throw new AdminProductError(
+        "La référence automatique est indisponible.",
+        503,
+      );
+    }
+    const sku = `BLD-${String(sequence).padStart(4, "0")}`;
+    if (draftSkus.has(sku)) continue;
+    const existingSku = new RegExp(`^${sku}$`, "i");
+    const existing = await products.findOne(
+      { organizationId, $or: [{ sku: existingSku }, { "variants.sku": existingSku }] },
+      { projection: { _id: 1 } },
+    );
+    if (!existing) return sku;
+  }
 }
 
 export async function updateProduct(
@@ -336,7 +420,7 @@ export async function duplicateProduct(
     ...product,
     id: crypto.randomUUID(),
     name: `${product.name} (copie)`.slice(0, 120),
-    sku: product.sku ? `${product.sku}-COPIE`.slice(0, 80) : null,
+    sku: await allocateProductSku(db, product.organizationId),
     variants: (product.variants ?? []).map((variant) => ({
       ...variant,
       id: crypto.randomUUID(),

@@ -15,6 +15,8 @@ export interface OrganizationDocument {
   slug: string;
   createdAt: Date;
   storefrontProductOrder?: { ids: string[]; revision: number };
+  storefrontCategories?: import("../storefront-categories").StorefrontCategoryOption[];
+  storefrontSkuSequence?: number;
 }
 
 export interface AssetDocument {

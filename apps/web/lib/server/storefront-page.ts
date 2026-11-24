@@ -1,5 +1,6 @@
 import "server-only";
 import { cache } from "react";
+import { storefrontCategories } from "../storefront-categories";
 import { collections, database } from "./mongodb";
 import {
   getStorefrontCatalog,
@@ -25,7 +26,10 @@ export const readStorefrontProductPage = cache(async (id: string) => {
   });
   return product
     ? {
-        product: storefrontProductResponse(product),
+        product: storefrontProductResponse(
+          product,
+          storefrontCategories(organization.storefrontCategories),
+        ),
         available: storefrontVisualization().available,
       }
     : null;

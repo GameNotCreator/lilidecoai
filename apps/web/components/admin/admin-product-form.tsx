@@ -27,7 +27,11 @@ import {
   type AdminProduct,
 } from "@/lib/admin-client";
 import { prepareImageForUpload } from "@/lib/client-image";
-import { STOREFRONT_CATEGORY_LABELS } from "@/lib/storefront-categories";
+import {
+  defaultStorefrontCategories,
+  storefrontCategories,
+  type StorefrontCategoryOption,
+} from "@/lib/storefront-categories";
 import { PlanarTextureEditor } from "./planar-texture-editor";
 import { PreparedViewsPanel } from "./prepared-views-panel";
 
@@ -130,7 +134,13 @@ const viewOrder = [
   "staged",
 ] as const;
 
-export function AdminProductForm({ productId }: { productId?: string }) {
+export function AdminProductForm({
+  productId,
+  tagSuggestionsAvailable,
+}: {
+  productId?: string;
+  tagSuggestionsAvailable: boolean;
+}) {
   const router = useRouter();
   const editing = Boolean(productId);
   const [form, setForm] = useState<FormState>(emptyForm);
@@ -141,7 +151,33 @@ export function AdminProductForm({ productId }: { productId?: string }) {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [categories, setCategories] = useState(defaultStorefrontCategories);
+  const [creatingCategory, setCreatingCategory] = useState(false);
+  const [newCategory, setNewCategory] = useState("");
+  const [tagSuggestions, setTagSuggestions] = useState<{
+    description: string;
+    tags: string[];
+  }>();
   const mutationInFlight = useRef(false);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void adminApi<{ categories: StorefrontCategoryOption[] }>(
+      "/products/categories",
+      { signal: controller.signal },
+    )
+      .then(({ categories: stored }) => {
+        if (!controller.signal.aborted) {
+          setCategories((current) => storefrontCategories([...current, ...stored]));
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setError("Les catégories enregistrées n’ont pas pu être chargées.");
+        }
+      });
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     if (!productId) return;
@@ -194,6 +230,34 @@ export function AdminProductForm({ productId }: { productId?: string }) {
       mutationInFlight.current = false;
       setBusy("");
     }
+  }
+
+  async function addCategory() {
+    await run("category", async () => {
+      const result = await adminApi<{
+        category: StorefrontCategoryOption;
+        categories: StorefrontCategoryOption[];
+      }>("/products/categories", {
+        method: "POST",
+        body: JSON.stringify({ label: newCategory.trim() }),
+      });
+      setCategories(result.categories);
+      set("storefrontCategory", result.category.id);
+      setCreatingCategory(false);
+      setNewCategory("");
+      setNotice("Catégorie ajoutée.");
+    });
+  }
+
+  async function suggestTags() {
+    const description = form.description.trim();
+    await run("tags", async () => {
+      const { tags } = await adminApi<{ tags: string[] }>("/products/suggest-tags", {
+        method: "POST",
+        body: JSON.stringify({ description }),
+      });
+      setTagSuggestions({ description, tags });
+    });
   }
 
   async function save() {
@@ -365,6 +429,14 @@ export function AdminProductForm({ productId }: { productId?: string }) {
   const unsavedChanges = Boolean(
     product && JSON.stringify(form) !== JSON.stringify(toForm(product)),
   );
+  const selectedTags = form.tags.split(",").map((tag) => tag.trim()).filter(Boolean);
+  const selectedTagKeys = new Set(
+    selectedTags.map((tag) => tag.toLocaleLowerCase("fr")),
+  );
+  const matchingSuggestions =
+    tagSuggestions?.description === form.description.trim()
+      ? tagSuggestions.tags.filter((tag) => !selectedTagKeys.has(tag.toLocaleLowerCase("fr")))
+      : null;
   const preparationLabels = {
     "missing-photo": "Photo nécessaire",
     "not-prepared": "À préparer",
@@ -441,7 +513,7 @@ export function AdminProductForm({ productId }: { productId?: string }) {
                 label="Référence / SKU"
                 value={form.sku}
                 onChange={(value) => set("sku", value)}
-                placeholder="VAS-042"
+                placeholder={editing ? "VAS-042" : "Automatique à la création"}
               />
               <TextField
                 id="brand"
@@ -467,10 +539,46 @@ export function AdminProductForm({ productId }: { productId?: string }) {
                   onChange={(event) => set("storefrontCategory", event.target.value)}
                 >
                   <option value="">Automatique</option>
-                  {Object.entries(STOREFRONT_CATEGORY_LABELS).map(([id, label]) => (
+                  {categories.map(({ id, label }) => (
                     <option key={id} value={id}>{label}</option>
                   ))}
                 </select>
+                <button
+                  className="bo-button bo-button-ghost justify-self-start"
+                  type="button"
+                  aria-expanded={creatingCategory}
+                  onClick={() => setCreatingCategory((open) => !open)}
+                  disabled={Boolean(busy)}
+                >
+                  <Plus size={15} aria-hidden="true" /> Nouvelle catégorie
+                </button>
+                {creatingCategory && (
+                  <form
+                    className="bo-field"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void addCategory();
+                    }}
+                  >
+                    <label htmlFor="new-category">Nom de la catégorie</label>
+                    <input
+                      id="new-category"
+                      maxLength={80}
+                      minLength={2}
+                      required
+                      value={newCategory}
+                      onChange={(event) => setNewCategory(event.target.value)}
+                      disabled={busy === "category"}
+                    />
+                    <button
+                      className="bo-button bo-button-secondary justify-self-start"
+                      type="submit"
+                      disabled={Boolean(busy) || newCategory.trim().length < 2}
+                    >
+                      {busy === "category" ? "Ajout…" : "Ajouter la catégorie"}
+                    </button>
+                  </form>
+                )}
               </div>
               <div className="bo-field">
                 <label htmlFor="objectType">Type d’objet *</label>
@@ -501,14 +609,6 @@ export function AdminProductForm({ productId }: { productId?: string }) {
                 </select>
               </div>
             </div>
-            <TextField
-              id="tags"
-              label="Tags"
-              value={form.tags}
-              onChange={(value) => set("tags", value)}
-              placeholder="artisanal, terracotta, salon"
-              hint="Séparés par des virgules · 12 maximum"
-            />
             <div className="bo-field">
               <label htmlFor="description">Description</label>
               <textarea
@@ -520,6 +620,46 @@ export function AdminProductForm({ productId }: { productId?: string }) {
                 placeholder="Quelques phrases sur la pièce, sa fabrication, ses finitions…"
               />
             </div>
+            <TextField
+              id="tags"
+              label="Tags"
+              value={form.tags}
+              onChange={(value) => set("tags", value)}
+              placeholder="artisanal, terracotta, salon"
+              hint="Séparés par des virgules · 12 maximum"
+            />
+            {tagSuggestionsAvailable && (
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  className="bo-button bo-button-secondary"
+                  onClick={() => void suggestTags()}
+                  disabled={Boolean(busy) || !form.description.trim() || selectedTags.length >= 12}
+                >
+                  {busy === "tags" ? (
+                    <LoaderCircle className="spin" size={15} />
+                  ) : (
+                    <Wand2 size={15} aria-hidden="true" />
+                  )}
+                  {busy === "tags" ? "Recherche de tags…" : "Proposer des tags"}
+                </button>
+                {matchingSuggestions?.map((tag) => (
+                  <button
+                    type="button"
+                    className="bo-button bo-button-ghost"
+                    key={tag}
+                    aria-label={`Ajouter le tag ${tag}`}
+                    onClick={() => set("tags", [...selectedTags, tag].join(", "))}
+                    disabled={selectedTags.length >= 12}
+                  >
+                    <Plus size={14} aria-hidden="true" /> {tag}
+                  </button>
+                ))}
+                {matchingSuggestions?.length === 0 && (
+                  <small role="status">Aucun nouveau tag à ajouter.</small>
+                )}
+              </div>
+            )}
           </section>
 
           <section className="bo-panel">
@@ -934,9 +1074,8 @@ export function AdminProductForm({ productId }: { productId?: string }) {
               <div>
                 <h2>Photos</h2>
                 <p>
-                  {editing
-                    ? "La vue de face sert à la visualisation. La photo de mise en scène apparaît dans la boutique."
-                    : "Ajoutez la vue de face ; les autres angles s’ajoutent après création."}
+                  Une photo principale suffit pour publier, sur fond blanc ou en
+                  mise en scène. Les autres angles sont facultatifs.
                 </p>
               </div>
             </div>
@@ -949,7 +1088,7 @@ export function AdminProductForm({ productId }: { productId?: string }) {
                 ) : (
                   <>
                     <ImagePlus size={30} />
-                    <strong>Choisir la photo de face</strong>
+                    <strong>Choisir la photo principale</strong>
                     <span>PNG, JPEG ou WebP · fond neutre recommandé</span>
                   </>
                 )}

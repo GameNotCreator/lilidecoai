@@ -13,14 +13,56 @@ export const STOREFRONT_CATEGORY_LABELS = {
   "autres-accessoires-deco": "Autres Accessoires Déco",
 } as const;
 
-export type StorefrontCategory = keyof typeof STOREFRONT_CATEGORY_LABELS;
+export const storefrontCategorySchema = z
+  .string()
+  .max(80)
+  .regex(/^[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)*$/u);
+export type StorefrontCategory = z.infer<typeof storefrontCategorySchema>;
 
-export const storefrontCategorySchema = z.enum(
-  Object.keys(STOREFRONT_CATEGORY_LABELS) as [
-    StorefrontCategory,
-    ...StorefrontCategory[],
-  ],
-);
+export const storefrontCategoryLabelSchema = z.string().trim().min(2).max(80);
+export const storefrontCategoryOptionSchema = z.object({
+  id: storefrontCategorySchema,
+  label: storefrontCategoryLabelSchema,
+});
+export type StorefrontCategoryOption = z.infer<
+  typeof storefrontCategoryOptionSchema
+>;
+
+export const defaultStorefrontCategories: StorefrontCategoryOption[] =
+  Object.entries(STOREFRONT_CATEGORY_LABELS).map(([id, label]) => ({
+    id,
+    label,
+  }));
+
+export function storefrontCategories(
+  stored?: readonly StorefrontCategoryOption[],
+) {
+  const categories = new Map(
+    defaultStorefrontCategories.map((category) => [category.id, category]),
+  );
+  for (const entry of Array.isArray(stored) ? stored : []) {
+    const category = storefrontCategoryOptionSchema.safeParse(entry);
+    if (category.success) categories.set(category.data.id, category.data);
+  }
+  return [...categories.values()];
+}
+
+export function storefrontCategoryId(label: string) {
+  return label
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/\p{M}/gu, "")
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    .slice(0, 80)
+    .replace(/^-|-$/g, "");
+}
+
+export function storefrontCategoryLabel(
+  id: StorefrontCategory,
+  categories = defaultStorefrontCategories,
+) {
+  return categories.find((category) => category.id === id)?.label;
+}
 
 const categoryByObjectType: Partial<Record<string, StorefrontCategory>> = {
   vase: "vases-cache-pots",

@@ -2,7 +2,7 @@ import { productPath } from "./site";
 import { safeStorefrontUrl, type StorefrontProduct } from "./storefront";
 import {
   resolveStorefrontCategory,
-  STOREFRONT_CATEGORY_LABELS,
+  storefrontCategoryLabel,
 } from "./storefront-categories";
 
 export function productSeoImages(product: StorefrontProduct, origin: string) {
@@ -56,7 +56,9 @@ export function productStructuredData(
       ? { "@type": "Brand", name: product.brand }
       : undefined,
     material: product.material || undefined,
-    category: STOREFRONT_CATEGORY_LABELS[resolveStorefrontCategory(product)],
+    category:
+      product.storefrontCategoryLabel ??
+      storefrontCategoryLabel(resolveStorefrontCategory(product)),
     width: dimension(product.widthCm),
     height: dimension(product.heightCm),
     depth: dimension(product.depthCm),

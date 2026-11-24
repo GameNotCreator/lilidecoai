@@ -1,6 +1,7 @@
 import {
   adminProductResponse,
   adminProductSchema,
+  assertStorefrontCategory,
   createProduct,
   listProducts,
   listQuerySchema,
@@ -21,6 +22,7 @@ export async function GET(request: Request): Promise<Response> {
 export async function POST(request: Request): Promise<Response> {
   return withAdmin(request, async ({ db, organization }) => {
     const input = adminProductSchema.parse(await jsonBody(request));
+    assertStorefrontCategory(organization, input.storefrontCategory);
     const product = await createProduct(db, organization.id, input);
     return Response.json(adminProductResponse(product), { status: 201 });
   });

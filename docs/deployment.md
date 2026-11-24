@@ -114,6 +114,9 @@ compresse sous 3,5 Mo avant l’envoi. Ne pas augmenter `MAX_UPLOAD_BYTES` au-de
 de 4 000 000 : la surcharge multipart doit également rester sous la limite
 Vercel.
 
+`GROQ_API_KEY` active le bouton **Proposer des tags** dans le back-office. La clé
+reste côté serveur. Groq reçoit le descriptif produit quand le bouton est utilisé.
+
 `APP_SESSION_SECRET` et `CRON_SECRET` doivent être deux valeurs aléatoires
 différentes. Ne jamais préfixer une clé secrète par `NEXT_PUBLIC_`.
 

@@ -31,7 +31,7 @@ describe("storefront categories", () => {
     ).toBe("art-de-la-table");
   });
 
-  it("accepts automatic classification and rejects unknown category IDs", () => {
+  it("accepts automatic classification and well-formed category IDs from the database", () => {
     expect(adminProductPatchSchema.parse({ storefrontCategory: null })).toEqual(
       { storefrontCategory: null },
     );
@@ -39,8 +39,14 @@ describe("storefront categories", () => {
       adminProductPatchSchema.parse({ name: "Vase Sable" }),
     ).not.toHaveProperty("storefrontCategory");
     expect(
-      adminProductPatchSchema.safeParse({ storefrontCategory: "vases" })
-        .success,
+      adminProductPatchSchema.parse({
+        storefrontCategory: "ceramiques-peintes",
+      }),
+    ).toEqual({ storefrontCategory: "ceramiques-peintes" });
+    expect(
+      adminProductPatchSchema.safeParse({
+        storefrontCategory: "vases/cache-pots",
+      }).success,
     ).toBe(false);
   });
 });

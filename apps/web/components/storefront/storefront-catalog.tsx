@@ -21,9 +21,9 @@ import {
   type StorefrontCatalog as Catalog,
 } from "@/lib/storefront";
 import {
+  defaultStorefrontCategories,
   resolveStorefrontCategory,
-  STOREFRONT_CATEGORY_LABELS,
-  type StorefrontCategory,
+  storefrontCategoryLabel,
 } from "@/lib/storefront-categories";
 import { useStorefrontCatalog } from "./catalog-state";
 import { VisualizationLink } from "./visualization-link";
@@ -153,7 +153,7 @@ export function StorefrontCatalog({
 }: {
   initialCatalog?: Catalog | null;
   initialSearch?: string;
-  initialCategory?: StorefrontCategory | "";
+  initialCategory?: string;
 }) {
   const { catalog, error, retry } = useStorefrontCatalog(initialCatalog);
   const cart = useStorefrontCart();
@@ -165,6 +165,10 @@ export function StorefrontCatalog({
   const [notice, setNotice] = useState("");
   const [heroImageSettled, setHeroImageSettled] = useState(false);
   const products = useMemo(() => catalog?.products ?? [], [catalog]);
+  const categories = catalog?.categories ?? defaultStorefrontCategories;
+  const activeCategory = categories.some(({ id }) => id === category)
+    ? category
+    : "";
   const collections = [...new Set(products.map((p) => p.collection?.trim()).filter(Boolean))]
     .sort((a, b) => (a ?? "").localeCompare(b ?? "", "fr"));
   const visible = useMemo(() => {
@@ -177,7 +181,7 @@ export function StorefrontCatalog({
     const matches = products.filter((p) => {
       const productCategory = resolveStorefrontCategory(p);
       return (
-        (!category || productCategory === category) &&
+        (!activeCategory || productCategory === activeCategory) &&
         (!collection || p.collection?.trim() === collection) &&
         (!query ||
           normalized(
@@ -187,7 +191,7 @@ export function StorefrontCatalog({
               p.material,
               p.brand,
               p.collection,
-              STOREFRONT_CATEGORY_LABELS[productCategory],
+              storefrontCategoryLabel(productCategory, categories),
               ...p.tags,
             ].join(" "),
           ).includes(query))
@@ -204,7 +208,7 @@ export function StorefrontCatalog({
     if (sort === "name")
       matches.sort((a, b) => a.name.localeCompare(b.name, "fr"));
     return matches;
-  }, [products, search, category, collection, sort]);
+  }, [products, search, activeCategory, categories, collection, sort]);
   function add(product: StorefrontProduct) {
     const current =
       cart.lines.find((row) => row.productId === product.id)?.quantity ?? 0;
@@ -308,11 +312,11 @@ export function StorefrontCatalog({
             <select
               form="store-catalog-search"
               name="categorie"
-              value={category}
+              value={activeCategory}
               onChange={(event) => setCategory(event.target.value)}
             >
               <option value="">Toutes les catégories</option>
-              {Object.entries(STOREFRONT_CATEGORY_LABELS).map(([id, label]) => (
+              {categories.map(({ id, label }) => (
                 <option key={id} value={id}>{label}</option>
               ))}
             </select>
@@ -393,7 +397,8 @@ export function StorefrontCatalog({
                 </button>
                 <div className="store-product-info">
                   <p className="store-product-category">
-                    {product.collection || STOREFRONT_CATEGORY_LABELS[resolveStorefrontCategory(product)]}
+                    {product.collection ||
+                      storefrontCategoryLabel(resolveStorefrontCategory(product), categories)}
                   </p>
                   <h3 className="store-product-title">
                     <Link href={productPath(product.id)}>{product.name}</Link>
