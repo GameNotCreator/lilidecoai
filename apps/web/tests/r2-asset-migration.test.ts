@@ -9,6 +9,7 @@ import {
 } from "vitest";
 import { Binary, MongoClient, type Db } from "mongodb";
 import { MongoMemoryServer } from "mongodb-memory-server";
+import sharp from "sharp";
 
 vi.mock("server-only", () => ({}));
 vi.mock("../lib/server/mongodb", async (importOriginal) => ({
@@ -43,6 +44,7 @@ import {
   deleteAsset,
   deleteExpiredAsset,
   storeAsset,
+  storeUploadedPhoto,
 } from "../lib/server/assets";
 import {
   auditMongoStorage,
@@ -150,6 +152,71 @@ afterEach(() => {
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+it("validates and rotates uploads before storing WebP bytes in MongoDB", async () => {
+  const jpeg = await sharp({
+    create: { width: 480, height: 320, channels: 3, background: "#c5734f" },
+  })
+    .jpeg()
+    .withMetadata({ orientation: 6 })
+    .toBuffer();
+  const input = {
+    ...image,
+    kind: "product",
+    visibility: "published",
+    buffer: jpeg,
+  } as const;
+  await expect(storeUploadedPhoto(db, input)).rejects.toThrow("format annoncé");
+  expect(await assets().countDocuments()).toBe(0);
+
+  const uploaded = await storeUploadedPhoto(db, {
+    ...input,
+    contentType: "image/jpeg",
+  });
+  expect(uploaded).toMatchObject({ width: 320, height: 480 });
+  const persisted = await asset(uploaded.asset.id);
+  const bytes = Buffer.from(persisted!.bytes!.value());
+  expect(persisted).toMatchObject({
+    contentType: "image/webp",
+    size: bytes.length,
+  });
+  const metadata = await sharp(bytes).metadata();
+  expect(metadata).toMatchObject({ format: "webp", width: 320, height: 480 });
+  expect(metadata.exif).toBeUndefined();
+  const response = await getAsset(uploaded.asset.id);
+  expect(response.headers.get("content-type")).toBe("image/webp");
+  expect(Buffer.from(await response.arrayBuffer())).toEqual(bytes);
+});
+
+it("keeps photo transparency when uploading the WebP to R2", async () => {
+  vi.stubEnv("R2_UPLOADS_ENABLED", "true");
+  const png = await sharp({
+    create: {
+      width: 320,
+      height: 320,
+      channels: 4,
+      background: { r: 125, g: 70, b: 25, alpha: 0.4 },
+    },
+  })
+    .png()
+    .toBuffer();
+  const uploaded = await storeUploadedPhoto(db, {
+    ...image,
+    kind: "product_view",
+    visibility: "organization",
+    buffer: png,
+  });
+  const bytes = objects.get(uploaded.asset.r2!.key)!;
+  expect(uploaded.asset).toMatchObject({
+    contentType: "image/webp",
+    size: bytes.length,
+  });
+  expect(await sharp(bytes).metadata()).toMatchObject({
+    format: "webp",
+    hasAlpha: true,
+  });
+  expect((await sharp(bytes).raw().toBuffer())[3]).toBe(102);
 });
 
 it("audits inline bytes without touching assets or R2", async () => {

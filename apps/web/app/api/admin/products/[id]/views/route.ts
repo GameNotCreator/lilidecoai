@@ -1,4 +1,3 @@
-import sharp from "sharp";
 import type { Db, Filter } from "mongodb";
 import { z } from "zod";
 
@@ -12,9 +11,7 @@ import { withAdmin } from "@/lib/server/admin-route";
 import {
   ApiInputError,
   deleteAsset,
-  normalizeImage,
-  storeAsset,
-  validateImage,
+  storeUploadedPhoto,
 } from "@/lib/server/assets";
 import { collections } from "@/lib/server/mongodb";
 import { productAssetVisibility } from "@/lib/server/product-visibility";
@@ -96,18 +93,15 @@ export async function POST(
       );
 
     const input = Buffer.from(await file.arrayBuffer());
-    await validateImage(input, file.type);
-    const normalized = await normalizeImage(input);
-    const metadata = await sharp(normalized).metadata();
-    const asset = await storeAsset(db, {
+    const { asset, width, height } = await storeUploadedPhoto(db, {
       organizationId: organization.id,
       kind: viewType === "front" ? "product" : "product_view",
       visibility: productAssetVisibility({ ...product, status: "processing" }),
       // A temporary product's images must not outlive it: the public routes
       // already inherit this, and the purge only ever reads `expiresAt`.
       ...(product.expiresAt ? { expiresAt: product.expiresAt } : {}),
-      buffer: normalized,
-      contentType: "image/webp",
+      buffer: input,
+      contentType: file.type,
     });
 
     const currentViews = product.views ?? [];
@@ -122,8 +116,8 @@ export async function POST(
               id: previous?.id ?? crypto.randomUUID(),
               assetId: asset.id,
               type: viewType,
-              widthPx: metadata.width ?? 0,
-              heightPx: metadata.height ?? 0,
+              widthPx: width,
+              heightPx: height,
               validationStatus: "valid" as const,
               createdAt: previous?.createdAt ?? new Date(),
             },

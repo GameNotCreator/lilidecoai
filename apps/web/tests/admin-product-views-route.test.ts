@@ -5,15 +5,10 @@ import { mongoStore } from "./helpers/mongo-store";
 
 const mocks = vi.hoisted(() => ({
   collections: vi.fn(),
-  storeAsset: vi.fn(),
+  storeUploadedPhoto: vi.fn(),
   deleteAsset: vi.fn(),
-  validateImage: vi.fn(),
-  normalizeImage: vi.fn(),
 }));
 vi.mock("server-only", () => ({}));
-vi.mock("sharp", () => ({
-  default: () => ({ metadata: async () => ({ width: 400, height: 600 }) }),
-}));
 vi.mock("../lib/server/config", () => ({
   serverConfig: { roomRetentionHours: 24 },
 }));
@@ -158,10 +153,9 @@ beforeEach(() => {
       expiresAt: expiry,
     });
   mocks.collections.mockReturnValue({ products, assets });
-  mocks.validateImage.mockResolvedValue(undefined);
-  mocks.normalizeImage.mockImplementation(async (buffer) => buffer);
-  mocks.storeAsset.mockImplementation(async (_db, input) => {
-    const id = `new-${mocks.storeAsset.mock.calls.length}`;
+  let nextUpload = 0;
+  mocks.storeUploadedPhoto.mockImplementation(async (_db, input) => {
+    const id = `new-${++nextUpload}`;
     bytes.set(id, input.buffer);
     await assets.insertOne({
       id,
@@ -170,7 +164,7 @@ beforeEach(() => {
       visibility: "private",
       ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
     });
-    return { id };
+    return { asset: { id }, width: 400, height: 600 };
   });
   mocks.deleteAsset.mockImplementation(async (_db, id: string) => {
     bytes.delete(id);
@@ -190,8 +184,7 @@ describe("admin product view retention and concurrency", () => {
           : await DELETE(remove("front"), context);
       expect(response.status).toBe(409);
       expect(await load()).toEqual(before);
-      expect(mocks.validateImage).not.toHaveBeenCalled();
-      expect(mocks.storeAsset).not.toHaveBeenCalled();
+      expect(mocks.storeUploadedPhoto).not.toHaveBeenCalled();
       expect(mocks.deleteAsset).not.toHaveBeenCalled();
       expect(bytes.size).toBe(3);
     },
@@ -243,7 +236,7 @@ describe("admin product view retention and concurrency", () => {
       },
     );
     expect((await POST(upload("side"), context)).status).toBe(201);
-    expect(mocks.storeAsset.mock.calls[0]?.[1].visibility).toBe("organization");
+    expect(mocks.storeUploadedPhoto.mock.calls[0]?.[1].visibility).toBe("organization");
     expect(beforeCommitVisibility).toBe("private");
     expect(await assets.findOne({ id: "new-1" })).toMatchObject({
       visibility: "published",
@@ -256,10 +249,11 @@ describe("admin product view retention and concurrency", () => {
     const bothSnapshotsRead = new Promise<void>((resolve) => {
       release = resolve;
     });
-    mocks.normalizeImage.mockImplementation(async (buffer) => {
+    const store = mocks.storeUploadedPhoto.getMockImplementation()!;
+    mocks.storeUploadedPhoto.mockImplementation(async (...args) => {
       if (++arrived === 2) release();
       await bothSnapshotsRead;
-      return buffer;
+      return store(...args);
     });
     const responses = await Promise.all([
       POST(upload("side"), context),

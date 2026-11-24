@@ -17,10 +17,10 @@ import {
   ApiInputError,
   assetUrl,
   deleteAsset,
-  normalizeImage,
   readAsset,
   privateVisibility,
   storeAsset,
+  storeUploadedPhoto,
   validateImage,
 } from "./assets";
 import {
@@ -453,15 +453,12 @@ async function handleProducts(
     ) {
       throw new ApiInputError("Maximum 4 vues par produit");
     }
-    await validateImage(file.buffer, file.contentType);
-    const normalized = await normalizeImage(file.buffer);
-    const metadata = await sharp(normalized).metadata();
-    const asset = await storeAsset(db, {
+    const { asset, width, height } = await storeUploadedPhoto(db, {
       organizationId: tenant.organizationId,
       kind: viewType === "front" ? "product" : "product_view",
       visibility: productAssetVisibility({ ...product, status: "processing" }),
-      buffer: normalized,
-      contentType: "image/webp",
+      buffer: file.buffer,
+      contentType: file.contentType,
       ...(product.expiresAt ? { expiresAt: product.expiresAt } : {}),
     });
     const previousView = currentViews.find((view) => view.type === viewType);
@@ -477,8 +474,8 @@ async function handleProducts(
       id: previousView?.id ?? crypto.randomUUID(),
       assetId: asset.id,
       type: viewType,
-      widthPx: metadata.width ?? 0,
-      heightPx: metadata.height ?? 0,
+      widthPx: width,
+      heightPx: height,
       validationStatus: "valid" as const,
       createdAt: previousView?.createdAt ?? new Date(),
     };
@@ -600,18 +597,15 @@ async function handleScenes(
     const file = form.get("file");
     if (!(file instanceof File)) throw new ApiInputError("Photo requise");
     const input = Buffer.from(await file.arrayBuffer());
-    await validateImage(input, file.type);
-    const buffer = await normalizeImage(input);
-    const metadata = await sharp(buffer).metadata();
     const expiresAt = new Date(
       Date.now() + serverConfig.roomRetentionHours * 60 * 60 * 1000,
     );
-    const asset = await storeAsset(db, {
+    const { asset, width, height } = await storeUploadedPhoto(db, {
       organizationId: tenant.organizationId,
       kind: "scene",
       visibility: privateVisibility(tenant.publicSessionId),
-      buffer,
-      contentType: "image/webp",
+      buffer: input,
+      contentType: file.type,
       expiresAt,
     });
     const scene: SceneDocument = {
@@ -619,8 +613,8 @@ async function handleScenes(
       organizationId: tenant.organizationId,
       assetId: asset.id,
       status: "uploaded",
-      widthPx: metadata.width ?? 0,
-      heightPx: metadata.height ?? 0,
+      widthPx: width,
+      heightPx: height,
       analysis: {},
       ...(tenant.publicSessionId
         ? { publicSessionId: tenant.publicSessionId }

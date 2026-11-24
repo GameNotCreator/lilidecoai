@@ -22,6 +22,8 @@ const formatForMime: Record<string, string> = {
   "image/webp": "webp",
 };
 const cloudinaryDeliveryType = "private" as const;
+const maxPhotoDimension = 2048;
+const photoWebpTargetBytes = 600_000;
 
 let cloudinaryReady = false;
 
@@ -115,9 +117,13 @@ export async function validateImage(
 
 export async function normalizeImage(
   buffer: Buffer,
-  maxDimension = 2048,
+  maxDimension = maxPhotoDimension,
 ): Promise<Buffer> {
-  return sharp(buffer, { failOn: "error" })
+  return (await encodePhotoWebp(buffer, maxDimension, 92)).data;
+}
+
+function encodePhotoWebp(buffer: Buffer, maxDimension: number, quality: number) {
+  return sharp(buffer, { failOn: "error", limitInputPixels: 40_000_000 })
     .rotate()
     .resize({
       width: maxDimension,
@@ -126,8 +132,8 @@ export async function normalizeImage(
       withoutEnlargement: true,
     })
     .toColourspace("srgb")
-    .webp({ quality: 92, smartSubsample: true, effort: 5 })
-    .toBuffer();
+    .webp({ quality, alphaQuality: 100, smartSubsample: true, effort: 5 })
+    .toBuffer({ resolveWithObject: true });
 }
 
 /**
@@ -1400,7 +1406,26 @@ function hasEnclosedBackground(
   return false;
 }
 
-// Le stockage des octets et la visibilité sont distincts ; les lectures contrôlent les droits.
+/** Shared entry point for uploaded photos. Encoding happens before choosing a storage provider. */
+export async function storeUploadedPhoto(
+  db: Db,
+  input: ImageAssetInput & { kind: "product" | "product_view" | "scene" },
+) {
+  await validateImage(input.buffer, input.contentType);
+  let output = await encodePhotoWebp(input.buffer, maxPhotoDimension, 92);
+  if (output.data.length > photoWebpTargetBytes) {
+    const compact = await encodePhotoWebp(input.buffer, maxPhotoDimension, 84);
+    if (compact.data.length < output.data.length) output = compact;
+  }
+  const asset = await storeAsset(db, {
+    ...input,
+    buffer: output.data,
+    contentType: "image/webp",
+  });
+  return { asset, width: output.info.width, height: output.info.height };
+}
+
+/** Stores encoded bytes as provided, including masks and render checkpoints. */
 export async function storeAsset(
   db: Db,
   input: ImageAssetInput,
