@@ -6,12 +6,11 @@ import type { StorefrontCatalog } from "@/lib/storefront";
 export function useStorefrontCatalog(
   initialCatalog: StorefrontCatalog | null = null,
 ) {
-  const [catalog, setCatalog] = useState<StorefrontCatalog | null>(
-    initialCatalog,
-  );
+  const [fetchedCatalog, setCatalog] = useState<StorefrontCatalog | null>(null);
   const [error, setError] = useState("");
   const [revision, setRevision] = useState(0);
   useEffect(() => {
+    if (initialCatalog) return;
     let active = true;
     getStorefrontCatalog()
       .then((value) => {
@@ -31,10 +30,10 @@ export function useStorefrontCatalog(
     return () => {
       active = false;
     };
-  }, [revision]);
+  }, [initialCatalog, revision]);
   return {
-    catalog,
-    error,
+    catalog: initialCatalog ?? fetchedCatalog,
+    error: initialCatalog ? "" : error,
     retry: () => {
       setError("");
       setRevision((n) => n + 1);

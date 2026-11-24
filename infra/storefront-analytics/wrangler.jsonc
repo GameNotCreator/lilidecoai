@@ -1,0 +1,19 @@
+{
+  "name": "lilideco-storefront-analytics",
+  "main": "worker.ts",
+  "compatibility_date": "2025-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": { "enabled": false },
+  "analytics_engine_datasets": [
+    { "binding": "EVENTS", "dataset": "lilideco_storefront_events" },
+  ],
+  "ratelimits": [
+    {
+      "name": "LIMITER",
+      "namespace_id": "112402",
+      "simple": { "limit": 120, "period": 60 },
+    },
+  ],
+}

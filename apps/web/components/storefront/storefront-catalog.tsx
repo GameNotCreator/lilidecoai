@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import Image from "next/image";
-import { productPath, storeIdentity } from "@/lib/site";
+import { categoryPath, productPath, storeIdentity } from "@/lib/site";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown,
@@ -22,10 +22,13 @@ import {
 } from "@/lib/storefront";
 import {
   defaultStorefrontCategories,
+  populatedStorefrontCategories,
   resolveStorefrontCategory,
   storefrontCategoryLabel,
+  type StorefrontCategoryOption,
 } from "@/lib/storefront-categories";
 import { useStorefrontCatalog } from "./catalog-state";
+import { StorefrontCatalogueView, useStorefrontMeasurement } from "./storefront-measurement";
 import { VisualizationLink } from "./visualization-link";
 export function ProductImage({
   product,
@@ -156,16 +159,14 @@ export function StorefrontCatalog({
   initialCategory?: string;
 }) {
   const { catalog, error, retry } = useStorefrontCatalog(initialCatalog);
-  const cart = useStorefrontCart();
   const [search, setSearch] = useState(initialSearch);
   const [category, setCategory] = useState<string>(initialCategory);
   const [collection, setCollection] = useState("");
   const [sort, setSort] = useState("selection");
-  const [selected, setSelected] = useState<StorefrontProduct | null>(null);
-  const [notice, setNotice] = useState("");
   const [heroImageSettled, setHeroImageSettled] = useState(false);
   const products = useMemo(() => catalog?.products ?? [], [catalog]);
   const categories = catalog?.categories ?? defaultStorefrontCategories;
+  const categoryLinks = useMemo(() => catalog ? populatedStorefrontCategories(catalog) : [], [catalog]);
   const activeCategory = categories.some(({ id }) => id === category)
     ? category
     : "";
@@ -209,18 +210,9 @@ export function StorefrontCatalog({
       matches.sort((a, b) => a.name.localeCompare(b.name, "fr"));
     return matches;
   }, [products, search, activeCategory, categories, collection, sort]);
-  function add(product: StorefrontProduct) {
-    const current =
-      cart.lines.find((row) => row.productId === product.id)?.quantity ?? 0;
-    if (current >= Math.min(99, product.stock ?? 99)) {
-      setNotice("Vous avez déjà sélectionné toute la quantité disponible.");
-      return;
-    }
-    cart.add(product.id, Math.min(99, product.stock ?? 99));
-    setNotice(`${product.name} a été ajouté à votre panier.`);
-  }
   return (
     <main className="storefront">
+      <StorefrontCatalogueView categoryId={activeCategory || undefined} />
       <section className="store-shell store-hero">
         <div className="store-hero-copy">
           <p className="store-kicker">BY LILIDECO — CONCEPT STORE</p>
@@ -279,6 +271,15 @@ export function StorefrontCatalog({
               : "Objets, matières et inspirations"}
           </p>
         </div>
+        {!!categoryLinks.length && (
+          <nav className="store-category-links" aria-label="Parcourir les catégories">
+            {categoryLinks.map(({ id, label }) => (
+              <Link key={id} href={categoryPath(id)} prefetch={false}>
+                {label} <ArrowRight size={15} aria-hidden="true" />
+              </Link>
+            ))}
+          </nav>
+        )}
         <div className="store-filters">
           <form
             id="store-catalog-search"
@@ -373,80 +374,11 @@ export function StorefrontCatalog({
             )}
           </div>
         ) : (
-          <div className="store-product-grid">
-            {visible.map((product) => (
-              <article className="store-product-card" key={product.id}>
-                <button
-                  type="button"
-                  className="store-product-photo-button"
-                  onClick={(event) => {
-                    event.currentTarget.focus({ preventScroll: true });
-                    setSelected(product);
-                  }}
-                  aria-label={`Découvrir ${product.name}`}
-                >
-                  <ProductImage product={product} />
-                  {safeStorefrontUrl(product.stagedPhotoUrl) && (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img className="store-staged-preview" src={product.stagedPhotoUrl!}
-                      alt="" loading="lazy" onError={(event) => { event.currentTarget.hidden = true; }} />
-                  )}
-                  {product.stock === 0 && (
-                    <span className="store-stock-badge">Épuisé</span>
-                  )}
-                </button>
-                <div className="store-product-info">
-                  <p className="store-product-category">
-                    {product.collection ||
-                      storefrontCategoryLabel(resolveStorefrontCategory(product), categories)}
-                  </p>
-                  <h3 className="store-product-title">
-                    <Link href={productPath(product.id)}>{product.name}</Link>
-                  </h3>
-                  <p className="store-product-price">{productPrice(product)}</p>
-                  <p className="store-product-material">
-                    {product.material || productDimensions(product)}
-                  </p>
-                  <div className="store-product-actions">
-                    <button
-                      className="store-add"
-                      disabled={product.stock !== null && product.stock <= 0}
-                      onClick={() => add(product)}
-                      aria-label={`Ajouter ${product.name} au panier`}
-                    >
-                      <Plus size={17} />
-                      Panier
-                    </button>
-                    {catalog.visualization.available && (
-                      product.visualizationAvailable && product.stock !== 0 ? (
-                        <VisualizationLink
-                          className="store-visual-link"
-                          productIds={[product.id]}
-                        >
-                          <ScanLine size={16} />
-                          Visualiser
-                        </VisualizationLink>
-                      ) : (
-                        <span className="store-unavailable-action">
-                          <button
-                            className="store-visual-link"
-                            disabled
-                            aria-describedby={`unavailable-${product.id}`}
-                          >
-                            <ScanLine size={16} />
-                            Visualiser
-                          </button>
-                          <small id={`unavailable-${product.id}`}>
-                            Indisponible actuellement
-                          </small>
-                        </span>
-                      )
-                    )}
-                  </div>
-                </div>
-              </article>
-            ))}
-          </div>
+          <StorefrontProductGrid
+            products={visible}
+            categories={categories}
+            visualizationAvailable={catalog.visualization.available}
+          />
         )}
       </section>
       <section
@@ -506,6 +438,111 @@ export function StorefrontCatalog({
           </div>
         </section>
       )}
+    </main>
+  );
+}
+
+export function StorefrontProductGrid({
+  products,
+  categories,
+  visualizationAvailable,
+}: {
+  products: StorefrontProduct[];
+  categories: StorefrontCategoryOption[];
+  visualizationAvailable: boolean;
+}) {
+  const cart = useStorefrontCart();
+  const track = useStorefrontMeasurement();
+  const [selected, setSelected] = useState<StorefrontProduct | null>(null);
+  const [notice, setNotice] = useState("");
+  function add(product: StorefrontProduct) {
+    const current =
+      cart.lines.find((row) => row.productId === product.id)?.quantity ?? 0;
+    if (current >= Math.min(99, product.stock ?? 99)) {
+      setNotice("Vous avez déjà sélectionné toute la quantité disponible.");
+      return;
+    }
+    cart.add(product.id, Math.min(99, product.stock ?? 99));
+    track({ name: "cart_item_added", productId: product.id, categoryId: resolveStorefrontCategory(product) });
+    setNotice(`${product.name} a été ajouté à votre panier.`);
+  }
+  return (
+    <>
+      <div className="store-product-grid">
+        {products.map((product) => (
+          <article className="store-product-card" key={product.id}>
+            <button
+              type="button"
+              className="store-product-photo-button"
+              onClick={(event) => {
+                event.currentTarget.focus({ preventScroll: true });
+                setSelected(product);
+                track({ name: "product_viewed", productId: product.id, categoryId: resolveStorefrontCategory(product) });
+              }}
+              aria-label={`Découvrir ${product.name}`}
+            >
+              <ProductImage product={product} />
+              {safeStorefrontUrl(product.stagedPhotoUrl) && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img className="store-staged-preview" src={product.stagedPhotoUrl!}
+                  alt="" loading="lazy" onError={(event) => { event.currentTarget.hidden = true; }} />
+              )}
+              {product.stock === 0 && (
+                <span className="store-stock-badge">Épuisé</span>
+              )}
+            </button>
+            <div className="store-product-info">
+              <p className="store-product-category">
+                {product.collection ||
+                  storefrontCategoryLabel(resolveStorefrontCategory(product), categories)}
+              </p>
+              <h3 className="store-product-title">
+                <Link href={productPath(product.id)} prefetch={false}>{product.name}</Link>
+              </h3>
+              <p className="store-product-price">{productPrice(product)}</p>
+              <p className="store-product-material">
+                {product.material || productDimensions(product)}
+              </p>
+              <div className="store-product-actions">
+                <button
+                  className="store-add"
+                  disabled={product.stock !== null && product.stock <= 0}
+                  onClick={() => add(product)}
+                  aria-label={`Ajouter ${product.name} au panier`}
+                >
+                  <Plus size={17} />
+                  Panier
+                </button>
+                {visualizationAvailable && (
+                  product.visualizationAvailable && product.stock !== 0 ? (
+                    <VisualizationLink
+                      className="store-visual-link"
+                      productIds={[product.id]}
+                    >
+                      <ScanLine size={16} />
+                      Visualiser
+                    </VisualizationLink>
+                  ) : (
+                    <span className="store-unavailable-action">
+                      <button
+                        className="store-visual-link"
+                        disabled
+                        aria-describedby={`unavailable-${product.id}`}
+                      >
+                        <ScanLine size={16} />
+                        Visualiser
+                      </button>
+                      <small id={`unavailable-${product.id}`}>
+                        Indisponible actuellement
+                      </small>
+                    </span>
+                  )
+                )}
+              </div>
+            </div>
+          </article>
+        ))}
+      </div>
       <div
         className={`store-toast ${notice ? "visible" : ""}`}
         role="status"
@@ -529,12 +566,12 @@ export function StorefrontCatalog({
         <ProductDialog
           key={selected.id}
           product={selected}
-          available={catalog?.visualization.available ?? false}
+          available={visualizationAvailable}
           onClose={() => setSelected(null)}
           onAdd={() => add(selected)}
         />
       )}
-    </main>
+    </>
   );
 }
 
@@ -630,7 +667,7 @@ function ProductDialog({
               </p>
             )
           )}
-          <Link className="store-text-link" href={productPath(product.id)}>
+          <Link className="store-text-link" href={productPath(product.id)} prefetch={false}>
             Ouvrir la fiche produit <ArrowRight size={16} aria-hidden="true" />
           </Link>
           {buyUrl && (

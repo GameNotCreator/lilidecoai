@@ -13,11 +13,11 @@ test.beforeAll(async ({ request }) => {
 test("storefront categories filter products and can be reassigned in the back office", async ({
   page,
 }) => {
-  const initialCatalog = page.waitForResponse(
-    (response) => response.url().endsWith("/api/storefront/products") && response.ok(),
-  );
+  const sculpturePath = "/categories/sculptures-objets-deco";
+  await page.goto(sculpturePath);
+  await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", "noindex, follow");
+  expect(await (await page.request.get("/sitemap.xml")).text()).not.toContain(`${sculpturePath}</loc>`);
   await page.goto("/");
-  await initialCatalog;
   const category = page.getByRole("combobox", { name: "Catégorie", exact: true });
   await expect(category.locator("option")).toHaveText([
     "Toutes les catégories",
@@ -52,11 +52,12 @@ test("storefront categories filter products and can be reassigned in the back of
     await page.getByRole("button", { name: "Enregistrer", exact: true }).click();
     await expect(page.getByText("Fiche enregistrée.")).toBeVisible();
 
-    const refreshedCatalog = page.waitForResponse(
-      (response) => response.url().endsWith("/api/storefront/products") && response.ok(),
-    );
+    await page.goto(sculpturePath);
+    await expect(page.locator(".store-product-card h3")).toHaveText(["Vase Sable"]);
+    await expect(page.locator('meta[name="robots"]')).toHaveCount(0);
+    expect(await (await page.request.get("/sitemap.xml")).text()).toContain(`${sculpturePath}</loc>`);
+
     await page.goto("/?categorie=sculptures-objets-deco");
-    await refreshedCatalog;
     await expect(category).toHaveValue("sculptures-objets-deco");
     await expect(titles).toHaveText(["Vase Sable"]);
     await category.selectOption("vases-cache-pots");
@@ -261,6 +262,13 @@ test("catalogue and product pages remain readable with JavaScript disabled", asy
   const page = await context.newPage();
   await page.goto("/");
   await expect(page.locator(".store-product-card").first()).toBeVisible();
+  await page.getByRole("navigation", { name: "Parcourir les catégories" })
+    .getByRole("link", { name: "Vases & Cache-pots" }).click();
+  await expect(page.getByRole("heading", { name: "Vases & Cache-pots", exact: true })).toBeVisible();
+  await expect(page.locator('link[rel="canonical"]')).toHaveAttribute("href", /\/categories\/vases-cache-pots$/);
+  await expect(page.locator(".store-product-card h3")).toHaveText(["Vase Sable"]);
+  await expect(page.getByRole("link", { name: "Toute la collection" })).toHaveAttribute("href", "/#collection");
+  await page.goto("/");
   const label = page.getByText("Rechercher un article", { exact: true });
   await label.click();
   await expect(page.getByRole("searchbox")).toBeFocused();
@@ -282,6 +290,7 @@ test("catalogue and product pages remain readable with JavaScript disabled", asy
   expect(markup).toContain("application/ld+json");
   const sitemap = await (await request.get("/sitemap.xml")).text();
   expect(sitemap).toContain(`/produits/${productId}</loc>`);
+  expect(sitemap).toContain("/categories/vases-cache-pots</loc>");
   expect(sitemap).toMatch(/<lastmod>\d{4}-\d{2}-\d{2}/);
   expect(sitemap).toMatch(/<image:loc>https?:\/\/[^<]+\/api\/assets\//);
   expect(
@@ -289,6 +298,7 @@ test("catalogue and product pages remain readable with JavaScript disabled", asy
       await request.get("/produits/00000000-0000-4000-8000-000000000999")
     ).status(),
   ).toBe(404);
+  expect((await request.get("/categories/categorie-inconnue")).status()).toBe(404);
   await context.close();
 });
 

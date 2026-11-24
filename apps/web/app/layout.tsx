@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { Geist } from "next/font/google";
 import { siteOrigin, storeIdentity } from "@/lib/site";
+import { storefrontMeasurementOptions } from "@/lib/server/storefront-measurement-config";
+import { StorefrontMeasurementProvider } from "@/components/storefront/storefront-measurement";
 import {
   StorefrontHeader,
   StorefrontFooter,
@@ -54,17 +56,20 @@ export const metadata: Metadata = {
 export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
+  const measurement = storefrontMeasurementOptions();
   return (
     <html lang="fr-TN" data-theme="lilideco" data-scroll-behavior="smooth">
       <body className={sans.variable}>
         <a className="store-skip-link" href="#page-content">
           Aller au contenu
         </a>
-        <StorefrontHeader />
-        <div id="page-content" tabIndex={-1}>
-          {children}
-        </div>
-        <StorefrontFooter />
+        <StorefrontMeasurementProvider {...measurement}>
+          <StorefrontHeader />
+          <div id="page-content" tabIndex={-1}>
+            {children}
+          </div>
+          <StorefrontFooter measurement={measurement} />
+        </StorefrontMeasurementProvider>
       </body>
     </html>
   );

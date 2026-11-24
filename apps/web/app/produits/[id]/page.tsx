@@ -4,7 +4,14 @@ import { notFound } from "next/navigation";
 import { z } from "zod";
 import { ArrowLeft, ArrowUpRight } from "lucide-react";
 import { readStorefrontProductPage } from "@/lib/server/storefront-page";
-import { jsonLd, productPath, siteOrigin, storeIdentity } from "@/lib/site";
+import {
+  breadcrumbStructuredData,
+  categoryPath,
+  jsonLd,
+  productPath,
+  siteOrigin,
+  storeIdentity,
+} from "@/lib/site";
 import {
   productSeoDescription,
   productSeoImages,
@@ -59,18 +66,28 @@ export default async function ProductPage({ params }: Props) {
   const { product, available } = await getProduct(params);
   const buyUrl = safeStorefrontUrl(product.buyUrl);
   const origin = siteOrigin();
+  const category = product.storefrontCategory && product.storefrontCategoryLabel
+    ? { name: product.storefrontCategoryLabel, path: categoryPath(product.storefrontCategory) }
+    : null;
   return (
     <main className="storefront store-product-page">
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{
-          __html: jsonLd(productStructuredData(product, origin)),
+          __html: jsonLd([
+            productStructuredData(product, origin),
+            breadcrumbStructuredData(origin, [
+              { name: "Boutique", path: "/" },
+              ...(category ? [category] : []),
+              { name: product.name, path: productPath(product.id) },
+            ]),
+          ]),
         }}
       />
       <div className="store-shell">
-        <Link href="/#collection" className="store-back">
+        <Link href={category?.path ?? "/#collection"} className="store-back" prefetch={false}>
           <ArrowLeft size={16} aria-hidden="true" />
-          Retour à la collection
+          {category?.name ?? "Retour à la collection"}
         </Link>
         <div className="store-product-page-grid">
           <ProductGallery product={product} eager />

@@ -1,6 +1,9 @@
 import "server-only";
 import { cache } from "react";
-import { storefrontCategories } from "../storefront-categories";
+import {
+  resolveStorefrontCategory,
+  storefrontCategories,
+} from "../storefront-categories";
 import { collections, database } from "./mongodb";
 import {
   getStorefrontCatalog,
@@ -14,6 +17,20 @@ import {
 export const readStorefrontPage = cache(async () =>
   getStorefrontCatalog(await database()),
 );
+
+export const readStorefrontCategoryPage = cache(async (id: string) => {
+  const catalog = await readStorefrontPage();
+  const category = catalog.categories.find((entry) => entry.id === id);
+  if (!category) return null;
+  return {
+    category,
+    categories: catalog.categories,
+    products: catalog.products.filter(
+      (product) => resolveStorefrontCategory(product) === id,
+    ),
+    visualizationAvailable: catalog.visualization.available,
+  };
+});
 
 export const readStorefrontProductPage = cache(async (id: string) => {
   const db = await database();

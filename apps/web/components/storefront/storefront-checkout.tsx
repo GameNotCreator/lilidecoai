@@ -9,10 +9,11 @@ import {
   type OrderReceipt,
 } from "@/lib/checkout";
 import { useStorefrontCart } from "@/lib/storefront-cart";
-import { productPrice } from "@/lib/storefront";
+import { cartQuantity, productPrice } from "@/lib/storefront";
 import { storeIdentity } from "@/lib/site";
 import { useStorefrontCatalog } from "./catalog-state";
 import { CatalogError, CatalogLoading } from "./storefront-catalog";
+import { useStorefrontMeasurement } from "./storefront-measurement";
 
 const fields = [
   {
@@ -63,6 +64,7 @@ export function StorefrontCheckout({
   availability: CheckoutAvailability;
 }) {
   const cart = useStorefrontCart();
+  const track = useStorefrontMeasurement();
   const { catalog, error: catalogueError, retry } = useStorefrontCatalog();
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
@@ -91,6 +93,14 @@ export function StorefrontCheckout({
       !item.product ||
       (item.product.stock !== null && item.quantity > item.product.stock),
   );
+  const count = cartQuantity(cart.lines);
+  const canMeasureCheckout = Boolean(
+    availability.available && cart.ready && catalog && !catalogueError && !invalidSelection && !receipt,
+  );
+  useEffect(() => {
+    if (!canMeasureCheckout || !count) return;
+    track({ name: "checkout_started", size: count === 1 ? "1" : count <= 3 ? "2-3" : "4+" });
+  }, [track, canMeasureCheckout, count]);
 
   function report(message: string, errors: Record<string, string> = {}) {
     setError(message);
@@ -165,6 +175,7 @@ export function StorefrontCheckout({
         return;
       }
       setReceipt(result);
+      track({ name: "order_request_recorded" }, parsed.data.idempotencyKey);
     } catch {
       report(
         "La connexion a été interrompue. Réessayez sans fermer cette page : votre demande ne sera pas créée en double.",

@@ -64,6 +64,14 @@ export function storefrontCategoryLabel(
   return categories.find((category) => category.id === id)?.label;
 }
 
+export function populatedStorefrontCategories(catalog: {
+  categories: StorefrontCategoryOption[];
+  products: Parameters<typeof resolveStorefrontCategory>[0][];
+}) {
+  const active = new Set(catalog.products.map(resolveStorefrontCategory));
+  return catalog.categories.filter(({ id }) => active.has(id));
+}
+
 const categoryByObjectType: Partial<Record<string, StorefrontCategory>> = {
   vase: "vases-cache-pots",
   lamp: "lampes-luminaires",

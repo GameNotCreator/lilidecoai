@@ -2,7 +2,7 @@
 
 Relevé du 24 novembre 2026. L’objectif est d’attirer des acheteurs en Tunisie sur les collections de la boutique et de mesurer les demandes de commande qui en résultent.
 
-## Ce que le site sert aujourd’hui
+## Point de départ avant les pages de catégorie
 
 | Point contrôlé | Résultat |
 | --- | --- |
@@ -14,6 +14,8 @@ Relevé du 24 novembre 2026. L’objectif est d’attirer des acheteurs en Tunis
 | Parcours existant | La boutique enregistre des demandes de commande qui sont ensuite confirmées avec le client. |
 
 L’accueil utilise `fr-TN` et présente ByLiliDeco comme boutique de décoration, d’artisanat et de cadeaux en Tunisie. Le sitemap déclare les fiches et leurs photos. Les impressions, clics et pages réellement indexées sont à mesurer dans Search Console. [Catalogue public](https://lilidecoai-web.vercel.app/api/storefront/products) · [Sitemap](https://lilidecoai-web.vercel.app/sitemap.xml) · [Robots](https://lilidecoai-web.vercel.app/robots.txt)
+
+Les pages `/categories/<identifiant>` suivent les catégories du catalogue. Chaque page devient indexable et apparaît dans le sitemap dès qu’elle contient un produit publié. Le collecteur Cloudflare, le Pixel Meta et les rapports de mesure sont documentés dans le guide d’activation. [Guide d’activation](../infra/storefront-analytics/README.md)
 
 ## Comparaison avec les boutiques tunisiennes
 

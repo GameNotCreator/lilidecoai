@@ -70,10 +70,24 @@ export default function PrivacyPage() {
         les coordonnées GPS éventuellement contenues dans le fichier.
       </p>
       <p>
-        Les photos d’intérieur ne sont pas publiées dans le catalogue. Le
-        parcours boutique n’intègre pas de pixels publicitaires ni d’outil de
-        mesure d’audience tiers. Il ne transmet pas vos photos à un outil
-        d’analytics.
+        Les photos d’intérieur sont réservées à la visualisation. Les outils
+        de mesure décrits ci-dessous ne reçoivent ni vos photos ni les champs
+        de votre demande de commande.
+      </p>
+      <p>
+        Lorsqu’elle est disponible, la mesure de fréquentation est activée
+        avec votre accord. Cloudflare Analytics Engine reçoit un identifiant
+        aléatoire de visite, un canal d’arrivée, une taille d’écran par
+        catégorie et les étapes de consultation ou de demande. Les événements
+        peuvent contenir la référence d’un article ou d’une catégorie du
+        catalogue. Les points de mesure sont conservés trois mois par Cloudflare.
+      </p>
+      <p>
+        La mesure des publicités Meta fait l’objet d’un choix séparé. Si elle
+        est proposée et que vous l’autorisez, Meta reçoit des informations
+        techniques du navigateur, les pages et articles consultés, les ajouts
+        au panier et la confirmation de demande. Vous pouvez modifier vos
+        choix dans les Préférences de confidentialité en bas de page.
       </p>
       <h2>4. Les services qui interviennent</h2>
       <p>
@@ -151,6 +165,14 @@ export default function PrivacyPage() {
           Les personnes autorisées qui se connectent au backoffice reçoivent un
           cookie de connexion distinct. Sa durée configurée est de{" "}
           {serverConfig.adminSessionHours} heures, sauf déconnexion anticipée.
+        </dd>
+        <dt>Mesure de fréquentation et publicités</dt>
+        <dd>
+          Vos choix sont conservés dans un cookie pendant 180 jours. Si vous
+          autorisez la mesure de fréquentation, le navigateur conserve une
+          file d’événements et un identifiant limité à 30 minutes dans l’onglet.
+          Les données locales sont effacées au retrait de votre accord. Selon
+          vos choix, le pixel Meta peut utiliser ses cookies publicitaires.
         </dd>
       </dl>
       <p>

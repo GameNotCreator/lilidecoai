@@ -1,9 +1,11 @@
 "use client";
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Plus, ScanLine } from "lucide-react";
 import { useStorefrontCart } from "@/lib/storefront-cart";
 import { type StorefrontProduct } from "@/lib/storefront";
+import { resolveStorefrontCategory } from "@/lib/storefront-categories";
+import { useStorefrontMeasurement } from "./storefront-measurement";
 import { VisualizationLink } from "./visualization-link";
 export function ProductActions({
   product,
@@ -14,6 +16,12 @@ export function ProductActions({
 }) {
   const cart = useStorefrontCart();
   const [notice, setNotice] = useState("");
+  const track = useStorefrontMeasurement();
+  const productId = product.id;
+  const categoryId = resolveStorefrontCategory(product);
+  useEffect(() => {
+    track({ name: "product_viewed", productId, categoryId });
+  }, [track, productId, categoryId]);
   return (
     <div className="store-product-page-actions">
       <button
@@ -31,6 +39,7 @@ export function ProductActions({
             return;
           }
           cart.add(product.id, maximum);
+          track({ name: "cart_item_added", productId, categoryId });
           setNotice(`${product.name} a été ajouté à votre panier.`);
         }}
       >

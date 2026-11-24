@@ -6,6 +6,7 @@ import Image from "next/image";
 import { storeIdentity } from "@/lib/site";
 import { useStorefrontCart } from "@/lib/storefront-cart";
 import { cartQuantity } from "@/lib/storefront";
+import { StorefrontMeasurementPreferences, type MeasurementOptions } from "./storefront-measurement";
 
 export function StorefrontHeader() {
   const path = usePathname();
@@ -56,7 +57,9 @@ export function StorefrontHeader() {
   );
 }
 
-export function StorefrontFooter() {
+export function StorefrontFooter({ measurement }: {
+  measurement: MeasurementOptions;
+}) {
   return (
     <footer className="store-footer">
       <div className="store-shell store-footer-inner">
@@ -99,6 +102,7 @@ export function StorefrontFooter() {
           <Link href="/terms">Conditions d’utilisation</Link>
           <Link href="/privacy">Confidentialité</Link>
           <Link href="/mentions-legales">Mentions légales</Link>
+          <StorefrontMeasurementPreferences {...measurement} />
           <Link href="/admin">
             Espace boutique <ArrowUpRight size={14} aria-hidden="true" />
           </Link>

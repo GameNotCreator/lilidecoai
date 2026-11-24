@@ -25,6 +25,24 @@ export const storeIdentity = {
 export function productPath(id: string) {
   return `/produits/${encodeURIComponent(id)}`;
 }
+export function categoryPath(id: string) {
+  return `/categories/${encodeURIComponent(id)}`;
+}
+export function breadcrumbStructuredData(
+  origin: string,
+  pages: ReadonlyArray<{ name: string; path: string }>,
+) {
+  return {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: pages.map(({ name, path }, index) => ({
+      "@type": "ListItem",
+      position: index + 1,
+      name,
+      item: `${origin}${path}`,
+    })),
+  };
+}
 export function jsonLd(value: unknown) {
   return JSON.stringify(value).replace(/</g, "\\u003c");
 }
