@@ -35,6 +35,7 @@ automatiquement dans MongoDB. La démo ne présélectionne aucun produit : chaqu
 visiteur envoie son propre objet. Avec `AI_MOCK_MODE=true`, le pipeline complet
 reste testable sans appel payant. Sans configuration Cloudinary en local, les images sont
 stockées en binaire dans MongoDB.
+Les fiches d’exemple sont ajoutées à la base des tests Playwright.
 
 ## Architecture
 

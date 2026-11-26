@@ -91,6 +91,9 @@ export const serverConfig = {
     clean(process.env.MONGODB_URI) ?? "mongodb://127.0.0.1:27017/lilidecoai",
   mongodbDb: clean(process.env.MONGODB_DB) ?? "lilidecoai",
   demoMode: demoModeEnabled(),
+  demoCatalogFixtures:
+    process.env.NODE_ENV !== "production" &&
+    clean(process.env.DEMO_CATALOG_FIXTURES) === "true",
   googleApiKey,
   googlePreviewImageModel:
     clean(process.env.GOOGLE_PREVIEW_IMAGE_MODEL) ?? "gemini-3.1-flash-image",

@@ -12,6 +12,7 @@ import {
   readAsset,
   storeAsset,
 } from "./assets";
+import { serverConfig } from "./config";
 import { cutoutVerdict } from "./cutout-identity";
 import { collections } from "./mongodb";
 import {
@@ -233,6 +234,7 @@ async function seed(db: Db): Promise<void> {
   );
   await ensureDemoCredits(db);
 
+  if (!serverConfig.demoCatalogFixtures) return;
   await seedVase(db);
   for (let index = 0; index < remoteDemoProducts.length; index += 3) {
     await Promise.all(

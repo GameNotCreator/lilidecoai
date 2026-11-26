@@ -26,6 +26,7 @@ export default defineConfig({
     env: {
       NEXT_IGNORE_INCORRECT_LOCKFILE: "1",
       DEMO_MODE: "true",
+      DEMO_CATALOG_FIXTURES: "true",
       ADMIN_CREDENTIALS_MODE: "fixed",
       MERCHANT_SIGNUP_ENABLED: "true",
       ADMIN_USERNAME: "spatial-e2e",
