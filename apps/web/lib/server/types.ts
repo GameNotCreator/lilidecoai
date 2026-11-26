@@ -16,6 +16,7 @@ export interface OrganizationDocument {
   createdAt: Date;
   storefrontProductOrder?: { ids: string[]; revision: number };
   storefrontCategories?: import("../storefront-categories").StorefrontCategoryOption[];
+  storefrontCategoryOrder?: { ids: string[]; revision: number };
   storefrontSkuSequence?: number;
 }
 

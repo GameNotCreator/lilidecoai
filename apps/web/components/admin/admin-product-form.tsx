@@ -168,7 +168,10 @@ export function AdminProductForm({
     )
       .then(({ categories: stored }) => {
         if (!controller.signal.aborted) {
-          setCategories((current) => storefrontCategories([...current, ...stored]));
+          setCategories((current) => storefrontCategories(
+            [...current, ...stored],
+            stored.map(({ id }) => id),
+          ));
         }
       })
       .catch(() => {

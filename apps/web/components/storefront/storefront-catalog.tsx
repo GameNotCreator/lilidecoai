@@ -36,7 +36,7 @@ export function ProductImage({
   eager = false,
   staged = false,
 }: {
-  product: StorefrontProduct;
+  product: Pick<StorefrontProduct, "name" | "assetUrl" | "cutoutUrl" | "stagedPhotoUrl">;
   className?: string;
   eager?: boolean;
   staged?: boolean;

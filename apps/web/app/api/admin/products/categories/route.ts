@@ -17,7 +17,10 @@ export function GET(request: Request) {
   return withAdmin(request, async ({ organization }) =>
     Response.json(
       {
-        categories: storefrontCategories(organization.storefrontCategories),
+        categories: storefrontCategories(
+          organization.storefrontCategories,
+          organization.storefrontCategoryOrder?.ids,
+        ),
       },
       { headers: { "Cache-Control": "private, no-store" } },
     ),

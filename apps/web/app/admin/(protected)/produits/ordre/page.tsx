@@ -5,7 +5,7 @@ import { resolveAdminOrganization } from "@/lib/server/admin-products";
 import { database } from "@/lib/server/mongodb";
 import { readStorefrontProductOrder } from "@/lib/server/storefront";
 
-export const metadata: Metadata = { title: "Ordre de la boutique" };
+export const metadata: Metadata = { title: "Ordre du catalogue" };
 
 export default async function StorefrontOrderPage() {
   await requireAdminPage("/admin/produits/ordre");

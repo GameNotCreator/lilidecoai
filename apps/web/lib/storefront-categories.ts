@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { orderStorefrontItems } from "./storefront-order";
 
 export const STOREFRONT_CATEGORY_LABELS = {
   "coffrets-cadeaux": "Coffrets Cadeaux",
@@ -36,6 +37,7 @@ export const defaultStorefrontCategories: StorefrontCategoryOption[] =
 
 export function storefrontCategories(
   stored?: readonly StorefrontCategoryOption[],
+  orderedIds?: readonly string[],
 ) {
   const categories = new Map(
     defaultStorefrontCategories.map((category) => [category.id, category]),
@@ -44,7 +46,7 @@ export function storefrontCategories(
     const category = storefrontCategoryOptionSchema.safeParse(entry);
     if (category.success) categories.set(category.data.id, category.data);
   }
-  return [...categories.values()];
+  return orderStorefrontItems([...categories.values()], orderedIds);
 }
 
 export function storefrontCategoryId(label: string) {

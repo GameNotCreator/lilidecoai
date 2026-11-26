@@ -943,9 +943,6 @@ body:has(.store-dialog[open]) {
   .store-nav {
     gap: 8px;
   }
-  .store-product-grid {
-    grid-template-columns: 1fr;
-  }
 }
 @media (prefers-reduced-motion: reduce) {
   html {

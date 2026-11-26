@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { resolveStorefrontCategory } from "../lib/storefront-categories";
+import {
+  resolveStorefrontCategory,
+  storefrontCategories,
+} from "../lib/storefront-categories";
 import { adminProductPatchSchema } from "../lib/server/admin-product-schema";
 
 describe("storefront categories", () => {
@@ -29,6 +32,23 @@ describe("storefront categories", () => {
         storefrontCategory: "art-de-la-table",
       }),
     ).toBe("art-de-la-table");
+  });
+
+  it("keeps the saved category order and appends categories added later", () => {
+    const stored = [
+      { id: "ceramiques-peintes", label: "Céramiques peintes" },
+      { id: "edition-limitee", label: "Édition limitée" },
+    ];
+    const categories = storefrontCategories(stored, [
+      "ceramiques-peintes",
+      "vases-cache-pots",
+      "category-no-longer-present",
+    ]);
+    expect(categories.slice(0, 2).map(({ id }) => id)).toEqual([
+      "ceramiques-peintes",
+      "vases-cache-pots",
+    ]);
+    expect(categories.at(-1)).toEqual(stored[1]);
   });
 
   it("accepts automatic classification and well-formed category IDs from the database", () => {

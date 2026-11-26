@@ -120,6 +120,7 @@ test("product images reserve space while loading and the preview opens centered"
 test("the saved shop order aligns cards and shows the staged product photo", async ({
   page,
 }) => {
+  await page.setViewportSize({ width: 1280, height: 1000 });
   const headers = { Origin: origin };
   const login = await page.request.post("/api/admin/session", {
     headers,
@@ -133,12 +134,53 @@ test("the saved shop order aligns cards and shows the staged product photo", asy
   const stagedRoute = `/api/admin/products/${second.id}/views`;
   const photo = await sharp({
     create: { width: 400, height: 400, channels: 3, background: "#b79572" },
-  }).png().toBuffer();
+  })
+    .png()
+    .toBuffer();
 
   await page.goto("/admin/produits/ordre");
-  await page.getByRole("button", { name: `Monter ${second.name}`, exact: true }).click();
+  const preview = page.getByRole("list", {
+    name: "Produits dans l’ordre de la boutique",
+  });
+  const previewColumns = () =>
+    preview.evaluate(
+      (grid) => getComputedStyle(grid).gridTemplateColumns.split(" ").length,
+    );
+  await expect.poll(previewColumns).toBe(3);
+  await page.getByRole("button", { name: "Mobile · 2 colonnes" }).click();
+  await expect.poll(previewColumns).toBe(2);
+  await expect(preview.getByRole("listitem").nth(1)).toContainText(second.name);
+  await page.getByRole("button", { name: "PC · 3 colonnes" }).click();
+  const first = initial.products[0];
+  const handle = page.getByRole("button", {
+    name: `Déplacer ${second.name}`,
+    exact: true,
+  });
+  const target = page.getByRole("button", {
+    name: `Déplacer ${first.name}`,
+    exact: true,
+  });
+  await expect(handle).toBeVisible();
+  const from = (await handle.boundingBox())!;
+  const to = (await target.boundingBox())!;
+  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, {
+    steps: 12,
+  });
+  await page.mouse.up();
+  await expect(preview.getByRole("listitem").first()).toContainText(
+    second.name,
+  );
+  expect((await (await page.request.get(endpoint)).json()).products[0].id).toBe(
+    first.id,
+  );
   await page.getByRole("button", { name: "Enregistrer l’ordre" }).click();
-  await expect(page.getByRole("status")).toHaveText("L’ordre a été enregistré dans la boutique.");
+  await expect(
+    page
+      .getByRole("status")
+      .filter({ hasText: "L’ordre a été enregistré dans la boutique." }),
+  ).toBeVisible();
   const ids = initial.products.map((product: { id: string }) => product.id);
   const stale = await page.request.put(endpoint, {
     headers,
@@ -151,7 +193,11 @@ test("the saved shop order aligns cards and shows the staged product photo", asy
       headers,
       multipart: {
         viewType: "staged",
-        file: { name: "mise-en-scene.png", mimeType: "image/png", buffer: photo },
+        file: {
+          name: "mise-en-scene.png",
+          mimeType: "image/png",
+          buffer: photo,
+        },
       },
     });
     expect(upload.status(), await upload.text()).toBe(201);
@@ -159,28 +205,126 @@ test("the saved shop order aligns cards and shows the staged product photo", asy
     await page.goto("/");
     const cards = page.locator(".store-product-card");
     await expect(cards.first().getByRole("heading")).toHaveText(second.name);
-    const prices = page.locator(".store-product-price").filter({ visible: true });
-    for (const width of [1280, 390]) {
+    const prices = page
+      .locator(".store-product-price")
+      .filter({ visible: true });
+    for (const width of [1280, 390, 320]) {
       await page.setViewportSize({ width, height: 820 });
+      const columns = await page
+        .locator(".store-product-grid")
+        .evaluate(
+          (grid) =>
+            getComputedStyle(grid).gridTemplateColumns.split(" ").length,
+        );
+      expect(columns).toBe(width > 760 ? 3 : 2);
       const first = await prices.nth(0).boundingBox();
       const next = await prices.nth(1).boundingBox();
       expect(first).not.toBeNull();
       expect(next).not.toBeNull();
       expect(Math.abs(first!.y - next!.y)).toBeLessThan(1);
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth + 1,
+        ),
+      ).toBe(true);
     }
-    await cards.first().getByRole("button", { name: `Découvrir ${second.name}` }).click();
+    await cards
+      .first()
+      .getByRole("button", { name: `Découvrir ${second.name}` })
+      .click();
     const dialog = page.getByRole("dialog");
-    const staged = dialog.getByRole("img", { name: `${second.name} en mise en scène` });
+    const staged = dialog.getByRole("img", {
+      name: `${second.name} en mise en scène`,
+    });
     await expect(staged).toBeVisible();
-    await expect.poll(() => staged.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
+    await expect
+      .poll(() => staged.evaluate((img: HTMLImageElement) => img.naturalWidth))
+      .toBeGreaterThan(0);
     await dialog.getByRole("button", { name: "Photo de l’article" }).click();
-    await expect(dialog.getByRole("img", { name: second.name, exact: true })).toBeVisible();
+    await expect(
+      dialog.getByRole("img", { name: second.name, exact: true }),
+    ).toBeVisible();
   } finally {
     await page.request.delete(`${stagedRoute}?type=staged`, { headers });
     await page.request.put(endpoint, {
       headers,
       data: { ids, revision: initial.revision + 1 },
     });
+  }
+});
+
+test("categories can be reordered with the keyboard and appear in that order on the storefront", async ({
+  page,
+}) => {
+  const headers = { Origin: origin };
+  const login = await page.request.post("/api/admin/session", {
+    headers,
+    data: { username: "LiliDeco", password: "LiliDeco2026" },
+  });
+  expect(login.status()).toBe(201);
+  const endpoint = "/api/admin/products/storefront-order";
+  const initial = (await (await page.request.get(endpoint)).json()) as {
+    categoryRevision: number;
+    categories: { id: string; label: string; productCount: number }[];
+  };
+  const visible = initial.categories.filter(
+    ({ productCount }) => productCount > 0,
+  );
+  expect(visible.length).toBeGreaterThan(1);
+  const [first, second] = visible;
+  await page.goto("/admin/produits/ordre");
+  await page.getByRole("button", { name: "Catégories", exact: true }).click();
+  const moveUp = page.getByRole("button", {
+    name: `Monter ${second!.label}`,
+    exact: true,
+  });
+  const hops =
+    initial.categories.indexOf(second!) - initial.categories.indexOf(first!);
+  for (let i = 0; i < hops; i++) await moveUp.press("Enter");
+  const visiblePreview = page.getByRole("group", {
+    name: "Aperçu des catégories visibles",
+  });
+  await expect(visiblePreview.getByRole("listitem").first()).toHaveText(
+    second!.label,
+  );
+  await page.getByRole("button", { name: "Enregistrer l’ordre" }).click();
+  await expect(
+    page
+      .getByRole("status")
+      .filter({ hasText: "L’ordre des catégories a été enregistré." }),
+  ).toBeVisible();
+  const ids = initial.categories.map(({ id }) => id);
+  try {
+    const stale = await page.request.put(endpoint, {
+      headers,
+      data: { scope: "categories", ids, revision: initial.categoryRevision },
+    });
+    expect(stale.status()).toBe(409);
+    await page.goto("/");
+    const links = page
+      .getByRole("navigation", { name: "Parcourir les catégories" })
+      .getByRole("link");
+    await expect(links.first()).toHaveText(second!.label);
+    const options = await page
+      .getByRole("combobox", { name: "Catégorie", exact: true })
+      .locator("option")
+      .evaluateAll((rows) =>
+        rows.map((row) => (row as HTMLOptionElement).value),
+      );
+    expect(options.indexOf(second!.id)).toBeGreaterThan(0);
+    expect(options.indexOf(second!.id)).toBeLessThan(
+      options.indexOf(first!.id),
+    );
+  } finally {
+    const restored = await page.request.put(endpoint, {
+      headers,
+      data: {
+        scope: "categories",
+        ids,
+        revision: initial.categoryRevision + 1,
+      },
+    });
+    expect(restored.ok()).toBe(true);
   }
 });
 

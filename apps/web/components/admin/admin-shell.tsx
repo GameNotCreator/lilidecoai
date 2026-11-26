@@ -8,6 +8,7 @@ import {
   Boxes,
   ExternalLink,
   LayoutDashboard,
+  ListOrdered,
   LogOut,
   PlusCircle,
   ClipboardList,
@@ -18,6 +19,7 @@ import { adminApi } from "@/lib/admin-client";
 const links = [
   { href: "/admin", label: "Tableau de bord", icon: LayoutDashboard },
   { href: "/admin/produits", label: "Banque de produits", icon: Boxes },
+  { href: "/admin/produits/ordre", label: "Ordre du catalogue", icon: ListOrdered },
   { href: "/admin/produits/nouveau", label: "Nouveau produit", icon: PlusCircle },
   { href: "/admin/commandes", label: "Commandes", icon: ClipboardList },
   { href: "/admin/operations", label: "Opérations IA", icon: Activity },
@@ -60,6 +62,7 @@ export function AdminShell({
               key={href}
               href={href}
               className={isActive(pathname, href) ? "active" : undefined}
+              aria-current={isActive(pathname, href) ? "page" : undefined}
             >
               <Icon size={17} /> {label}
             </Link>
@@ -95,7 +98,8 @@ function isActive(pathname: string, href: string): boolean {
   if (href === "/admin") return pathname === "/admin";
   if (href === "/admin/produits") {
     return pathname.startsWith("/admin/produits") &&
-      pathname !== "/admin/produits/nouveau";
+      pathname !== "/admin/produits/nouveau" &&
+      pathname !== "/admin/produits/ordre";
   }
   return pathname === href;
 }

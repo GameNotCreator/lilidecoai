@@ -96,7 +96,10 @@ export async function addStorefrontCategory(
   if (!updated) throw new AdminProductError(conflict, 409);
   return {
     category,
-    categories: storefrontCategories(updated.storefrontCategories),
+    categories: storefrontCategories(
+      updated.storefrontCategories,
+      updated.storefrontCategoryOrder?.ids,
+    ),
   };
 }
 

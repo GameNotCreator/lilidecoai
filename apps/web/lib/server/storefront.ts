@@ -17,6 +17,7 @@ import {
   storefrontCategories,
   storefrontCategoryLabel,
 } from "../storefront-categories";
+import { orderStorefrontItems } from "../storefront-order";
 import { AuthError, type Tenant } from "./auth";
 import { ApiInputError, assetUrl, readAsset } from "./assets";
 import { serverConfig } from "./config";
@@ -96,7 +97,10 @@ export async function getStorefrontCatalog(db: Db): Promise<StorefrontCatalog> {
   const products = organization
     ? await listStorefrontProducts(db, organization)
     : [];
-  const categories = storefrontCategories(organization?.storefrontCategories);
+  const categories = storefrontCategories(
+    organization?.storefrontCategories,
+    organization?.storefrontCategoryOrder?.ids,
+  );
   return {
     store: { name: "LiliDeco" },
     categories,
@@ -115,28 +119,43 @@ export async function listStorefrontProducts(
     .products.find(storefrontProductFilter(organization.id))
     .sort({ createdAt: -1, id: 1 })
     .toArray();
-  const order = organization.storefrontProductOrder?.ids;
-  if (!order?.length) return products;
-
-  const positions = new Map(order.map((id, index) => [id, index]));
-  return products.sort(
-    (a, b) => (positions.get(a.id) ?? order.length) -
-      (positions.get(b.id) ?? order.length),
-  );
+  return orderStorefrontItems(products, organization.storefrontProductOrder?.ids);
 }
 
 export async function readStorefrontProductOrder(
   db: Db,
   organization: OrganizationDocument,
 ) {
-  const products = await listStorefrontProducts(db, organization);
+  const categories = storefrontCategories(
+    organization.storefrontCategories,
+    organization.storefrontCategoryOrder?.ids,
+  );
+  const counts = new Map<string, number>();
+  const products = (await listStorefrontProducts(db, organization)).map((product) => {
+    const categoryId = resolveStorefrontCategory(product);
+    counts.set(categoryId, (counts.get(categoryId) ?? 0) + 1);
+    const original = assetUrl(product.assetId);
+    const cutout = assetUrl(product.cutoutAssetId);
+    return {
+      id: product.id,
+      name: product.name,
+      collection: product.collection,
+      categoryLabel: storefrontCategoryLabel(categoryId, categories),
+      assetUrl: original,
+      cutoutUrl: cutout,
+      photoUrl: original ?? cutout,
+      priceCents: product.priceCents ?? null,
+      currency: product.currency ?? "TND",
+      stock: product.stock ?? null,
+    };
+  });
   return {
     revision: organization.storefrontProductOrder?.revision ?? 0,
-    products: products.map(({ id, name, collection, assetId, cutoutAssetId }) => ({
-      id,
-      name,
-      collection,
-      photoUrl: assetUrl(assetId) ?? assetUrl(cutoutAssetId),
+    products,
+    categoryRevision: organization.storefrontCategoryOrder?.revision ?? 0,
+    categories: categories.map((category) => ({
+      ...category,
+      productCount: counts.get(category.id) ?? 0,
     })),
   };
 }
